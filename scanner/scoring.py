@@ -1,0 +1,139 @@
+from __future__ import annotations
+
+from datetime import date
+
+import pandas as pd
+
+
+def assess_earnings_window(today: date, earnings_date: date | None) -> dict[str, object]:
+    if earnings_date is None:
+        return {
+            "earnings_status": "未確認",
+            "earnings_date": "",
+            "exclude_for_earnings": False,
+            "earnings_note": "決算日未確認のため最大A",
+        }
+
+    start = _business_days_before(earnings_date, 14)
+    end = _business_days_after(earnings_date, 1)
+    excluded = start <= today <= end
+    return {
+        "earnings_status": "確認済",
+        "earnings_date": earnings_date.isoformat(),
+        "exclude_for_earnings": excluded,
+        "earnings_note": "決算回避期間" if excluded else "",
+    }
+
+
+def score_stock(
+    indicators: dict[str, float],
+    cwh: dict[str, float] | None,
+    earnings: dict[str, object],
+    capital: float = 3_000_000,
+) -> dict[str, object]:
+    score = 0
+    reasons: list[str] = []
+
+    dist_high = indicators["dist_52w_high_pct"]
+    if dist_high <= 3:
+        score += 25
+        reasons.append("52週高値3%以内")
+    elif dist_high <= 7:
+        score += 20
+        reasons.append("52週高値7%以内")
+    elif dist_high <= 15:
+        score += 12
+        reasons.append("52週高値15%以内")
+
+    if indicators["current_price"] > indicators["ma25"]:
+        score += 10
+        reasons.append("MA25上")
+    if indicators["current_price"] > indicators["ma75"]:
+        score += 10
+        reasons.append("MA75上")
+    if indicators["current_price"] > indicators["ma200"]:
+        score += 10
+        reasons.append("MA200上")
+
+    turnover = indicators["turnover_20d"]
+    if turnover >= 1_000_000_000:
+        score += 15
+        reasons.append("売買代金10億円以上")
+    elif turnover >= 300_000_000:
+        score += 10
+        reasons.append("売買代金3億円以上")
+    elif turnover >= 100_000_000:
+        score += 5
+        reasons.append("売買代金1億円以上")
+
+    volume_ratio = indicators["volume_ratio_5d_20d"]
+    if volume_ratio >= 2:
+        score += 15
+        reasons.append("出来高比2倍以上")
+    elif volume_ratio >= 1.5:
+        score += 10
+        reasons.append("出来高比1.5倍以上")
+    elif volume_ratio >= 1.1:
+        score += 5
+        reasons.append("出来高増加")
+
+    if cwh:
+        score += 10
+        reasons.append("CWH候補")
+
+    lot_value = indicators["lot_value_100"]
+    if lot_value <= capital * 0.10:
+        score += 10
+        reasons.append("100株購入額が資金10%以内")
+    elif lot_value <= capital * 0.20:
+        score += 5
+        reasons.append("100株購入額が資金20%以内")
+
+    rank = _rank(score)
+    if earnings["earnings_status"] == "未確認" and rank == "S":
+        rank = "A"
+        reasons.append("決算未確認で最大A")
+
+    max_positions_with_capital = int(capital // lot_value) if lot_value > 0 else 0
+
+    return {
+        "score": score,
+        "rank": rank,
+        "lot_value_100": lot_value,
+        "max_positions_3m": max_positions_with_capital,
+        "reason": " / ".join(reasons),
+    }
+
+
+def rejection_row(
+    indicators: dict[str, float] | None,
+    reason: str,
+    capital: float = 3_000_000,
+) -> dict[str, object]:
+    current = indicators["current_price"] if indicators else 0
+    lot_value = current * 100
+    return {
+        "score": 0,
+        "rank": "見送り",
+        "lot_value_100": lot_value,
+        "max_positions_3m": int(capital // lot_value) if lot_value > 0 else 0,
+        "reason": reason,
+    }
+
+
+def _rank(score: int) -> str:
+    if score >= 85:
+        return "S"
+    if score >= 70:
+        return "A"
+    if score >= 55:
+        return "B"
+    return "見送り"
+
+
+def _business_days_before(target: date, days: int) -> date:
+    return pd.bdate_range(end=pd.Timestamp(target), periods=days + 1)[0].date()
+
+
+def _business_days_after(target: date, days: int) -> date:
+    return pd.bdate_range(start=pd.Timestamp(target), periods=days + 1)[-1].date()

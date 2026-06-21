@@ -1,0 +1,122 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from io import BytesIO
+
+import pandas as pd
+import requests
+
+
+JPX_LISTED_URLS = [
+    "https://www.jpx.co.jp/markets/statistics-equities/misc/tvdivq00000030ne-att/data_j.xls",
+    "https://www.jpx.co.jp/markets/statistics-equities/misc/tvdivq0000001vg2-att/data_j.xls",
+]
+
+MARKET_LABELS = {
+    "prime": "プライム",
+    "standard": "スタンダード",
+    "growth": "グロース",
+}
+
+
+@dataclass(frozen=True)
+class UniverseConfig:
+    markets: tuple[str, ...] = ("prime", "standard", "growth")
+    timeout: int = 30
+
+
+def load_jpx_listed(config: UniverseConfig | None = None) -> pd.DataFrame:
+    config = config or UniverseConfig()
+    raw = _download_jpx_excel(config.timeout)
+    source = pd.read_excel(BytesIO(raw), sheet_name=0)
+    return normalize_jpx_listed(source, config.markets)
+
+
+def normalize_jpx_listed(source: pd.DataFrame, markets: tuple[str, ...]) -> pd.DataFrame:
+    code_col = _find_col(source, "コード")
+    name_col = _find_col(source, "銘柄名")
+    market_col = _find_col(source, "市場", "区分")
+    sector_col = _find_col(source, "33業種区分")
+
+    if not code_col or not name_col or not market_col:
+        raise ValueError(f"JPX file format is not supported: {source.columns.tolist()}")
+
+    allowed_market_words = tuple(MARKET_LABELS[m] for m in markets)
+    rows: list[dict[str, str]] = []
+
+    for _, item in source.iterrows():
+        code = str(item[code_col]).strip()
+        name = str(item[name_col]).strip()
+        market_raw = str(item[market_col]).strip()
+        sector = str(item[sector_col]).strip() if sector_col else "-"
+
+        if not code.isdigit() or len(code) != 4:
+            continue
+        if _is_excluded_security(market_raw, name):
+            continue
+        if not any(word in market_raw for word in allowed_market_words):
+            continue
+
+        market = _market_label(market_raw)
+        if market is None:
+            continue
+
+        rows.append(
+            {
+                "ticker": f"{code}.T",
+                "code": code,
+                "name": name,
+                "market": market,
+                "sector": sector,
+            }
+        )
+
+    return pd.DataFrame(rows).drop_duplicates("ticker").reset_index(drop=True)
+
+
+def _download_jpx_excel(timeout: int) -> bytes:
+    errors: list[str] = []
+    for url in JPX_LISTED_URLS:
+        try:
+            response = requests.get(url, timeout=timeout)
+            response.raise_for_status()
+            if len(response.content) > 1000:
+                return response.content
+            errors.append(f"{url}: response too small")
+        except requests.RequestException as exc:
+            errors.append(f"{url}: {exc}")
+    raise RuntimeError("Failed to download JPX listed company file. " + " / ".join(errors))
+
+
+def _find_col(df: pd.DataFrame, *keywords: str) -> str | None:
+    for col in df.columns:
+        text = str(col)
+        if all(keyword in text for keyword in keywords):
+            return col
+    return None
+
+
+def _is_excluded_security(market_raw: str, name: str) -> bool:
+    text = f"{market_raw} {name}"
+    excluded_words = (
+        "ETF",
+        "ETN",
+        "REIT",
+        "リート",
+        "投資法人",
+        "インフラファンド",
+        "出資証券",
+        "優先",
+        "PRO Market",
+    )
+    return any(word in text for word in excluded_words)
+
+
+def _market_label(market_raw: str) -> str | None:
+    if "プライム" in market_raw:
+        return "東証プライム"
+    if "スタンダード" in market_raw:
+        return "東証スタンダード"
+    if "グロース" in market_raw:
+        return "東証グロース"
+    return None
