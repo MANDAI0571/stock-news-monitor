@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import date
+from pathlib import Path
 
 import pandas as pd
 
@@ -12,6 +13,7 @@ from scanner.scoring import assess_earnings_window, rejection_row, score_stock
 from scanner.universe import UniverseConfig, load_jpx_listed
 
 
+PROJECT_ROOT = Path(__file__).resolve().parent
 CAPITAL = 3_000_000
 
 
@@ -21,7 +23,7 @@ def run_screening(
     output_dir: str,
     include_rejected: bool,
 ) -> pd.DataFrame:
-    universe = load_jpx_listed(UniverseConfig(markets=markets))
+    universe = _load_universe(markets, output_dir)
     if limit:
         universe = universe.head(limit)
 
@@ -66,7 +68,7 @@ def run_screening(
                 continue
 
             cwh = detect_cup_with_handle(history["Close"])
-            scored = score_stock(indicators, cwh, earnings, capital=CAPITAL)
+            scored = score_stock(indicators, cwh, earnings, capital=CAPITAL, name=stock.name, sector=stock.sector)
             rows.append(
                 row_base
                 | format_indicators(indicators)
@@ -82,10 +84,24 @@ def run_screening(
     if result.empty:
         return result
 
+    if "dist_52w_high_pct" not in result.columns:
+        result["dist_52w_high_pct"] = 999
+    result["dist_52w_high_pct"] = pd.to_numeric(result["dist_52w_high_pct"], errors="coerce").fillna(999)
+
     rank_order = {"S": 0, "A": 1, "B": 2, "見送り": 3}
     result["_rank_order"] = result["rank"].map(rank_order).fillna(9)
     result = result.sort_values(["_rank_order", "score", "dist_52w_high_pct"], ascending=[True, False, True])
     return result.drop(columns=["_rank_order"]).reset_index(drop=True)
+
+
+def _load_universe(markets: tuple[str, ...], output_dir: str) -> pd.DataFrame:
+    try:
+        return load_jpx_listed(UniverseConfig(markets=markets))
+    except Exception as exc:
+        raise RuntimeError(
+            "JPX銘柄一覧を取得できません。完全な銘柄一覧キャッシュがないため、"
+            "不完全なscreening_result_*.csvへのフォールバックは行いません。"
+        ) from exc
 
 
 def format_indicators(indicators: dict[str, float]) -> dict[str, object]:
@@ -93,9 +109,14 @@ def format_indicators(indicators: dict[str, float]) -> dict[str, object]:
         "current_price": round(indicators["current_price"], 1),
         "high_52w": round(indicators["high_52w"], 1),
         "dist_52w_high_pct": round(indicators["dist_52w_high_pct"], 2),
+        "days_since_52w_high": int(indicators["days_since_52w_high"]),
         "ma25": round(indicators["ma25"], 1),
         "ma75": round(indicators["ma75"], 1),
         "ma200": round(indicators["ma200"], 1),
+        "ma25_gap_pct": round(indicators["ma25_gap_pct"], 2),
+        "ma75_gap_pct": round(indicators["ma75_gap_pct"], 2),
+        "ma200_gap_pct": round(indicators["ma200_gap_pct"], 2),
+        "ma200_touch_pct": round(indicators["ma200_touch_pct"], 2),
         "volume_ratio_5d_20d": round(indicators["volume_ratio_5d_20d"], 2),
         "turnover_20d": int(indicators["turnover_20d"]),
         "lot_value_100": int(indicators["lot_value_100"]),
@@ -130,7 +151,7 @@ def parse_args() -> argparse.Namespace:
         help="対象市場",
     )
     parser.add_argument("--limit", type=int, default=None, help="動作確認用に先頭N銘柄だけ処理")
-    parser.add_argument("--output-dir", default="outputs", help="CSV保存先")
+    parser.add_argument("--output-dir", default=str(PROJECT_ROOT / "outputs"), help="CSV保存先")
     parser.add_argument("--include-rejected", action="store_true", help="見送り銘柄もCSVに含める")
     return parser.parse_args()
 
@@ -151,7 +172,26 @@ def main() -> None:
     path = timestamped_csv_path(args.output_dir)
     result.to_csv(path, index=False, encoding="utf-8-sig")
     print("\n=== 300万円運用向け日本株スクリーニング ===\n")
-    print(result[["code", "name", "market", "current_price", "score", "rank", "lot_value_100", "max_positions_3m", "reason"]].to_string(index=False))
+    display_columns = [
+        "code",
+        "name",
+        "market",
+        "current_price",
+        "score",
+        "rank",
+        "volume_ratio_5d_20d",
+        "dist_52w_high_pct",
+        "days_since_52w_high",
+        "ma75_gap_pct",
+        "ma200_gap_pct",
+        "lot_value_100",
+        "max_positions_3m",
+        "reason",
+    ]
+    for column in display_columns:
+        if column not in result.columns:
+            result[column] = ""
+    print(result[display_columns].to_string(index=False))
     print(f"\n保存しました: {path}")
 
 

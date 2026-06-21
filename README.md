@@ -28,6 +28,8 @@ pip install -r requirements.txt
 
 ## CLI
 
+正式運用フォルダは`/Users/user/stock-news-monitor`です。`scan_kit_v3`ではなく、このフォルダから実行します。
+
 まず少数銘柄で動作確認します。
 
 ```bash
@@ -41,6 +43,45 @@ python run_screening.py
 ```
 
 CSVは`outputs/`に保存されます。
+
+## 300万円規律版
+
+地合いは`market_regime.py`に表示される`REGIME_TXT_URL`を優先し、取得できない場合は正式運用フォルダ直下の`regime.txt`を正本として参照します。
+
+- `NORMAL`
+- `CAUTION`
+- `RISK`
+- `STOP`
+
+`STOP`の場合は新規買いを停止し、規律版ポートフォリオは現金保有になります。
+
+```bash
+python paper_portfolio_discipline.py
+```
+
+規律:
+
+- 最大3銘柄
+- 1枠100万円
+- Sランクのみ
+- Sランク不足は現金保有
+- 損切7%
+- 利確15%
+- 10営業日タイムアウト
+
+手動で一括確認する場合:
+
+```bash
+python daily_discipline_run.py --limit 20
+```
+
+売買記録と集計:
+
+```bash
+python trade_journal.py entry --csv outputs/discipline_portfolio_YYYYMMDD_HHMMSS.csv --row 0 --regime NORMAL --shares 100
+python trade_journal.py exit --trade-id <trade_id> --exit-price 1150 --exit-reason take_profit
+python pattern_learn.py
+```
 
 ## Streamlit
 

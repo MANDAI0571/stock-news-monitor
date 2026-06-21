@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
+import unicodedata
 
 import pandas as pd
 
@@ -30,6 +31,8 @@ def score_stock(
     cwh: dict[str, float] | None,
     earnings: dict[str, object],
     capital: float = 3_000_000,
+    name: str = "",
+    sector: str = "",
 ) -> dict[str, object]:
     score = 0
     reasons: list[str] = []
@@ -54,6 +57,20 @@ def score_stock(
     if indicators["current_price"] > indicators["ma200"]:
         score += 10
         reasons.append("MA200上")
+    if indicators["ma200_touch_pct"] <= 3:
+        score += 8
+        reasons.append("MA200タッチ±3%")
+
+    high_freshness = indicators["days_since_52w_high"]
+    if high_freshness <= 3:
+        score += 12
+        reasons.append("52週高値更新3日以内")
+    elif high_freshness <= 7:
+        score += 8
+        reasons.append("52週高値更新7日以内")
+    elif high_freshness <= 14:
+        score += 5
+        reasons.append("52週高値更新14日以内")
 
     turnover = indicators["turnover_20d"]
     if turnover >= 1_000_000_000:
@@ -80,6 +97,11 @@ def score_stock(
     if cwh:
         score += 10
         reasons.append("CWH候補")
+
+    theme = detect_theme(name, sector)
+    if theme:
+        score += 8
+        reasons.append(f"テーマ加点:{theme}")
 
     lot_value = indicators["lot_value_100"]
     if lot_value <= capital * 0.10:
@@ -129,6 +151,21 @@ def _rank(score: int) -> str:
     if score >= 55:
         return "B"
     return "見送り"
+
+
+def detect_theme(name: str, sector: str) -> str:
+    text = unicodedata.normalize("NFKC", f"{name} {sector}").lower()
+    themes = {
+        "半導体": ("半導体", "東京エレクトロン", "レーザーテック", "アドバンテスト", "screen", "ルネサス", "socionext", "ソシオネクスト"),
+        "AI": ("ai", "人工知能", "データセンター", "電線", "フジクラ", "古河電気", "swcc", "ソフトバンクグループ"),
+        "防衛": ("防衛", "三菱重工", "川崎重工", "ihi", "日本製鋼所"),
+        "銀行": ("銀行", "フィナンシャル", "fg"),
+        "電力": ("電力", "電気・ガス", "東京電力", "関西電力", "中部電力", "九州電力", "北海道電力", "東北電力"),
+    }
+    for theme, keywords in themes.items():
+        if any(keyword.lower() in text for keyword in keywords):
+            return theme
+    return ""
 
 
 def _business_days_before(target: date, days: int) -> date:
