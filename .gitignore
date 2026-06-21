@@ -3,3 +3,4 @@ scanner/__pycache__/
 outputs/*.csv
 outputs/*.out
 outputs/*.err
+launchd/
