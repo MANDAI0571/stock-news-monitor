@@ -1,0 +1,5 @@
+__pycache__/
+scanner/__pycache__/
+outputs/*.csv
+outputs/*.out
+outputs/*.err
