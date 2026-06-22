@@ -9,6 +9,8 @@ from gmail_notify import DISCLAIMER, build_candidate_body, build_subject
 from market_regime import Regime, fetch_regime
 from paper_portfolio_discipline import build_discipline_portfolio
 from pattern_learn import build_pattern_summary
+from daily_note_mail import build_mail_body
+from note_autosave import extract_body_fragment
 from scanner.indicators import calculate_indicators
 from scanner.scoring import meets_s_technical_gate, meets_strict_s_gate, score_stock
 from trade_journal import load_journal, log_entry, log_exit
@@ -19,6 +21,7 @@ def main() -> None:
     _test_discipline_normal_and_stop()
     _test_market_regime_local_fallback()
     _test_gmail_body()
+    _test_note_autosave_and_mail_body()
     _test_journal_and_pattern_learning()
     print("self-test: OK")
 
@@ -161,6 +164,35 @@ def _test_journal_and_pattern_learning() -> None:
         assert journal.iloc[0]["result"] == "WIN"
         summary = build_pattern_summary(journal)
         assert summary.iloc[0]["metric"] == "データ蓄積中"
+
+
+def _test_note_autosave_and_mail_body() -> None:
+    html = "<html><head><title>x</title></head><body><h1>タイトル</h1><p>本文</p></body></html>"
+    assert extract_body_fragment(html) == "<h1>タイトル</h1><p>本文</p>"
+
+    screening = pd.DataFrame(
+        [
+            {
+                "code": "1111",
+                "name": "A",
+                "rank": "S",
+                "score": 100,
+                "current_price": 1000,
+                "dist_52w_high_pct": 1,
+                "volume_ratio_5d_20d": 2,
+                "reason": "テスト",
+            }
+        ]
+    )
+    discipline = pd.DataFrame(
+        [
+            {"slot": 1, "action": "BUY", "code": "1111", "name": "A", "rank": "S", "score": 100, "cash_reason": ""},
+            {"slot": 2, "action": "CASH", "code": "", "name": "", "rank": "", "score": "", "cash_reason": "不足"},
+        ]
+    )
+    body = build_mail_body(screening, discipline, "NORMAL", "https://note.com/notes/abc")
+    assert "Note下書きURL: https://note.com/notes/abc" in body
+    assert "note_daily.md" in body
 
 
 if __name__ == "__main__":
