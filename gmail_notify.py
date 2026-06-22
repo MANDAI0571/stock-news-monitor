@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import os
+import mimetypes
 import smtplib
 from dataclasses import dataclass
 from datetime import date
 from email.message import EmailMessage
+from pathlib import Path
 
 import pandas as pd
 
@@ -98,12 +100,33 @@ def build_candidate_body(
     return "\n".join(lines)
 
 
-def send_gmail(subject: str, body: str, config: GmailConfig) -> None:
+def send_gmail(
+    subject: str,
+    body: str,
+    config: GmailConfig,
+    attachments: list[Path] | None = None,
+) -> None:
     message = EmailMessage()
     message["Subject"] = subject
     message["From"] = config.user
     message["To"] = config.mail_to
     message.set_content(body)
+
+    for attachment in attachments or []:
+        path = Path(attachment)
+        if not path.exists():
+            continue
+        mimetype, _ = mimetypes.guess_type(path.name)
+        if mimetype:
+            maintype, subtype = mimetype.split("/", 1)
+        else:
+            maintype, subtype = "application", "octet-stream"
+        message.add_attachment(
+            path.read_bytes(),
+            maintype=maintype,
+            subtype=subtype,
+            filename=path.name,
+        )
 
     with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=30) as smtp:
         smtp.login(config.user, config.app_password)
@@ -115,6 +138,7 @@ def maybe_send_gmail(
     regime: str,
     enabled: bool,
     max_rows: int = 30,
+    attachments: list[Path] | None = None,
 ) -> bool:
     if not enabled:
         print("gmail_notification=skipped reason=disabled")
@@ -127,7 +151,18 @@ def maybe_send_gmail(
 
     subject = build_subject()
     body = build_candidate_body(screening, regime, max_rows=max_rows)
-    send_gmail(subject, body, config)
+    if attachments:
+        body = "\n".join(
+            [
+                body,
+                "",
+                "---",
+                "note記事原稿を添付しています。",
+                "添付ファイル:",
+                "note_daily.md",
+            ]
+        )
+    send_gmail(subject, body, config, attachments=attachments)
     print(f"gmail_notification=sent to={config.mail_to} subject={subject}")
     return True
 

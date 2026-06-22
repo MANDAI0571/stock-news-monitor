@@ -58,7 +58,15 @@ def main() -> None:
     print(f"screening_csv={screening_path}")
     print(f"s_rank_csv={s_rank_path}")
     print(f"discipline_csv={discipline_path}")
-    maybe_send_gmail(screening, regime.value, enabled=args.send_gmail, max_rows=args.mail_max_rows)
+    note_md_path = Path(args.output_dir) / "note_daily.md"
+    attachments = [note_md_path] if note_md_path.exists() else None
+    maybe_send_gmail(
+        screening,
+        regime.value,
+        enabled=args.send_gmail,
+        max_rows=args.mail_max_rows,
+        attachments=attachments,
+    )
 
 
 def print_candidate_summary(screening) -> None:
