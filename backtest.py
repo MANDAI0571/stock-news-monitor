@@ -24,6 +24,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -36,7 +37,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 OUTPUT_DIR = PROJECT_ROOT / "outputs"
 CACHE_DIR = PROJECT_ROOT / "cache"
 OHLC_CACHE_DIR = CACHE_DIR / "ohlc"
-CHECKPOINT_PATH = CACHE_DIR / "checkpoint_trades.jsonl"
+CHECKPOINT_DIR = CACHE_DIR / "checkpoints"
 MARKETCAP_CACHE_PATH = CACHE_DIR / "marketcap.json"
 
 # ベンチマーク（Mac取得）。グロースは東証グロース市場指数の代理として 2516.T(東証グロース上場投信)等を使うが
@@ -65,6 +66,14 @@ class BTParams:
     # エントリーゲート
     near_high_pct: float = 15.0          # 52週高値からの距離 上限%
     min_turnover_20d: float = 100_000_000.0
+    min_ma25_gap_pct: float | None = None
+    max_ma25_gap_pct: float | None = None
+    min_52w_dist_pct: float | None = None
+    max_52w_dist_pct: float | None = None
+    min_volume_ratio_5d_20d: float | None = None
+    max_volume_ratio_5d_20d: float | None = None
+    electric_volume_min: float | None = None
+    selection_rule: str = "current"
     require_vol_increase: bool = True    # 当日出来高 > 20日平均
     require_ma_slope_up: bool = True     # MA25・MA75 上向き
     slope_lookback: int = 5              # 上向き判定の参照日数
@@ -102,8 +111,10 @@ def compute_indicator_frame(history: pd.DataFrame) -> pd.DataFrame:
     df["high_52w"] = close.rolling(252).max()
     df["dist_52w_high_pct"] = (df["high_52w"] - close) / df["high_52w"] * 100.0
     df["vol_ma20"] = volume.rolling(20).mean()
+    df["volume_ratio_5d_20d"] = volume.rolling(5).mean() / df["vol_ma20"]
     df["vol_increase"] = volume > df["vol_ma20"]
     df["turnover_20d"] = turnover.rolling(20).mean()
+    df["ma25_gap_pct"] = (close - df["ma25"]) / df["ma25"] * 100.0
     df["close"] = close
     return df
 
@@ -124,6 +135,18 @@ def entry_signals(ind: pd.DataFrame, params: BTParams = BTParams()) -> pd.Series
         & (close > ind["ma200"])
         & (ind["turnover_20d"] >= params.min_turnover_20d)
     )
+    if params.min_ma25_gap_pct is not None:
+        cond = cond & (ind["ma25_gap_pct"] >= params.min_ma25_gap_pct)
+    if params.max_ma25_gap_pct is not None:
+        cond = cond & (ind["ma25_gap_pct"] <= params.max_ma25_gap_pct)
+    if params.min_52w_dist_pct is not None:
+        cond = cond & (ind["dist_52w_high_pct"] >= params.min_52w_dist_pct)
+    if params.max_52w_dist_pct is not None:
+        cond = cond & (ind["dist_52w_high_pct"] <= params.max_52w_dist_pct)
+    if params.min_volume_ratio_5d_20d is not None:
+        cond = cond & (ind["volume_ratio_5d_20d"] >= params.min_volume_ratio_5d_20d)
+    if params.max_volume_ratio_5d_20d is not None:
+        cond = cond & (ind["volume_ratio_5d_20d"] <= params.max_volume_ratio_5d_20d)
     if params.require_ma_slope_up:
         cond = cond & (ind["ma25_slope"] > 0) & (ind["ma75_slope"] > 0)
     if params.require_vol_increase:
@@ -434,6 +457,8 @@ def backtest_symbol(history: pd.DataFrame, meta: dict, params: BTParams,
         res["ma200_gap_pct"] = float((closes.iloc[entry_idx] - ind["ma200"].iloc[entry_idx]) / ind["ma200"].iloc[entry_idx] * 100.0)
         v = ind["Volume"].iloc[max(0, entry_idx - 4):entry_idx + 1].mean()
         res["volume_ratio_5d_20d"] = float(v / vol_ma20.iloc[entry_idx]) if vol_ma20.iloc[entry_idx] else np.nan
+        if not _passes_sector_volume_rule(res["sector"], res["volume_ratio_5d_20d"], params):
+            continue
         res["turnover_20d"] = float(ind["turnover_20d"].iloc[entry_idx])
         # 選択ロジック・CSV出力用の明示列（#2）
         res["turnover_20d_avg"] = res["turnover_20d"]
@@ -452,6 +477,16 @@ def backtest_symbol(history: pd.DataFrame, meta: dict, params: BTParams,
         trades.append(res)
         blocked_until = res["exit_idx"]  # 手仕舞いまで同一銘柄を重ねない
     return trades
+
+
+def _passes_sector_volume_rule(sector: str, volume_ratio_5d_20d: float, params: BTParams) -> bool:
+    if params.electric_volume_min is None:
+        return True
+    if sector != "電気機器":
+        return True
+    if volume_ratio_5d_20d is None or not np.isfinite(volume_ratio_5d_20d):
+        return False
+    return float(volume_ratio_5d_20d) >= float(params.electric_volume_min)
 
 
 def _attach_benchmarks(res: dict, entry_ts, hold_days: int, benchmarks: dict) -> None:
@@ -487,6 +522,7 @@ def _bucket_columns(trades: pd.DataFrame) -> pd.DataFrame:
 def apply_portfolio_constraints(
     trades: pd.DataFrame,
     portfolio: PortfolioParams = PortfolioParams(),
+    selection_rule: str = "current",
 ) -> pd.DataFrame:
     """候補トレードを300万円・最大3銘柄・1銘柄100万円の実運用制約に通す。
 
@@ -496,25 +532,7 @@ def apply_portfolio_constraints(
     if trades is None or trades.empty:
         return pd.DataFrame()
 
-    # 採用は時系列順（必須）。同一 entry_date 内で枠を奪い合う時の優先順位は
-    #   第1キー: 売買代金20日平均が大きい順 / 第2キー: MA25乖離が小さい順 / 第3キー: スコアが高い順
-    # → 大型・高流動性・浅い押しを優先し、出来高急増イナゴを避ける（#1・#4の発見）。
-    # 該当列が無い場合は code 順（先着）にフォールバックする（既存テスト互換）。
-    sort_cols: list[str] = ["entry_date"]
-    ascending: list[bool] = [True]
-    turnover_key = "turnover_20d_avg" if "turnover_20d_avg" in trades.columns else (
-        "turnover_20d" if "turnover_20d" in trades.columns else None)
-    if turnover_key:
-        sort_cols.append(turnover_key); ascending.append(False)
-    ma25_key = "dist_to_ma25_pct" if "dist_to_ma25_pct" in trades.columns else (
-        "ma25_gap_pct" if "ma25_gap_pct" in trades.columns else None)
-    if ma25_key:
-        sort_cols.append(ma25_key); ascending.append(True)
-    if "score" in trades.columns:
-        sort_cols.append("score"); ascending.append(False)
-    sort_cols.append("code"); ascending.append(True)
-    if "exit_idx" in trades.columns:
-        sort_cols.append("exit_idx"); ascending.append(True)
+    sort_cols, ascending = _selection_sort_spec(trades, selection_rule)
 
     ordered = trades.sort_values(sort_cols, ascending=ascending,
                                  na_position="last").reset_index(drop=True)
@@ -603,6 +621,38 @@ def apply_portfolio_constraints(
     return accepted_df
 
 
+def _selection_sort_spec(trades: pd.DataFrame, selection_rule: str) -> tuple[list[str], list[bool]]:
+    """同日候補の選抜順。entry_date は必ず最上位に置く。"""
+    turnover_key = "turnover_20d_avg" if "turnover_20d_avg" in trades.columns else (
+        "turnover_20d" if "turnover_20d" in trades.columns else None)
+    ma25_key = "dist_to_ma25_pct" if "dist_to_ma25_pct" in trades.columns else (
+        "ma25_gap_pct" if "ma25_gap_pct" in trades.columns else None)
+    if selection_rule == "current":
+        keys = [turnover_key, ma25_key, "score"]
+        asc = [False, True, False]
+    elif selection_rule == "ma25_first":
+        keys = [ma25_key, "score", turnover_key]
+        asc = [True, False, False]
+    elif selection_rule == "score_first":
+        keys = ["score", ma25_key, turnover_key]
+        asc = [False, True, False]
+    else:
+        raise ValueError(f"unknown selection_rule: {selection_rule}")
+
+    sort_cols: list[str] = ["entry_date"]
+    ascending: list[bool] = [True]
+    for key, is_asc in zip(keys, asc):
+        if key and key not in sort_cols and key in trades.columns:
+            sort_cols.append(key)
+            ascending.append(is_asc)
+    sort_cols.append("code")
+    ascending.append(True)
+    if "exit_idx" in trades.columns:
+        sort_cols.append("exit_idx")
+        ascending.append(True)
+    return sort_cols, ascending
+
+
 def run(
     years: int = 5,
     limit: int | None = None,
@@ -624,7 +674,17 @@ def run(
     import yfinance as yf  # Mac専用（クラウドは通信不可）
     from scanner.universe import UniverseConfig, load_jpx_listed
 
-    universe = load_jpx_listed(UniverseConfig())
+    universe_config = UniverseConfig()
+    run_meta = _build_run_meta(years, limit, params, portfolio, universe_config)
+    run_hash = _run_hash(run_meta)
+    checkpoint_path, checkpoint_meta_path = _checkpoint_paths(run_hash)
+    if resume:
+        _validate_checkpoint_meta(run_meta, checkpoint_meta_path)
+    else:
+        _reset_checkpoint(checkpoint_path, checkpoint_meta_path)
+        _write_checkpoint_meta(run_meta, checkpoint_meta_path)
+
+    universe = load_jpx_listed(universe_config)
     if limit:
         universe = universe.head(limit)
 
@@ -636,9 +696,12 @@ def run(
     candidate_trades: list = []
     done_tickers: set = set()
     if resume:
-        done_tickers, prior = _load_checkpoint()
+        done_tickers, prior = _load_checkpoint(checkpoint_path)
         candidate_trades.extend(prior)
-        print(f"[resume] 復元: 処理済み{len(done_tickers)}銘柄 / トレード{len(prior)}件", flush=True)
+        print(
+            f"[resume] hash={run_hash} 復元: 処理済み{len(done_tickers)}銘柄 / トレード{len(prior)}件",
+            flush=True,
+        )
 
     # バッチ先読み（未キャッシュのみ・Mac）
     if batch_size and batch_size > 0:
@@ -655,7 +718,7 @@ def run(
         try:
             raw = _load_cached_ohlc(yf, row.ticker, period, use_cache=use_cache)
             if raw is None or raw.empty:
-                _append_checkpoint(row.ticker, [])  # 空でも処理済みとして記録（再開で再取得しない）
+                _append_checkpoint(row.ticker, [], checkpoint_path)  # 空でも処理済みとして記録（再開で再取得しない）
                 continue
             meta = {"code": row.code, "name": row.name, "sector": row.sector}
             trades = backtest_symbol(raw, meta, params, benchmarks)
@@ -665,13 +728,13 @@ def run(
                 t["mktcap"] = mktcap
                 t["market_cap"] = mktcap
             candidate_trades.extend(trades)
-            _append_checkpoint(row.ticker, trades)
+            _append_checkpoint(row.ticker, trades, checkpoint_path)
         except Exception as exc:  # noqa
             print(f"  skip {row.ticker}: {exc}", flush=True)
 
     _save_marketcap_cache(mc_cache)
     candidates_df = pd.DataFrame(candidate_trades)
-    trades_df = apply_portfolio_constraints(candidates_df, portfolio)
+    trades_df = apply_portfolio_constraints(candidates_df, portfolio, selection_rule=params.selection_rule)
     if not trades_df.empty:
         trades_df = _bucket_columns(trades_df)
 
@@ -801,7 +864,89 @@ def _batch_prefetch_ohlc(yf, tickers: list, period: str, batch_size: int = 50,
                 continue
 
 
-def _load_checkpoint(path: Path = CHECKPOINT_PATH):
+def _build_run_meta(years: int, limit: int | None, params: BTParams,
+                    portfolio: PortfolioParams, universe_config) -> dict:
+    """checkpointを安全に分離するための実行条件メタデータ。"""
+    return {
+        "schema": 1,
+        "years": int(years),
+        "period": f"{years + 1}y",
+        "limit": "ALL" if limit is None else int(limit),
+        "params": {
+            "timeout_bdays": int(params.timeout_bdays),
+            "exit_mode": str(params.exit_mode),
+            "trail_giveback": float(params.trail_giveback),
+            "stop_loss_pct": float(params.stop_loss_pct),
+            "min_turnover_20d": float(params.min_turnover_20d),
+            "min_ma25_gap_pct": params.min_ma25_gap_pct,
+            "max_ma25_gap_pct": params.max_ma25_gap_pct,
+            "min_52w_dist_pct": params.min_52w_dist_pct,
+            "max_52w_dist_pct": params.max_52w_dist_pct,
+            "min_volume_ratio_5d_20d": params.min_volume_ratio_5d_20d,
+            "max_volume_ratio_5d_20d": params.max_volume_ratio_5d_20d,
+            "electric_volume_min": params.electric_volume_min,
+            "selection_rule": params.selection_rule,
+        },
+        "portfolio": {
+            "initial_capital": float(portfolio.initial_capital),
+            "slot_capital": float(portfolio.slot_capital),
+            "max_positions": int(portfolio.max_positions),
+            "round_lot": int(portfolio.round_lot),
+        },
+        "universe": {
+            "markets": list(getattr(universe_config, "markets", ())),
+            "source": "jpx_listed",
+        },
+    }
+
+
+def _normalize_run_meta(meta: dict) -> dict:
+    """checkpoint互換のため、旧メタ欠落分をデフォルトで埋める。"""
+    normalized = json.loads(json.dumps(meta, ensure_ascii=False))
+    params = normalized.setdefault("params", {})
+    params.setdefault("electric_volume_min", None)
+    params.setdefault("selection_rule", "current")
+    return normalized
+
+
+def _run_hash(meta: dict) -> str:
+    payload = json.dumps(_normalize_run_meta(meta), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def _checkpoint_paths(run_hash: str) -> tuple[Path, Path]:
+    stem = f"backtest_{run_hash}"
+    return CHECKPOINT_DIR / f"{stem}.jsonl", CHECKPOINT_DIR / f"{stem}.meta.json"
+
+
+def _write_checkpoint_meta(meta: dict, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(meta, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def _validate_checkpoint_meta(expected: dict, path: Path) -> None:
+    if not path.exists():
+        raise RuntimeError(f"ERROR: checkpoint meta not found: {path}")
+    try:
+        actual = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"ERROR: checkpoint meta is broken: {path}") from exc
+    if _normalize_run_meta(actual) != _normalize_run_meta(expected):
+        raise RuntimeError(
+            "ERROR: checkpoint meta mismatch. "
+            "Do not use --resume with different years/timeout/exit/portfolio/universe conditions."
+        )
+
+
+def _reset_checkpoint(checkpoint_path: Path, meta_path: Path) -> None:
+    for path in (checkpoint_path, meta_path):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _load_checkpoint(path: Path):
     """チェックポイント(JSONL)を読み、(処理済みティッカー集合, トレードのlist) を返す。"""
     done: set = set()
     trades: list = []
@@ -821,7 +966,7 @@ def _load_checkpoint(path: Path = CHECKPOINT_PATH):
     return done, trades
 
 
-def _append_checkpoint(ticker: str, trades: list, path: Path = CHECKPOINT_PATH) -> None:
+def _append_checkpoint(ticker: str, trades: list, path: Path) -> None:
     """1銘柄分の処理結果を追記（途中再開用）。NaN は JSON 化できないため None に変換。"""
     path.parent.mkdir(parents=True, exist_ok=True)
     safe_trades = []
@@ -871,12 +1016,47 @@ def self_test() -> None:
         "Close": close, "Volume": np.linspace(1e6, 2e6, 400),
     }, index=dates)
     ind = compute_indicator_frame(hist)
-    assert {"ma25", "ma75", "ma200", "ma25_slope", "high_52w", "turnover_20d"} <= set(ind.columns)
+    assert {"ma25", "ma75", "ma200", "ma25_slope", "high_52w", "turnover_20d", "ma25_gap_pct", "volume_ratio_5d_20d"} <= set(ind.columns)
     assert ind["ma25_slope"].iloc[-1] > 0  # 上昇基調なので上向き
 
     # 2) エントリーシグナル: 上昇トレンド終盤は条件成立
     sig = entry_signals(ind)
     assert sig.iloc[-1] == True  # noqa: E712
+    assert entry_signals(ind, BTParams(min_ma25_gap_pct=0, max_ma25_gap_pct=7)).iloc[-1] == True  # noqa: E712
+    assert entry_signals(ind, BTParams(max_ma25_gap_pct=0.1)).iloc[-1] == False  # noqa: E712
+    assert entry_signals(ind, BTParams(min_52w_dist_pct=1, max_52w_dist_pct=7)).iloc[-1] == False  # noqa: E712
+
+    filtered = ind.copy()
+    last = filtered.index[-1]
+    filtered.loc[last, "ma25_gap_pct"] = 5.0
+    filtered.loc[last, "dist_52w_high_pct"] = 3.0
+    filtered.loc[last, "volume_ratio_5d_20d"] = 1.2
+    filtered.loc[last, "turnover_20d"] = 1_200_000_000.0
+    params_filtered = BTParams(
+        min_ma25_gap_pct=0,
+        max_ma25_gap_pct=7,
+        min_52w_dist_pct=1,
+        max_52w_dist_pct=7,
+        min_volume_ratio_5d_20d=0.9,
+        max_volume_ratio_5d_20d=1.5,
+        min_turnover_20d=1_000_000_000.0,
+    )
+    assert entry_signals(filtered, params_filtered).iloc[-1] == True  # noqa: E712
+    filtered.loc[last, "volume_ratio_5d_20d"] = 0.8
+    assert entry_signals(filtered, params_filtered).iloc[-1] == False  # noqa: E712
+    filtered.loc[last, "volume_ratio_5d_20d"] = 1.2
+    filtered.loc[last, "volume_ratio_5d_20d"] = 1.8
+    assert entry_signals(filtered, params_filtered).iloc[-1] == False  # noqa: E712
+    filtered.loc[last, "volume_ratio_5d_20d"] = 1.2
+    filtered.loc[last, "turnover_20d"] = 500_000_000.0
+    assert entry_signals(filtered, params_filtered).iloc[-1] == False  # noqa: E712
+    sector_params = BTParams(electric_volume_min=1.1)
+    assert _passes_sector_volume_rule("電気機器", 1.1, sector_params) is True
+    assert _passes_sector_volume_rule("電気機器", 1.0, sector_params) is False
+    assert _passes_sector_volume_rule("卸売業", 1.0, sector_params) is True
+    assert _selection_sort_spec(pd.DataFrame(columns=["entry_date", "turnover_20d_avg", "ma25_gap_pct", "score"]), "current")[0][:4] == ["entry_date", "turnover_20d_avg", "ma25_gap_pct", "score"]
+    assert _selection_sort_spec(pd.DataFrame(columns=["entry_date", "turnover_20d_avg", "ma25_gap_pct", "score"]), "ma25_first")[0][:4] == ["entry_date", "ma25_gap_pct", "score", "turnover_20d_avg"]
+    assert _selection_sort_spec(pd.DataFrame(columns=["entry_date", "turnover_20d_avg", "ma25_gap_pct", "score"]), "score_first")[0][:4] == ["entry_date", "score", "ma25_gap_pct", "turnover_20d_avg"]
 
     # 3) simulate_trade: 利益方向（+20%到達→トレーリング or timeout で勝ち）
     res = simulate_trade(ind, len(ind) - 60)
@@ -948,11 +1128,11 @@ def self_test() -> None:
     assert constrained_metrics["avg_entry_amount_yen"] == 1_000_000
     assert constrained_metrics["max_drawdown_pct"] < 0
 
-    # 8) 空データ安全
+    # 9) 空データ安全
     assert compute_metrics(pd.DataFrame())["n_trades"] == 0
     assert "note" in run_analyses(pd.DataFrame())
 
-    # 9) _entry_score: #4の発見に沿った単調性
+    # 10) _entry_score: #4の発見に沿った単調性
     s_near = _entry_score(1.0, 5e8, 1.2, 2.0, True)
     s_far = _entry_score(12.0, 5e8, 1.2, 2.0, True)
     assert s_near > s_far                       # 高値に近い方が高い
@@ -1011,6 +1191,54 @@ def self_test() -> None:
         _append_checkpoint("6758.T", [], ck)
         done, tr = _load_checkpoint(ck)
         assert done == {"7203.T", "6758.T"} and len(tr) == 1 and tr[0]["bad"] is None
+        meta = _build_run_meta(5, None, BTParams(timeout_bdays=20), PortfolioParams(), type("U", (), {"markets": ("prime", "growth")})())
+        rh = _run_hash(meta)
+        cp, mp = _checkpoint_paths(rh)
+        cp = tdp / cp.name
+        mp = tdp / mp.name
+        old_meta = {
+            "schema": 1,
+            "years": 5,
+            "period": "6y",
+            "limit": "ALL",
+            "params": {
+                "timeout_bdays": 20,
+                "exit_mode": "trail",
+                "trail_giveback": 0.08,
+                "stop_loss_pct": 0.07,
+                "min_turnover_20d": 100000000.0,
+                "min_ma25_gap_pct": None,
+                "max_ma25_gap_pct": None,
+                "min_52w_dist_pct": None,
+                "max_52w_dist_pct": None,
+                "min_volume_ratio_5d_20d": None,
+                "max_volume_ratio_5d_20d": None,
+            },
+            "portfolio": {
+                "initial_capital": 3000000.0,
+                "slot_capital": 1000000.0,
+                "max_positions": 3,
+                "round_lot": 100,
+            },
+            "universe": {
+                "markets": ["prime", "growth"],
+                "source": "jpx_listed",
+            },
+        }
+        _write_checkpoint_meta(old_meta, mp)
+        _validate_checkpoint_meta(meta, mp)
+        changed = _build_run_meta(5, None, BTParams(timeout_bdays=40), PortfolioParams(), type("U", (), {"markets": ("prime", "growth")})())
+        changed_filter = _build_run_meta(5, None, BTParams(max_ma25_gap_pct=7), PortfolioParams(), type("U", (), {"markets": ("prime", "growth")})())
+        changed_sector_filter = _build_run_meta(5, None, BTParams(electric_volume_min=1.1), PortfolioParams(), type("U", (), {"markets": ("prime", "growth")})())
+        changed_selection_rule = _build_run_meta(5, None, BTParams(selection_rule="ma25_first"), PortfolioParams(), type("U", (), {"markets": ("prime", "growth")})())
+        assert _run_hash(meta) != _run_hash(changed_filter)
+        assert _run_hash(meta) != _run_hash(changed_sector_filter)
+        assert _run_hash(meta) != _run_hash(changed_selection_rule)
+        try:
+            _validate_checkpoint_meta(changed, mp)
+            raise AssertionError("checkpoint meta mismatch must fail")
+        except RuntimeError as exc:
+            assert "checkpoint meta mismatch" in str(exc)
         mcp = tdp / "mc.json"
         _save_marketcap_cache({"7203.T": 3.5e13, "6758.T": None}, mcp)
         loaded = _load_marketcap_cache(mcp)
@@ -1030,6 +1258,16 @@ def main() -> None:
                    help="手仕舞いモード: timeout=損切り+タイムアウトのみ / ma25=25日線終値割れ / trail=トレーリング")
     p.add_argument("--trail-giveback", type=float, default=0.08,
                    help="trailモードの高値からの戻し幅（0.10/0.15で比較）")
+    p.add_argument("--min-ma25-gap-pct", type=float, default=None, help="MA25乖離の下限%")
+    p.add_argument("--max-ma25-gap-pct", type=float, default=None, help="MA25乖離の上限%")
+    p.add_argument("--min-52w-dist-pct", type=float, default=None, help="52週高値距離の下限%")
+    p.add_argument("--max-52w-dist-pct", type=float, default=None, help="52週高値距離の上限%")
+    p.add_argument("--min-volume-ratio-5d-20d", type=float, default=None, help="5日平均出来高/20日平均出来高の下限")
+    p.add_argument("--max-volume-ratio-5d-20d", type=float, default=None, help="5日平均出来高/20日平均出来高の上限")
+    p.add_argument("--electric-volume-min", type=float, default=None, help="電気機器セクターだけに適用する出来高倍率下限")
+    p.add_argument("--selection-rule", choices=["current", "ma25_first", "score_first"], default="current",
+                   help="同日候補の選抜順")
+    p.add_argument("--min-turnover-20d", type=float, default=100_000_000.0, help="20日平均売買代金の下限")
     p.add_argument("--no-cache", action="store_true", help="OHLCキャッシュを使わない")
     p.add_argument("--resume", action="store_true", help="checkpointから途中再開")
     p.add_argument("--no-marketcap", action="store_true", help="時価総額取得を省略（高速化）")
@@ -1043,7 +1281,16 @@ def main() -> None:
         run(years=args.years, limit=args.limit,
             params=BTParams(timeout_bdays=args.timeout_bdays,
                             exit_mode=args.exit_mode,
-                            trail_giveback=args.trail_giveback),
+                            trail_giveback=args.trail_giveback,
+                            min_turnover_20d=args.min_turnover_20d,
+                            min_ma25_gap_pct=args.min_ma25_gap_pct,
+                            max_ma25_gap_pct=args.max_ma25_gap_pct,
+                            min_52w_dist_pct=args.min_52w_dist_pct,
+                            max_52w_dist_pct=args.max_52w_dist_pct,
+                            min_volume_ratio_5d_20d=args.min_volume_ratio_5d_20d,
+                            max_volume_ratio_5d_20d=args.max_volume_ratio_5d_20d,
+                            electric_volume_min=args.electric_volume_min,
+                            selection_rule=args.selection_rule),
             use_cache=not args.no_cache,
             resume=args.resume,
             no_marketcap=args.no_marketcap,
