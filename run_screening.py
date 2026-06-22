@@ -22,6 +22,8 @@ def run_screening(
     limit: int | None,
     output_dir: str,
     include_rejected: bool,
+    max_candidates: int | None = 20,
+    strict: bool = False,
 ) -> pd.DataFrame:
     universe = _load_universe(markets, output_dir)
     if limit:
@@ -68,7 +70,7 @@ def run_screening(
                 continue
 
             cwh = detect_cup_with_handle(history["Close"])
-            scored = score_stock(indicators, cwh, earnings, capital=CAPITAL, name=stock.name, sector=stock.sector)
+            scored = score_stock(indicators, cwh, earnings, capital=CAPITAL, name=stock.name, sector=stock.sector, strict=strict)
             rows.append(
                 row_base
                 | format_indicators(indicators)
@@ -91,7 +93,17 @@ def run_screening(
     rank_order = {"S": 0, "A": 1, "B": 2, "見送り": 3}
     result["_rank_order"] = result["rank"].map(rank_order).fillna(9)
     result = result.sort_values(["_rank_order", "score", "dist_52w_high_pct"], ascending=[True, False, True])
-    return result.drop(columns=["_rank_order"]).reset_index(drop=True)
+    result = result.drop(columns=["_rank_order"]).reset_index(drop=True)
+
+    # 毎日の買い候補（S/A/B）は最大 max_candidates 件に絞る（見送りは分析用に保持）。
+    is_candidate = result["rank"].astype(str).str.upper().isin(["S", "A", "B"])
+    candidates = result[is_candidate]
+    if max_candidates is not None and len(candidates) > max_candidates:
+        candidates = candidates.head(max_candidates)
+    rejected = result[~is_candidate]
+    if include_rejected:
+        return pd.concat([candidates, rejected], ignore_index=True)
+    return candidates.reset_index(drop=True)
 
 
 def _load_universe(markets: tuple[str, ...], output_dir: str) -> pd.DataFrame:
@@ -113,6 +125,10 @@ def format_indicators(indicators: dict[str, float]) -> dict[str, object]:
         "ma25": round(indicators["ma25"], 1),
         "ma75": round(indicators["ma75"], 1),
         "ma200": round(indicators["ma200"], 1),
+        "ma25_slope": round(indicators["ma25_slope"], 3),
+        "ma75_slope": round(indicators["ma75_slope"], 3),
+        "ma25_rising": bool(indicators["ma25_rising"]),
+        "ma75_rising": bool(indicators["ma75_rising"]),
         "ma25_gap_pct": round(indicators["ma25_gap_pct"], 2),
         "ma75_gap_pct": round(indicators["ma75_gap_pct"], 2),
         "ma200_gap_pct": round(indicators["ma200_gap_pct"], 2),
@@ -153,6 +169,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--limit", type=int, default=None, help="動作確認用に先頭N銘柄だけ処理")
     parser.add_argument("--output-dir", default=str(PROJECT_ROOT / "outputs"), help="CSV保存先")
     parser.add_argument("--include-rejected", action="store_true", help="見送り銘柄もCSVに含める")
+    parser.add_argument("--max-candidates", type=int, default=20, help="毎日の買い候補(S/A/B)の最大件数。既定20")
+    parser.add_argument("--strict", action="store_true", help="Sランクにstrictゲートを適用する")
     return parser.parse_args()
 
 
@@ -163,6 +181,8 @@ def main() -> None:
         limit=args.limit,
         output_dir=args.output_dir,
         include_rejected=args.include_rejected,
+        max_candidates=args.max_candidates,
+        strict=args.strict,
     )
 
     if result.empty:
@@ -182,6 +202,8 @@ def main() -> None:
         "volume_ratio_5d_20d",
         "dist_52w_high_pct",
         "days_since_52w_high",
+        "ma25_rising",
+        "ma75_rising",
         "ma75_gap_pct",
         "ma200_gap_pct",
         "lot_value_100",

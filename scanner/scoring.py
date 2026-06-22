@@ -33,6 +33,7 @@ def score_stock(
     capital: float = 3_000_000,
     name: str = "",
     sector: str = "",
+    strict: bool = False,
 ) -> dict[str, object]:
     score = 0
     reasons: list[str] = []
@@ -57,6 +58,12 @@ def score_stock(
     if indicators["current_price"] > indicators["ma200"]:
         score += 10
         reasons.append("MA200上")
+    if indicators.get("ma25_rising"):
+        score += 8
+        reasons.append("MA25上向き")
+    if indicators.get("ma75_rising"):
+        score += 8
+        reasons.append("MA75上向き")
     if indicators["ma200_touch_pct"] <= 3:
         score += 8
         reasons.append("MA200タッチ±3%")
@@ -112,6 +119,17 @@ def score_stock(
         reasons.append("100株購入額が資金20%以内")
 
     rank = _rank(score)
+    # Sランクは「スコア合計≥85」だけでなく、上昇トレンドのテクニカル必須条件を
+    # すべて満たすことを要件にする（DUKE/オニール/ミネルヴィニの本質＝強い上昇トレンドのみ）。
+    # ゲート未達はスコアが高くても最大A止まり。
+    gate_ok, gate_fail = meets_s_technical_gate(indicators)
+    if rank == "S" and not gate_ok:
+        rank = "A"
+        reasons.append("Sゲート未達(" + "・".join(gate_fail) + ")で最大A")
+    strict_gate_ok, strict_gate_fail = meets_strict_s_gate(indicators)
+    if strict and rank == "S" and not strict_gate_ok:
+        rank = "A"
+        reasons.append("strict Sゲート未達(" + "・".join(strict_gate_fail) + ")で最大A")
     if earnings["earnings_status"] == "未確認" and rank == "S":
         rank = "A"
         reasons.append("決算未確認で最大A")
@@ -151,6 +169,57 @@ def _rank(score: int) -> str:
     if score >= 55:
         return "B"
     return "見送り"
+
+
+def meets_s_technical_gate(indicators: dict[str, float]) -> tuple[bool, list[str]]:
+    """Sランクに必要な「上昇トレンドのテクニカル必須条件」をすべて満たすか判定。
+
+    指定11条件のうち、価格・出来高・移動平均で機械的に再現できる核（②③④⑤⑥⑦⑧）をANDで要求する。
+    ①52週高値更新は②(高値3%以内)の最も強い部分集合として包含。
+    ⑨好決算・⑩上方修正・⑪テーマ拡張は別データ源が必要なため、この段階のゲートには含めない。
+    未達の場合、その理由（不足条件）を返す。
+    """
+    fail: list[str] = []
+    current = indicators.get("current_price", 0.0)
+    if indicators.get("dist_52w_high_pct", 999.0) > 3:        # ②(①を含む)
+        fail.append("52週高値3%超")
+    if not current > indicators.get("ma25", float("inf")):     # ⑤
+        fail.append("25日線以下")
+    if not current > indicators.get("ma75", float("inf")):     # ⑥
+        fail.append("75日線以下")
+    if not current > indicators.get("ma200", float("inf")):
+        fail.append("200日線以下")
+    if not indicators.get("ma25_rising", False):               # ③
+        fail.append("25日線が上向きでない")
+    if not indicators.get("ma75_rising", False):               # ④
+        fail.append("75日線が上向きでない")
+    if not indicators.get("volume_above_20d", False):          # ⑦
+        fail.append("出来高が20日平均以下")
+    if indicators.get("turnover_20d", 0.0) < 100_000_000:      # ⑧
+        fail.append("売買代金20日平均1億円未満")
+    return not fail, fail
+
+
+def meets_strict_s_gate(indicators: dict[str, float]) -> tuple[bool, list[str]]:
+    fail: list[str] = []
+    current = indicators.get("current_price", 0.0)
+    if indicators.get("days_since_52w_high", 999) > 0 and indicators.get("dist_52w_high_pct", 999.0) > 1:
+        fail.append("52週高値更新または1%以内でない")
+    if indicators.get("volume_ratio_5d_20d", 0.0) < 1.5:
+        fail.append("出来高倍率1.5倍未満")
+    if not indicators.get("ma25_rising", False):
+        fail.append("25日線が上向きでない")
+    if not indicators.get("ma75_rising", False):
+        fail.append("75日線が上向きでない")
+    if not current > indicators.get("ma25", float("inf")):
+        fail.append("25日線以下")
+    if not current > indicators.get("ma75", float("inf")):
+        fail.append("75日線以下")
+    if not current > indicators.get("ma200", float("inf")):
+        fail.append("200日線以下")
+    if indicators.get("turnover_20d", 0.0) < 100_000_000:
+        fail.append("売買代金20日平均1億円未満")
+    return not fail, fail
 
 
 def detect_theme(name: str, sector: str) -> str:

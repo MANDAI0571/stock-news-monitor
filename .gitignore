@@ -1,6 +1,7 @@
 __pycache__/
 scanner/__pycache__/
 outputs/*.csv
+outputs/*.json
 outputs/*.out
 outputs/*.err
 launchd/

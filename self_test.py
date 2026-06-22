@@ -5,11 +5,12 @@ from tempfile import TemporaryDirectory
 
 import pandas as pd
 
+from gmail_notify import DISCLAIMER, build_candidate_body, build_subject
 from market_regime import Regime, fetch_regime
 from paper_portfolio_discipline import build_discipline_portfolio
 from pattern_learn import build_pattern_summary
 from scanner.indicators import calculate_indicators
-from scanner.scoring import score_stock
+from scanner.scoring import meets_s_technical_gate, meets_strict_s_gate, score_stock
 from trade_journal import load_journal, log_entry, log_exit
 
 
@@ -17,6 +18,7 @@ def main() -> None:
     _test_indicators_and_scoring()
     _test_discipline_normal_and_stop()
     _test_market_regime_local_fallback()
+    _test_gmail_body()
     _test_journal_and_pattern_learning()
     print("self-test: OK")
 
@@ -38,9 +40,25 @@ def _test_indicators_and_scoring() -> None:
     assert indicators is not None
     assert "ma75_gap_pct" in indicators
     assert indicators["days_since_52w_high"] == 0
+    assert indicators["ma25_rising"] is True
+    assert indicators["ma75_rising"] is True
     scored = score_stock(indicators, None, {"earnings_status": "確認済"}, name="東京エレクトロン", sector="電気機器")
     assert scored["score"] > 0
+    assert "MA25上向き" in scored["reason"]
+    assert "MA75上向き" in scored["reason"]
     assert "テーマ加点:半導体" in scored["reason"]
+
+    weak_indicators = dict(indicators)
+    weak_indicators["ma25_rising"] = False
+    weak_indicators["ma75_rising"] = False
+    gate_ok, gate_fail = meets_s_technical_gate(weak_indicators)
+    assert gate_ok is False
+    assert "25日線が上向きでない" in gate_fail
+    assert "75日線が上向きでない" in gate_fail
+
+    strict_ok, strict_fail = meets_strict_s_gate(indicators)
+    assert strict_ok is False
+    assert "出来高倍率1.5倍未満" in strict_fail
 
 
 def _test_discipline_normal_and_stop() -> None:
@@ -66,6 +84,54 @@ def _test_market_regime_local_fallback() -> None:
         regime = fetch_regime(url="", fallback_path=path)
         assert regime.value == "NORMAL"
         assert regime.source == str(path)
+
+
+def _test_gmail_body() -> None:
+    screening = pd.DataFrame(
+        [
+            {
+                "code": "7735",
+                "name": "ＳＣＲＥＥＮホールディングス",
+                "rank": "S",
+                "score": 95,
+                "current_price": 10000,
+                "lot_value_100": 1_000_000,
+                "dist_52w_high_pct": 1.2,
+                "volume_ratio_5d_20d": 1.8,
+                "reason": "テスト",
+            }
+        ]
+    )
+    assert build_subject(pd.Timestamp("2026-06-22").date()) == "【DUKEシステム】本日のS/A/B候補 2026-06-22"
+    body = build_candidate_body(screening, "NORMAL")
+    assert "■ Sランク" in body
+    assert "7735" in body
+    assert DISCLAIMER in body
+
+    no_s_body = build_candidate_body(screening.assign(rank="A"), "NORMAL")
+    assert "本日はSランクなし" in no_s_body
+
+    many = pd.DataFrame(
+        [
+            {
+                "code": f"{7000 + idx}",
+                "name": f"候補{idx}",
+                "rank": rank,
+                "score": 100 - idx,
+                "current_price": 1000,
+                "lot_value_100": 100000,
+                "dist_52w_high_pct": 1,
+                "volume_ratio_5d_20d": 2,
+                "reason": "テスト",
+            }
+            for idx, rank in enumerate(["S"] * 6 + ["A"] * 12 + ["B"] * 12)
+        ]
+    )
+    limited = build_candidate_body(many, "NORMAL", max_rows=25)
+    assert limited.count("  理由:") == 25
+    assert "■ Sランク（6件中 最大5件表示）" in limited
+    assert "■ Aランク（12件中 最大10件表示）" in limited
+    assert "■ Bランク（12件中 最大10件表示）" in limited
 
 
 def _test_journal_and_pattern_learning() -> None:
