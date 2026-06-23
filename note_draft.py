@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
+from html import escape
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable
 
 import pandas as pd
 
@@ -12,6 +13,8 @@ import pandas as pd
 PROJECT_ROOT = Path(__file__).resolve().parent
 OUTPUT_DIR = PROJECT_ROOT / "outputs"
 NOTE_PATH = OUTPUT_DIR / "note_daily.md"
+NOTE_TITLE_PATH = OUTPUT_DIR / "note_title.txt"
+NOTE_HTML_PATH = OUTPUT_DIR / "note_daily.html"
 
 
 @dataclass(frozen=True)
@@ -267,6 +270,150 @@ def build_note_body(screening: pd.DataFrame, discipline: pd.DataFrame, backtest:
     return "\n".join(lines)
 
 
+def extract_note_title(note_markdown: str) -> str:
+    for line in note_markdown.splitlines():
+        text = line.strip()
+        if not text:
+            continue
+        if text.startswith("# "):
+            return text[2:].strip() or "note_daily"
+        return text
+    return "note_daily"
+
+
+def _is_table_separator(line: str) -> bool:
+    cleaned = line.strip()
+    if not cleaned.startswith("|"):
+        return False
+    parts = [part.strip() for part in cleaned.strip("|").split("|")]
+    return all(re.fullmatch(r"[:\-\s]+", part or "-") for part in parts)
+
+
+def _split_table_row(line: str) -> list[str]:
+    return [escape(part.strip()) for part in line.strip().strip("|").split("|")]
+
+
+def render_markdown_html(title: str, note_markdown: str) -> str:
+    body_lines = note_markdown.splitlines()
+    if body_lines and body_lines[0].strip().startswith("# "):
+        body_lines = body_lines[1:]
+
+    html_lines = [
+        "<!doctype html>",
+        "<html lang=\"ja\">",
+        "<head>",
+        "<meta charset=\"utf-8\">",
+        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">",
+        f"<title>{escape(title)}</title>",
+        "<style>",
+        "body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;line-height:1.6;max-width:980px;margin:24px auto;padding:0 16px;color:#111}",
+        "h1,h2,h3{line-height:1.3}",
+        "table{border-collapse:collapse;width:100%;margin:12px 0}",
+        "th,td{border:1px solid #ccc;padding:6px 8px;vertical-align:top;text-align:left}",
+        "ul{padding-left:1.4em}",
+        "blockquote{margin:12px 0;padding:8px 12px;border-left:4px solid #ccc;background:#f8f8f8}",
+        "code{background:#f2f2f2;padding:0 4px;border-radius:4px}",
+        "</style>",
+        "</head>",
+        "<body>",
+        f"<h1>{escape(title)}</h1>",
+    ]
+
+    i = 0
+    while i < len(body_lines):
+        line = body_lines[i].rstrip()
+        stripped = line.strip()
+        if not stripped:
+            i += 1
+            continue
+
+        if stripped.startswith("### "):
+            html_lines.append(f"<h3>{escape(stripped[4:].strip())}</h3>")
+            i += 1
+            continue
+        if stripped.startswith("## "):
+            html_lines.append(f"<h2>{escape(stripped[3:].strip())}</h2>")
+            i += 1
+            continue
+        if stripped.startswith("# "):
+            html_lines.append(f"<h2>{escape(stripped[2:].strip())}</h2>")
+            i += 1
+            continue
+        if stripped == "---":
+            html_lines.append("<hr>")
+            i += 1
+            continue
+        if stripped.startswith("|") and "|" in stripped[1:]:
+            table_lines = [stripped]
+            i += 1
+            while i < len(body_lines):
+                nxt = body_lines[i].rstrip()
+                if not nxt.strip():
+                    break
+                if not nxt.strip().startswith("|"):
+                    break
+                table_lines.append(nxt.strip())
+                i += 1
+            headers = _split_table_row(table_lines[0])
+            rows_start = 1
+            if len(table_lines) > 1 and _is_table_separator(table_lines[1]):
+                rows_start = 2
+            html_lines.append("<table>")
+            if headers:
+                html_lines.append("<thead><tr>" + "".join(f"<th>{cell}</th>" for cell in headers) + "</tr></thead>")
+            body_rows = table_lines[rows_start:]
+            if body_rows:
+                html_lines.append("<tbody>")
+                for row_line in body_rows:
+                    cells = _split_table_row(row_line)
+                    html_lines.append("<tr>" + "".join(f"<td>{cell}</td>" for cell in cells) + "</tr>")
+                html_lines.append("</tbody>")
+            html_lines.append("</table>")
+            continue
+        if stripped.startswith("- "):
+            items = []
+            while i < len(body_lines):
+                cur = body_lines[i].strip()
+                if not cur.startswith("- "):
+                    break
+                items.append(cur[2:].strip())
+                i += 1
+            html_lines.append("<ul>")
+            html_lines.extend(f"<li>{escape(item)}</li>" for item in items)
+            html_lines.append("</ul>")
+            continue
+        if stripped.startswith("■ "):
+            html_lines.append(f"<p><strong>{escape(stripped)}</strong></p>")
+            i += 1
+            continue
+
+        paragraph: list[str] = []
+        while i < len(body_lines):
+            cur = body_lines[i].rstrip()
+            cur_stripped = cur.strip()
+            if not cur_stripped:
+                break
+            if cur_stripped.startswith(("# ", "## ", "### ", "- ", "■ ", "|", "---")):
+                break
+            paragraph.append(escape(cur_stripped))
+            i += 1
+        if paragraph:
+            html_lines.append("<p>" + "<br>".join(paragraph) + "</p>")
+            continue
+        i += 1
+
+    html_lines.extend(["</body>", "</html>"])
+    return "\n".join(html_lines)
+
+
+def write_note_outputs(note_markdown: str) -> tuple[Path, Path, Path]:
+    title = extract_note_title(note_markdown)
+    NOTE_PATH.write_text(note_markdown, encoding="utf-8")
+    NOTE_TITLE_PATH.write_text(title + "\n", encoding="utf-8")
+    NOTE_HTML_PATH.write_text(render_markdown_html(title, note_markdown), encoding="utf-8")
+    return NOTE_PATH, NOTE_TITLE_PATH, NOTE_HTML_PATH
+
+
 def main() -> None:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     sources = load_sources()
@@ -274,8 +421,10 @@ def main() -> None:
     discipline = load_discipline(sources.discipline)
     backtest = load_backtest(sources.backtest)
     note = build_note_body(screening, discipline, backtest, sources)
-    NOTE_PATH.write_text(note, encoding="utf-8")
+    note_path, title_path, html_path = write_note_outputs(note)
     print(f"saved={NOTE_PATH}")
+    print(f"saved={title_path}")
+    print(f"saved={html_path}")
     print(f"screening={sources.screening}")
     print(f"discipline={sources.discipline}")
     print(f"backtest={sources.backtest if sources.backtest else '未取得'}")

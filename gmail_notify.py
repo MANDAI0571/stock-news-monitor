@@ -112,7 +112,7 @@ def send_gmail(
     message["To"] = config.mail_to
     message.set_content(body)
 
-    for attachment in attachments or []:
+    for attachment in _expand_attachments(attachments):
         path = Path(attachment)
         if not path.exists():
             continue
@@ -151,20 +151,48 @@ def maybe_send_gmail(
 
     subject = build_subject()
     body = build_candidate_body(screening, regime, max_rows=max_rows)
-    if attachments:
+    expanded_attachments = _expand_attachments(attachments)
+    if expanded_attachments:
         body = "\n".join(
             [
                 body,
                 "",
                 "---",
-                "note記事原稿を添付しています。",
-                "添付ファイル:",
-                "note_daily.md",
+                "Note投稿用ファイルを添付しています。",
+                "添付:",
+                "\n".join(path.name for path in expanded_attachments),
             ]
         )
-    send_gmail(subject, body, config, attachments=attachments)
+    send_gmail(subject, body, config, attachments=expanded_attachments)
     print(f"gmail_notification=sent to={config.mail_to} subject={subject}")
     return True
+
+
+def _expand_attachments(attachments: list[Path] | None) -> list[Path]:
+    if not attachments:
+        return []
+
+    expanded: list[Path] = []
+    seen: set[Path] = set()
+
+    def add_path(path: Path) -> None:
+        resolved = Path(path)
+        if resolved in seen:
+            return
+        seen.add(resolved)
+        expanded.append(resolved)
+
+    for attachment in attachments:
+        path = Path(attachment)
+        if path.name == "note_daily.md":
+            for name in ("note_title.txt", "note_daily.md", "note_daily.html"):
+                sibling = path.with_name(name)
+                if sibling.exists():
+                    add_path(sibling)
+        else:
+            add_path(path)
+
+    return [path for path in expanded if path.exists()]
 
 
 def _format_candidate(row: pd.Series) -> list[str]:
