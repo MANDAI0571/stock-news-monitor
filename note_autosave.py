@@ -13,6 +13,7 @@ NOTE_TITLE_FILE = "note_title.txt"
 NOTE_HTML_FILE = "note_daily.html"
 NOTE_URL_FILE = "note_draft_url.txt"
 NOTE_NEW_URL = "https://note.com/notes/new"
+NOTE_DRAFT_URL_RE = re.compile(r"^https://note\.com/notes/([A-Za-z0-9_-]+)$")
 
 
 @dataclass(frozen=True)
@@ -89,9 +90,13 @@ def save_note_draft(
             context.close()
             browser.close()
 
-    if "note.com" not in url:
+    if not is_saved_draft_url(url):
         raise RuntimeError(f"note draft URL を取得できませんでした: {url}")
     return url
+
+
+def is_saved_draft_url(url: str) -> bool:
+    return bool(NOTE_DRAFT_URL_RE.fullmatch(url)) and url != NOTE_NEW_URL
 
 
 def _login(page, email: str, password: str) -> None:

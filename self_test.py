@@ -10,7 +10,7 @@ from market_regime import Regime, fetch_regime
 from paper_portfolio_discipline import build_discipline_portfolio
 from pattern_learn import build_pattern_summary
 from daily_note_mail import build_mail_body
-from note_autosave import extract_body_fragment
+from note_autosave import extract_body_fragment, is_saved_draft_url
 from scanner.indicators import calculate_indicators
 from scanner.scoring import meets_s_technical_gate, meets_strict_s_gate, score_stock
 from trade_journal import load_journal, log_entry, log_exit
@@ -169,6 +169,8 @@ def _test_journal_and_pattern_learning() -> None:
 def _test_note_autosave_and_mail_body() -> None:
     html = "<html><head><title>x</title></head><body><h1>タイトル</h1><p>本文</p></body></html>"
     assert extract_body_fragment(html) == "<h1>タイトル</h1><p>本文</p>"
+    assert is_saved_draft_url("https://note.com/notes/abc123")
+    assert not is_saved_draft_url("https://note.com/notes/new")
 
     screening = pd.DataFrame(
         [
