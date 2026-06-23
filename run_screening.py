@@ -7,6 +7,7 @@ from pathlib import Path
 import pandas as pd
 
 from scanner.indicators import calculate_indicators, passes_base_filters
+from scanner.highs import classify_high_profile
 from scanner.patterns import detect_cup_with_handle
 from scanner.prices import fetch_next_earnings_date, fetch_price_history, timestamped_csv_path
 from scanner.scoring import assess_earnings_window, rejection_row, score_stock
@@ -46,15 +47,16 @@ def run_screening(
         try:
             history = fetch_price_history(stock.ticker)
             indicators = calculate_indicators(history)
+            high_info = classify_high_profile(history)
             if indicators is None:
                 if include_rejected:
-                    rows.append(row_base | rejection_row(None, "価格データ不足"))
+                    rows.append(row_base | high_info | rejection_row(None, "価格データ不足"))
                 continue
 
             passed, reject_reasons = passes_base_filters(indicators)
             if not passed:
                 if include_rejected:
-                    rows.append(row_base | format_indicators(indicators) | rejection_row(indicators, " / ".join(reject_reasons)))
+                    rows.append(row_base | format_indicators(indicators) | high_info | rejection_row(indicators, " / ".join(reject_reasons)))
                 continue
 
             earnings_date = fetch_next_earnings_date(stock.ticker)
@@ -64,6 +66,7 @@ def run_screening(
                     rows.append(
                         row_base
                         | format_indicators(indicators)
+                        | high_info
                         | earnings
                         | rejection_row(indicators, "決算14営業日前〜決算翌営業日のため除外")
                     )
@@ -74,6 +77,7 @@ def run_screening(
             rows.append(
                 row_base
                 | format_indicators(indicators)
+                | high_info
                 | format_cwh(cwh)
                 | earnings
                 | scored
@@ -89,6 +93,19 @@ def run_screening(
     if "dist_52w_high_pct" not in result.columns:
         result["dist_52w_high_pct"] = 999
     result["dist_52w_high_pct"] = pd.to_numeric(result["dist_52w_high_pct"], errors="coerce").fillna(999)
+    if "high_type" not in result.columns:
+        result["high_type"] = "OTHER"
+    if "high_label" not in result.columns:
+        result["high_label"] = "分類外"
+    if "high_window_days" not in result.columns:
+        result["high_window_days"] = 0
+    if "high_price" not in result.columns:
+        result["high_price"] = ""
+    if "high_date" not in result.columns:
+        result["high_date"] = ""
+    if "dist_to_high_pct" not in result.columns:
+        result["dist_to_high_pct"] = 999
+    result["dist_to_high_pct"] = pd.to_numeric(result["dist_to_high_pct"], errors="coerce").fillna(999)
 
     rank_order = {"S": 0, "A": 1, "B": 2, "見送り": 3}
     result["_rank_order"] = result["rank"].map(rank_order).fillna(9)
@@ -201,6 +218,12 @@ def main() -> None:
         "rank",
         "volume_ratio_5d_20d",
         "dist_52w_high_pct",
+        "high_type",
+        "high_label",
+        "high_window_days",
+        "high_price",
+        "high_date",
+        "dist_to_high_pct",
         "days_since_52w_high",
         "ma25_rising",
         "ma75_rising",

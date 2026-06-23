@@ -9,6 +9,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from scanner.highs import build_high_sections_markdown
+
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 OUTPUT_DIR = PROJECT_ROOT / "outputs"
@@ -234,6 +236,11 @@ def build_note_body(screening: pd.DataFrame, discipline: pd.DataFrame, backtest:
     else:
         for _, row in top10.iterrows():
             lines.append(f"- {safe_text(row.get('code'))} {safe_text(row.get('name'))}: {safe_text(row.get('reason'))}")
+
+    high_lines = build_high_sections_markdown(screening, max_rows=5)
+    if high_lines:
+        lines.extend([""])
+        lines.extend(high_lines)
 
     lines.extend([
         "",

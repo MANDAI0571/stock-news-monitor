@@ -10,6 +10,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from scanner.highs import build_high_sections_markdown
+
 
 DISCLAIMER = "※これは投資助言ではなく、スクリーニング結果です。売買判断は自己責任で行ってください。"
 
@@ -95,6 +97,10 @@ def build_candidate_body(
     if total > shown:
         lines.append(f"ほか {total - shown}件はCSVを確認してください。")
         lines.append("")
+
+    high_lines = build_high_sections_markdown(candidates, max_rows=5)
+    if high_lines:
+        lines.extend(high_lines)
 
     lines.append(DISCLAIMER)
     return "\n".join(lines)

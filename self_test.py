@@ -11,6 +11,7 @@ from paper_portfolio_discipline import build_discipline_portfolio
 from pattern_learn import build_pattern_summary
 from daily_note_mail import build_mail_body
 from note_autosave import extract_body_fragment, is_saved_draft_url, load_storage_state
+from scanner.highs import build_high_sections_markdown, classify_high_profile
 from scanner.indicators import calculate_indicators
 from scanner.scoring import meets_s_technical_gate, meets_strict_s_gate, score_stock
 from trade_journal import load_journal, log_entry, log_exit
@@ -22,6 +23,7 @@ def main() -> None:
     _test_market_regime_local_fallback()
     _test_gmail_body()
     _test_note_autosave_and_mail_body()
+    _test_high_classification()
     _test_journal_and_pattern_learning()
     print("self-test: OK")
 
@@ -211,6 +213,31 @@ def _test_note_autosave_and_mail_body() -> None:
     body = build_mail_body(screening, discipline, "NORMAL", "https://note.com/notes/abc", "Note下書きURL")
     assert "Note下書きURL: https://note.com/notes/abc" in body
     assert "note_daily.md" in body
+
+
+def _test_high_classification() -> None:
+    dates = pd.bdate_range("2025-01-01", periods=260)
+    up = pd.Series(range(1000, 1260), index=dates, dtype=float)
+    history_new = pd.DataFrame({"Open": up, "High": up * 1.01, "Low": up * 0.99, "Close": up, "Volume": 1_000_000})
+    profile_new = classify_high_profile(history_new)
+    assert profile_new["high_type"] == "52W_NEW_HIGH"
+
+    recent = up.copy()
+    recent.iloc[:-60] = 1200
+    recent.iloc[-60:] = list(range(1000, 1060))
+    history_recent = pd.DataFrame({"Open": recent, "High": recent * 1.01, "Low": recent * 0.99, "Close": recent, "Volume": 1_000_000})
+    profile_recent = classify_high_profile(history_recent)
+    assert profile_recent["high_type"] in {"RECENT_NEW_HIGH", "RECENT_NEAR_HIGH"}
+
+    screening = pd.DataFrame(
+        [
+            {"code": "1", "name": "A", "rank": "S", "score": 1, "high_type": "52W_NEW_HIGH", "high_label": "52週新高値", "high_date": "2026-01-01", "dist_to_high_pct": 0, "reason": "a"},
+            {"code": "2", "name": "B", "rank": "A", "score": 2, "high_type": "RECENT_NEAR_HIGH", "high_label": "直近高値接近", "high_date": "2026-01-02", "dist_to_high_pct": 2, "reason": "b"},
+        ]
+    )
+    lines = build_high_sections_markdown(screening, max_rows=5)
+    assert any("52週新高値" in line for line in lines)
+    assert any("直近高値接近" in line for line in lines)
 
 
 if __name__ == "__main__":
