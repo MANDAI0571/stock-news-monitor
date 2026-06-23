@@ -11,7 +11,8 @@ from market_regime import fetch_regime
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "outputs"
-NOTE_URL_FILE = "note_draft_url.txt"
+NOTE_PUBLISHED_URL_FILE = "note_published_url.txt"
+NOTE_DRAFT_URL_FILE = "note_draft_url.txt"
 
 
 def parse_args() -> argparse.Namespace:
@@ -34,12 +35,16 @@ def load_dataframe(path: Path | None) -> pd.DataFrame:
     return pd.read_csv(path)
 
 
-def load_note_url(output_dir: Path) -> str | None:
-    path = output_dir / NOTE_URL_FILE
-    if not path.exists():
-        return None
-    text = path.read_text(encoding="utf-8").strip()
-    return text or None
+def load_note_url(output_dir: Path) -> tuple[str | None, str]:
+    for filename in (NOTE_PUBLISHED_URL_FILE, NOTE_DRAFT_URL_FILE):
+        path = output_dir / filename
+        if not path.exists():
+            continue
+        text = path.read_text(encoding="utf-8").strip()
+        if text:
+            label = "Note公開URL" if filename == NOTE_PUBLISHED_URL_FILE else "Note下書きURL"
+            return text, label
+    return None, "Note公開URL"
 
 
 def build_mail_body(
@@ -47,6 +52,7 @@ def build_mail_body(
     discipline: pd.DataFrame,
     regime: str,
     note_url: str | None,
+    note_url_label: str = "Note公開URL",
 ) -> str:
     lines = [build_candidate_body(screening, regime)]
     lines.extend([
@@ -83,7 +89,7 @@ def build_mail_body(
         "note_daily.md",
         "note_daily.html",
         "",
-        f"Note下書きURL: {note_url or '未取得'}",
+        f"{note_url_label}: {note_url or '未取得'}",
     ])
     return "\n".join(lines)
 
@@ -107,8 +113,8 @@ def main() -> None:
     else:
         regime = fetch_regime().value
 
-    note_url = load_note_url(output_dir)
-    body = build_mail_body(screening, discipline, regime, note_url)
+    note_url, note_url_label = load_note_url(output_dir)
+    body = build_mail_body(screening, discipline, regime, note_url, note_url_label)
 
     config = load_gmail_config()
     if config is None:

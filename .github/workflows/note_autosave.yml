@@ -55,4 +55,5 @@ jobs:
             outputs/note_title.txt
             outputs/note_daily.html
             outputs/note_draft_url.txt
+            outputs/note_published_url.txt
           if-no-files-found: error

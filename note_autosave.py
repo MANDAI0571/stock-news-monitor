@@ -12,8 +12,10 @@ DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "outputs"
 NOTE_TITLE_FILE = "note_title.txt"
 NOTE_HTML_FILE = "note_daily.html"
 NOTE_URL_FILE = "note_draft_url.txt"
+NOTE_PUBLISHED_URL_FILE = "note_published_url.txt"
 NOTE_NEW_URL = "https://note.com/notes/new"
 NOTE_DRAFT_URL_RE = re.compile(r"^https://note\.com/notes/([A-Za-z0-9_-]+)$")
+NOTE_PUBLISHED_URL_RE = re.compile(r"^https://note\.com/(?:[^/]+/)?n/[^/?#]+(?:[?#].*)?$")
 
 
 @dataclass(frozen=True)
@@ -59,12 +61,12 @@ def load_credentials() -> tuple[str, str]:
     return email, password
 
 
-def save_note_draft(
+def save_and_publish_note(
     email: str,
     password: str,
     payload: NoteDraftPayload,
     headless: bool = True,
-) -> str:
+) -> tuple[str, str]:
     from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
     from playwright.sync_api import sync_playwright
 
@@ -85,18 +87,26 @@ def save_note_draft(
             except PlaywrightTimeoutError:
                 pass
             page.wait_for_timeout(2000)
-            url = page.url
+            draft_url = page.url
+            if not is_saved_draft_url(draft_url):
+                raise RuntimeError(f"note draft URL を取得できませんでした: {draft_url}")
+
+            publish_url = _publish_note(page, context)
         finally:
             context.close()
             browser.close()
 
-    if not is_saved_draft_url(url):
-        raise RuntimeError(f"note draft URL を取得できませんでした: {url}")
-    return url
+    if not is_published_url(publish_url):
+        raise RuntimeError(f"note published URL を取得できませんでした: {publish_url}")
+    return draft_url, publish_url
 
 
 def is_saved_draft_url(url: str) -> bool:
     return bool(NOTE_DRAFT_URL_RE.fullmatch(url)) and url != NOTE_NEW_URL
+
+
+def is_published_url(url: str) -> bool:
+    return bool(NOTE_PUBLISHED_URL_RE.fullmatch(url)) and "/notes/new" not in url
 
 
 def _login(page, email: str, password: str) -> None:
@@ -170,6 +180,31 @@ def _try_save(page) -> None:
     page.keyboard.press("Control+S")
 
 
+def _publish_note(page, context) -> str:
+    before_pages = {id(p): p for p in context.pages}
+    _click_first(page, [
+        'button:has-text("公開する")',
+        'button:has-text("投稿する")',
+        'button:has-text("公開")',
+        'button:has-text("Publish")',
+        'button:has-text("記事を公開")',
+    ])
+    page.wait_for_timeout(3000)
+    candidates = list(context.pages)
+    for new_page in candidates:
+        if id(new_page) in before_pages:
+            continue
+        try:
+            new_page.wait_for_load_state("domcontentloaded", timeout=5000)
+        except Exception:
+            pass
+        if is_published_url(new_page.url):
+            return new_page.url
+    if is_published_url(page.url):
+        return page.url
+    return page.url
+
+
 def _fill_first(page, selectors: list[str], value: str) -> bool:
     for selector in selectors:
         locator = page.locator(selector)
@@ -203,15 +238,24 @@ def write_note_url(output_dir: Path, note_url: str, note_url_file: str) -> Path:
     return path
 
 
+def write_note_published_url(output_dir: Path, note_url: str) -> Path:
+    path = output_dir / NOTE_PUBLISHED_URL_FILE
+    path.write_text(note_url.strip() + "\n", encoding="utf-8")
+    return path
+
+
 def main() -> None:
     args = parse_args()
     output_dir = Path(args.output_dir)
     payload = load_note_payload(output_dir)
     email, password = load_credentials()
-    note_url = save_note_draft(email, password, payload, headless=args.headless)
-    note_url_path = write_note_url(output_dir, note_url, args.note_url_file)
-    print(f"note_draft_url={note_url}")
+    draft_url, published_url = save_and_publish_note(email, password, payload, headless=args.headless)
+    note_url_path = write_note_url(output_dir, draft_url, args.note_url_file)
+    note_published_url_path = write_note_published_url(output_dir, published_url)
+    print(f"note_draft_url={draft_url}")
     print(f"note_draft_url_file={note_url_path}")
+    print(f"note_published_url={published_url}")
+    print(f"note_published_url_file={note_published_url_path}")
 
 
 if __name__ == "__main__":
