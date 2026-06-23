@@ -34,6 +34,7 @@ jobs:
 
       - name: Save note draft in note.com
         env:
+          NOTE_STORAGE_STATE: ${{ secrets.NOTE_STORAGE_STATE }}
           NOTE_EMAIL: ${{ secrets.NOTE_EMAIL }}
           NOTE_PASSWORD: ${{ secrets.NOTE_PASSWORD }}
         run: python3 note_autosave.py
@@ -55,5 +56,4 @@ jobs:
             outputs/note_title.txt
             outputs/note_daily.html
             outputs/note_draft_url.txt
-            outputs/note_published_url.txt
           if-no-files-found: error

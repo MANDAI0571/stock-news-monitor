@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import base64
 import argparse
+import json
 import os
 import re
 from dataclasses import dataclass
+from html import unescape
 from pathlib import Path
 
 
@@ -12,10 +15,8 @@ DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "outputs"
 NOTE_TITLE_FILE = "note_title.txt"
 NOTE_HTML_FILE = "note_daily.html"
 NOTE_URL_FILE = "note_draft_url.txt"
-NOTE_PUBLISHED_URL_FILE = "note_published_url.txt"
 NOTE_NEW_URL = "https://note.com/notes/new"
 NOTE_DRAFT_URL_RE = re.compile(r"^https://note\.com/notes/([A-Za-z0-9_-]+)$")
-NOTE_PUBLISHED_URL_RE = re.compile(r"^https://note\.com/(?:[^/]+/)?n/[^/?#]+(?:[?#].*)?$")
 
 
 @dataclass(frozen=True)
@@ -61,22 +62,44 @@ def load_credentials() -> tuple[str, str]:
     return email, password
 
 
-def save_and_publish_note(
-    email: str,
-    password: str,
+def load_storage_state() -> dict | None:
+    encoded = os.environ.get("NOTE_STORAGE_STATE", "").strip()
+    if not encoded:
+        return None
+    try:
+        raw = base64.b64decode(encoded).decode("utf-8")
+        payload = json.loads(raw)
+    except Exception as exc:
+        raise RuntimeError("NOTE_STORAGE_STATE の復号に失敗しました") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError("NOTE_STORAGE_STATE の内容が不正です")
+    return payload
+
+
+def save_note_draft(
     payload: NoteDraftPayload,
     headless: bool = True,
-) -> tuple[str, str]:
+) -> str:
     from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
     from playwright.sync_api import sync_playwright
 
+    storage_state = load_storage_state()
+    credentials_available = bool(os.environ.get("NOTE_EMAIL", "").strip() and os.environ.get("NOTE_PASSWORD", "").strip())
+    if storage_state is None and not credentials_available:
+        raise RuntimeError("NOTE_STORAGE_STATE または NOTE_EMAIL / NOTE_PASSWORD が不足しています")
+
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=headless)
-        context = browser.new_context(viewport={"width": 1440, "height": 1800})
+        context_kwargs = {"viewport": {"width": 1440, "height": 1800}}
+        if storage_state is not None:
+            context_kwargs["storage_state"] = storage_state
+        context = browser.new_context(**context_kwargs)
+        context.grant_permissions(["clipboard-read", "clipboard-write"], origin="https://note.com")
         page = context.new_page()
         try:
             page.goto(NOTE_NEW_URL, wait_until="domcontentloaded", timeout=60_000)
             if "login" in page.url:
+                email, password = load_credentials()
                 _login(page, email, password)
                 page.goto(NOTE_NEW_URL, wait_until="domcontentloaded", timeout=60_000)
             _fill_title(page, payload.title)
@@ -90,23 +113,15 @@ def save_and_publish_note(
             draft_url = page.url
             if not is_saved_draft_url(draft_url):
                 raise RuntimeError(f"note draft URL を取得できませんでした: {draft_url}")
-
-            publish_url = _publish_note(page, context)
         finally:
             context.close()
             browser.close()
 
-    if not is_published_url(publish_url):
-        raise RuntimeError(f"note published URL を取得できませんでした: {publish_url}")
-    return draft_url, publish_url
+    return draft_url
 
 
 def is_saved_draft_url(url: str) -> bool:
     return bool(NOTE_DRAFT_URL_RE.fullmatch(url)) and url != NOTE_NEW_URL
-
-
-def is_published_url(url: str) -> bool:
-    return bool(NOTE_PUBLISHED_URL_RE.fullmatch(url)) and "/notes/new" not in url
 
 
 def _login(page, email: str, password: str) -> None:
@@ -142,32 +157,33 @@ def _fill_title(page, title: str) -> None:
 
 
 def _fill_body(page, body_html: str) -> None:
-    selectors = [
-        'div[contenteditable="true"]',
-        '[role="textbox"]',
-        "textarea",
-    ]
-    for selector in selectors:
-        locator = page.locator(selector)
-        if locator.count() == 0:
-            continue
-        element = locator.first
-        tag_name = element.evaluate("(el) => el.tagName.toLowerCase()")
-        if tag_name == "textarea":
-            element.fill(body_html)
-            return
-        element.click()
-        element.evaluate(
-            """(el, html) => {
-                el.focus();
-                el.innerHTML = html;
-                el.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertFromPaste" }));
-                el.dispatchEvent(new Event("change", { bubbles: true }));
-            }""",
-            body_html,
-        )
-        return
-    raise RuntimeError("本文入力欄が見つかりません")
+    editor = _find_body_editor(page)
+    if editor is None:
+        raise RuntimeError("本文入力欄が見つかりません")
+
+    plain_text = _html_to_plain_text(body_html)
+    page.evaluate(
+        """async (html, text) => {
+            try {
+                await navigator.clipboard.write([
+                    new ClipboardItem({
+                        "text/html": new Blob([html], { type: "text/html" }),
+                        "text/plain": new Blob([text], { type: "text/plain" }),
+                    }),
+                ]);
+            } catch (error) {
+                await navigator.clipboard.writeText(text);
+            }
+        }""",
+        body_html,
+        plain_text,
+    )
+    editor.click()
+    _select_all(page)
+    page.keyboard.press("Control+V")
+    page.wait_for_timeout(1500)
+    if _editor_text_length(editor) < 80:
+        raise RuntimeError("本文入力後の長さが不足しています")
 
 
 def _try_save(page) -> None:
@@ -180,29 +196,44 @@ def _try_save(page) -> None:
     page.keyboard.press("Control+S")
 
 
-def _publish_note(page, context) -> str:
-    before_pages = {id(p): p for p in context.pages}
-    _click_first(page, [
-        'button:has-text("公開する")',
-        'button:has-text("投稿する")',
-        'button:has-text("公開")',
-        'button:has-text("Publish")',
-        'button:has-text("記事を公開")',
-    ])
-    page.wait_for_timeout(3000)
-    candidates = list(context.pages)
-    for new_page in candidates:
-        if id(new_page) in before_pages:
-            continue
+def _find_body_editor(page):
+    locator = page.locator('[contenteditable="true"]')
+    for idx in range(locator.count()):
+        candidate = locator.nth(idx)
         try:
-            new_page.wait_for_load_state("domcontentloaded", timeout=5000)
+            box = candidate.bounding_box()
         except Exception:
-            pass
-        if is_published_url(new_page.url):
-            return new_page.url
-    if is_published_url(page.url):
-        return page.url
-    return page.url
+            box = None
+        if box and box.get("height", 0) >= 120:
+            return candidate
+    if locator.count() > 0:
+        return locator.last
+    return None
+
+
+def _select_all(page) -> None:
+    if os.name == "posix":
+        page.keyboard.press("Meta+A")
+    else:
+        page.keyboard.press("Control+A")
+
+
+def _editor_text_length(editor) -> int:
+    try:
+        value = editor.evaluate("(el) => (el.innerText || el.textContent || '').trim().length")
+    except Exception:
+        return 0
+    return int(value or 0)
+
+
+def _html_to_plain_text(body_html: str) -> str:
+    text = re.sub(r"<br\s*/?>", "\n", body_html, flags=re.IGNORECASE)
+    text = re.sub(r"</(p|div|h1|h2|h3|li|tr|table|ul|ol)>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = unescape(text)
+    text = re.sub(r"\s+\n", "\n", text)
+    text = re.sub(r"[ \t]+", " ", text)
+    return text.strip()
 
 
 def _fill_first(page, selectors: list[str], value: str) -> bool:
@@ -238,24 +269,18 @@ def write_note_url(output_dir: Path, note_url: str, note_url_file: str) -> Path:
     return path
 
 
-def write_note_published_url(output_dir: Path, note_url: str) -> Path:
-    path = output_dir / NOTE_PUBLISHED_URL_FILE
-    path.write_text(note_url.strip() + "\n", encoding="utf-8")
-    return path
-
-
 def main() -> None:
     args = parse_args()
     output_dir = Path(args.output_dir)
     payload = load_note_payload(output_dir)
-    email, password = load_credentials()
-    draft_url, published_url = save_and_publish_note(email, password, payload, headless=args.headless)
+    draft_url = save_note_draft(payload, headless=args.headless)
     note_url_path = write_note_url(output_dir, draft_url, args.note_url_file)
-    note_published_url_path = write_note_published_url(output_dir, published_url)
     print(f"note_draft_url={draft_url}")
     print(f"note_draft_url_file={note_url_path}")
-    print(f"note_published_url={published_url}")
-    print(f"note_published_url_file={note_published_url_path}")
+    if os.environ.get("NOTE_STORAGE_STATE", "").strip():
+        print("note_auth=storage_state")
+    else:
+        print("note_auth=credentials")
 
 
 if __name__ == "__main__":

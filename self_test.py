@@ -10,7 +10,7 @@ from market_regime import Regime, fetch_regime
 from paper_portfolio_discipline import build_discipline_portfolio
 from pattern_learn import build_pattern_summary
 from daily_note_mail import build_mail_body
-from note_autosave import extract_body_fragment, is_published_url, is_saved_draft_url
+from note_autosave import extract_body_fragment, is_saved_draft_url, load_storage_state
 from scanner.indicators import calculate_indicators
 from scanner.scoring import meets_s_technical_gate, meets_strict_s_gate, score_stock
 from trade_journal import load_journal, log_entry, log_exit
@@ -167,12 +167,26 @@ def _test_journal_and_pattern_learning() -> None:
 
 
 def _test_note_autosave_and_mail_body() -> None:
+    import base64
+    import json
+    import os
+
     html = "<html><head><title>x</title></head><body><h1>タイトル</h1><p>本文</p></body></html>"
     assert extract_body_fragment(html) == "<h1>タイトル</h1><p>本文</p>"
     assert is_saved_draft_url("https://note.com/notes/abc123")
     assert not is_saved_draft_url("https://note.com/notes/new")
-    assert is_published_url("https://note.com/someone/n/abc123")
-    assert not is_published_url("https://note.com/notes/new")
+
+    encoded = base64.b64encode(json.dumps({"cookies": [], "origins": []}).encode("utf-8")).decode("ascii")
+    old = os.environ.get("NOTE_STORAGE_STATE")
+    try:
+        os.environ["NOTE_STORAGE_STATE"] = encoded
+        state = load_storage_state()
+        assert state is not None and state["cookies"] == [] and state["origins"] == []
+    finally:
+        if old is None:
+            os.environ.pop("NOTE_STORAGE_STATE", None)
+        else:
+            os.environ["NOTE_STORAGE_STATE"] = old
 
     screening = pd.DataFrame(
         [
@@ -194,8 +208,8 @@ def _test_note_autosave_and_mail_body() -> None:
             {"slot": 2, "action": "CASH", "code": "", "name": "", "rank": "", "score": "", "cash_reason": "不足"},
         ]
     )
-    body = build_mail_body(screening, discipline, "NORMAL", "https://note.com/someone/n/abc")
-    assert "Note公開URL: https://note.com/someone/n/abc" in body
+    body = build_mail_body(screening, discipline, "NORMAL", "https://note.com/notes/abc", "Note下書きURL")
+    assert "Note下書きURL: https://note.com/notes/abc" in body
     assert "note_daily.md" in body
 
 
