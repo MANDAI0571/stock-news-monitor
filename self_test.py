@@ -14,6 +14,7 @@ from note_autosave import extract_body_fragment, is_saved_draft_url, load_storag
 from scanner.highs import build_high_sections_markdown, classify_high_profile
 from scanner.indicators import calculate_indicators
 from scanner.scoring import meets_s_technical_gate, meets_strict_s_gate, score_stock
+from scanner.universe import JPX_CACHE_PATH, UniverseConfig, load_jpx_listed, normalize_jpx_listed
 from trade_journal import load_journal, log_entry, log_exit
 
 
@@ -21,6 +22,7 @@ def main() -> None:
     _test_indicators_and_scoring()
     _test_discipline_normal_and_stop()
     _test_market_regime_local_fallback()
+    _test_jpx_universe_cache()
     _test_gmail_body()
     _test_note_autosave_and_mail_body()
     _test_high_classification()
@@ -89,6 +91,47 @@ def _test_market_regime_local_fallback() -> None:
         regime = fetch_regime(url="", fallback_path=path)
         assert regime.value == "NORMAL"
         assert regime.source == str(path)
+
+
+def _test_jpx_universe_cache() -> None:
+    from tempfile import TemporaryDirectory
+    from scanner import universe as universe_module
+
+    source = pd.DataFrame(
+        [
+            {"コード": "1111", "銘柄名": "A", "市場・商品区分": "プライム（内国株式）", "33業種区分": "電気機器"},
+        ]
+    )
+    normalized = normalize_jpx_listed(source, ("prime",))
+    assert len(normalized) == 1
+
+    with TemporaryDirectory() as tmp:
+        old_cache_dir = universe_module.CACHE_DIR
+        old_cache_path = universe_module.JPX_CACHE_PATH
+        old_meta_path = universe_module.JPX_CACHE_META_PATH
+        old_urls = universe_module.JPX_LISTED_URLS
+        old_get = universe_module.requests.get
+        try:
+            universe_module.CACHE_DIR = Path(tmp)
+            universe_module.JPX_CACHE_PATH = Path(tmp) / "jpx_listed.csv"
+            universe_module.JPX_CACHE_META_PATH = Path(tmp) / "jpx_listed.meta.json"
+            universe_module._save_jpx_cache(normalized, "https://example.com/jpx.xls")
+            cached = universe_module._load_jpx_cache()
+            assert cached is not None and len(cached) == 1
+
+            def _fail_get(*args, **kwargs):
+                raise RuntimeError("network unavailable")
+
+            universe_module.requests.get = _fail_get
+            loaded = universe_module.load_jpx_listed(universe_module.UniverseConfig(markets=("prime",)))
+            assert len(loaded) == 1
+            assert loaded.iloc[0]["ticker"] == "1111.T"
+        finally:
+            universe_module.CACHE_DIR = old_cache_dir
+            universe_module.JPX_CACHE_PATH = old_cache_path
+            universe_module.JPX_CACHE_META_PATH = old_meta_path
+            universe_module.JPX_LISTED_URLS = old_urls
+            universe_module.requests.get = old_get
 
 
 def _test_gmail_body() -> None:

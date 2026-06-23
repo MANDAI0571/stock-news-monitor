@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
+import sys
 from dataclasses import dataclass
 from io import BytesIO
+from pathlib import Path
 
 import pandas as pd
 import requests
@@ -18,6 +21,10 @@ MARKET_LABELS = {
     "growth": "グロース",
 }
 
+CACHE_DIR = Path(__file__).resolve().parents[1] / "cache"
+JPX_CACHE_PATH = CACHE_DIR / "jpx_listed.csv"
+JPX_CACHE_META_PATH = CACHE_DIR / "jpx_listed.meta.json"
+
 
 @dataclass(frozen=True)
 class UniverseConfig:
@@ -27,9 +34,24 @@ class UniverseConfig:
 
 def load_jpx_listed(config: UniverseConfig | None = None) -> pd.DataFrame:
     config = config or UniverseConfig()
-    raw = _download_jpx_excel(config.timeout)
-    source = pd.read_excel(BytesIO(raw), sheet_name=0)
-    return normalize_jpx_listed(source, config.markets)
+    try:
+        raw, source_url = _download_jpx_excel(config.timeout)
+        source = pd.read_excel(BytesIO(raw), sheet_name=0)
+        full = normalize_jpx_listed(source, ("prime", "standard", "growth"))
+        _save_jpx_cache(full, source_url)
+        return _filter_markets(full, config.markets)
+    except Exception as exc:
+        cached = _load_jpx_cache()
+        if cached is not None:
+            print(
+                f"[JPX] download failed: {exc}. using cache: {JPX_CACHE_PATH}",
+                file=sys.stderr,
+            )
+            return _filter_markets(cached, config.markets)
+        print(f"[JPX] download failed and cache missing: {exc}", file=sys.stderr)
+        raise RuntimeError(
+            "JPX銘柄一覧を取得できません。正常なキャッシュが存在しないため中断します。"
+        ) from exc
 
 
 def normalize_jpx_listed(source: pd.DataFrame, markets: tuple[str, ...]) -> pd.DataFrame:
@@ -74,18 +96,51 @@ def normalize_jpx_listed(source: pd.DataFrame, markets: tuple[str, ...]) -> pd.D
     return pd.DataFrame(rows).drop_duplicates("ticker").reset_index(drop=True)
 
 
-def _download_jpx_excel(timeout: int) -> bytes:
+def _download_jpx_excel(timeout: int) -> tuple[bytes, str]:
     errors: list[str] = []
     for url in JPX_LISTED_URLS:
         try:
             response = requests.get(url, timeout=timeout)
             response.raise_for_status()
             if len(response.content) > 1000:
-                return response.content
+                return response.content, url
             errors.append(f"{url}: response too small")
         except requests.RequestException as exc:
             errors.append(f"{url}: {exc}")
     raise RuntimeError("Failed to download JPX listed company file. " + " / ".join(errors))
+
+
+def _save_jpx_cache(df: pd.DataFrame, source_url: str) -> None:
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    df.to_csv(JPX_CACHE_PATH, index=False, encoding="utf-8-sig")
+    meta = {
+        "source_url": source_url,
+        "rows": int(len(df)),
+        "columns": list(df.columns),
+    }
+    JPX_CACHE_META_PATH.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _load_jpx_cache() -> pd.DataFrame | None:
+    if not JPX_CACHE_PATH.exists():
+        return None
+    try:
+        cached = pd.read_csv(JPX_CACHE_PATH, dtype={"code": str, "ticker": str, "name": str, "market": str, "sector": str})
+    except Exception as exc:
+        print(f"[JPX] cache read failed: {exc}", file=sys.stderr)
+        return None
+    required = {"ticker", "code", "name", "market", "sector"}
+    if not required.issubset(cached.columns):
+        print(f"[JPX] cache format invalid: {JPX_CACHE_PATH}", file=sys.stderr)
+        return None
+    return cached[list(["ticker", "code", "name", "market", "sector"])].drop_duplicates("ticker").reset_index(drop=True)
+
+
+def _filter_markets(df: pd.DataFrame, markets: tuple[str, ...]) -> pd.DataFrame:
+    if df.empty:
+        return df
+    allowed = {f"東証{MARKET_LABELS[m]}" for m in markets}
+    return df[df["market"].isin(allowed)].reset_index(drop=True)
 
 
 def _find_col(df: pd.DataFrame, *keywords: str) -> str | None:
