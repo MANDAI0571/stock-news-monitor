@@ -203,6 +203,10 @@ def build_note_body(screening: pd.DataFrame, discipline: pd.DataFrame, backtest:
         "",
     ])
     lines.extend(summarize_discipline(discipline))
+    high_lines = build_high_sections_markdown(screening, max_rows=5)
+    if high_lines:
+        lines.extend([""])
+        lines.extend(high_lines)
     lines.extend([
         "",
         "## 買い候補TOP10",
@@ -236,11 +240,6 @@ def build_note_body(screening: pd.DataFrame, discipline: pd.DataFrame, backtest:
     else:
         for _, row in top10.iterrows():
             lines.append(f"- {safe_text(row.get('code'))} {safe_text(row.get('name'))}: {safe_text(row.get('reason'))}")
-
-    high_lines = build_high_sections_markdown(screening, max_rows=5)
-    if high_lines:
-        lines.extend([""])
-        lines.extend(high_lines)
 
     lines.extend([
         "",

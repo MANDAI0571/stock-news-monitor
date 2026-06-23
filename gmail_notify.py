@@ -64,6 +64,10 @@ def build_candidate_body(
     candidates["score"] = pd.to_numeric(candidates.get("score", 0), errors="coerce").fillna(0)
     candidates = candidates.sort_values(["_rank_order", "score"], ascending=[True, False])
 
+    high_lines = build_high_sections_markdown(candidates, max_rows=5)
+    if high_lines:
+        lines.extend(high_lines)
+
     total = len(candidates)
     rank_counts = {rank: int(candidates["rank"].eq(rank).sum()) for rank in ["S", "A", "B"]}
     shown_limit = min(max_rows, sum(rank_limits.values()))
@@ -97,10 +101,6 @@ def build_candidate_body(
     if total > shown:
         lines.append(f"ほか {total - shown}件はCSVを確認してください。")
         lines.append("")
-
-    high_lines = build_high_sections_markdown(candidates, max_rows=5)
-    if high_lines:
-        lines.extend(high_lines)
 
     lines.append(DISCLAIMER)
     return "\n".join(lines)
