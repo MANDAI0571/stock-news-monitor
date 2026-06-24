@@ -27,6 +27,8 @@ def run_screening(
     strict: bool = False,
 ) -> pd.DataFrame:
     universe = _load_universe(markets, output_dir)
+    if not universe.empty:
+        universe = universe[~universe.apply(lambda row: _is_rank_excluded_security(str(row.get("name", "")), str(row.get("market", "")), str(row.get("sector", ""))), axis=1)].reset_index(drop=True)
     if limit:
         universe = universe.head(limit)
 
@@ -119,8 +121,9 @@ def run_screening(
 
     rank_order = {"S": 0, "A": 1, "B": 2, "見送り": 3}
     result["_rank_order"] = result["rank"].map(rank_order).fillna(9)
-    result = result.sort_values(["_rank_order", "score", "dist_52w_high_pct"], ascending=[True, False, True])
-    result = result.drop(columns=["_rank_order"]).reset_index(drop=True)
+    result["_high_priority"] = result.apply(_high_priority, axis=1)
+    result = result.sort_values(["_high_priority", "_rank_order", "score", "dist_52w_high_pct"], ascending=[True, True, False, True])
+    result = result.drop(columns=["_rank_order", "_high_priority"]).reset_index(drop=True)
 
     # 毎日の買い候補（S/A/B）は最大 max_candidates 件に絞る（見送りは分析用に保持）。
     is_candidate = result["rank"].astype(str).str.upper().isin(["S", "A", "B"])
@@ -131,6 +134,35 @@ def run_screening(
     if include_rejected:
         return pd.concat([candidates, rejected], ignore_index=True)
     return candidates.reset_index(drop=True)
+
+
+
+def _is_rank_excluded_security(name: str, market: str = "", sector: str = "") -> bool:
+    text = f"{name} {market} {sector}"
+    excluded_words = (
+        "ETF",
+        "ETN",
+        "REIT",
+        "リート",
+        "投信",
+        "投資信託",
+        "上場投信",
+        "投資法人",
+        "指数連動",
+        "指数",
+        "インデックス",
+        "連動型",
+    )
+    return any(word in text for word in excluded_words)
+
+
+def _high_priority(row: pd.Series) -> int:
+    high_type = str(row.get("high_type", ""))
+    if high_type == "SWING_HIGH_BREAK":
+        return 0
+    if high_type == "52W_NEW_HIGH":
+        return 1
+    return 2
 
 
 def _load_universe(markets: tuple[str, ...], output_dir: str) -> pd.DataFrame:

@@ -228,7 +228,7 @@ def _test_swing_high_break_9256_style() -> None:
         ]
     )
     body = build_candidate_body(mail_df, "NORMAL")
-    assert "## 直近スイング高値ブレイク" in body
+    assert "## 【直近高値ブレイク】" in body
     assert "9256" in body
     assert "3520" in body
 
@@ -330,7 +330,8 @@ def _test_high_classification() -> None:
         ]
     )
     lines = build_high_sections_markdown(screening, max_rows=5)
-    assert any("52週新高値" in line for line in lines)
+    assert any("【52週高値更新】" in line for line in lines)
+    assert any("【その他】" in line for line in lines)
     assert any("直近高値接近" in line for line in lines)
 
 

@@ -198,20 +198,22 @@ def build_high_sections_markdown(screening: pd.DataFrame, max_rows: int = 5) -> 
     rank_order = {"S": 0, "A": 1, "B": 2}
     candidates["_rank_order"] = candidates["rank"].map(rank_order).fillna(9)
 
+    sections = [
+        ("【直近高値ブレイク】", _filter_swing_email_candidates(candidates[candidates["high_type"].eq("SWING_HIGH_BREAK")].copy()), "swing"),
+        ("【52週高値更新】", candidates[candidates["high_type"].eq("52W_NEW_HIGH")].copy(), "standard"),
+        ("【その他】", candidates[~candidates["high_type"].isin(["SWING_HIGH_BREAK", "52W_NEW_HIGH"])].copy(), "standard"),
+    ]
+
     lines: list[str] = []
-    for high_type in HIGH_TYPE_ORDER:
-        group = candidates[candidates["high_type"].eq(high_type)].copy()
-        if high_type == "SWING_HIGH_BREAK":
-            group = _filter_swing_email_candidates(group)
-        lines.append(f"## {HIGH_LABELS[high_type]}")
+    for title, group, style in sections:
+        lines.append(f"## {title}")
         lines.append("")
         if group.empty:
             lines.append("- 該当なし")
             lines.append("")
             continue
-
         group = group.sort_values(["_rank_order", "score", "dist_to_high_pct", "code"], ascending=[True, False, True, True])
-        if high_type == "SWING_HIGH_BREAK":
+        if style == "swing":
             lines.append("| コード | 銘柄名 | ランク | スコア | swing高値 | swing日 | 上抜け率 | 出来高比 | 売買代金 | 理由 |")
             lines.append("|---|---|---:|---:|---:|---|---:|---:|---:|---|")
             for _, row in group.head(max_rows).iterrows():
@@ -229,23 +231,22 @@ def build_high_sections_markdown(screening: pd.DataFrame, max_rows: int = 5) -> 
                         reason=_text(row, "reason"),
                     )
                 )
-            lines.append("")
-            continue
-        lines.append("| コード | 銘柄名 | ランク | スコア | 高値種別 | 高値日 | 高値まで | 理由 |")
-        lines.append("|---|---|---:|---:|---|---|---:|---|")
-        for _, row in group.head(max_rows).iterrows():
-            lines.append(
-                "| {code} | {name} | {rank} | {score} | {high_label} | {high_date} | {dist} | {reason} |".format(
-                    code=_text(row, "code"),
-                    name=_text(row, "name"),
-                    rank=_text(row, "rank"),
-                    score=_text(row, "score"),
-                    high_label=_text(row, "high_label"),
-                    high_date=_text(row, "high_date"),
-                    dist=_text(row, "dist_to_high_pct"),
-                    reason=_text(row, "reason"),
+        else:
+            lines.append("| コード | 銘柄名 | ランク | スコア | 高値種別 | 高値日 | 高値まで | 理由 |")
+            lines.append("|---|---|---:|---:|---|---|---:|---|")
+            for _, row in group.head(max_rows).iterrows():
+                lines.append(
+                    "| {code} | {name} | {rank} | {score} | {high_label} | {high_date} | {dist} | {reason} |".format(
+                        code=_text(row, "code"),
+                        name=_text(row, "name"),
+                        rank=_text(row, "rank"),
+                        score=_text(row, "score"),
+                        high_label=_text(row, "high_label"),
+                        high_date=_text(row, "high_date"),
+                        dist=_text(row, "dist_to_high_pct"),
+                        reason=_text(row, "reason"),
+                    )
                 )
-            )
         lines.append("")
 
     return lines
