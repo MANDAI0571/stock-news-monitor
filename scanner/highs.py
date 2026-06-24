@@ -6,6 +6,7 @@ import pandas as pd
 
 
 HIGH_TYPE_ORDER = (
+    "SWING_HIGH_BREAK",
     "52W_NEW_HIGH",
     "52W_NEAR_HIGH",
     "RECENT_NEW_HIGH",
@@ -13,6 +14,7 @@ HIGH_TYPE_ORDER = (
 )
 
 HIGH_LABELS = {
+    "SWING_HIGH_BREAK": "直近スイング高値ブレイク",
     "52W_NEW_HIGH": "52週新高値",
     "52W_NEAR_HIGH": "52週高値接近",
     "RECENT_NEW_HIGH": "直近高値更新",
@@ -33,17 +35,35 @@ class HighProfile:
 
 def classify_high_profile(history: pd.DataFrame) -> dict[str, object]:
     if history.empty or "Close" not in history.columns:
-        return _as_dict(HighProfile())
+        return _as_dict(HighProfile()) | detect_swing_high_break(history)
 
     close = history["Close"].astype(float)
+    swing = detect_swing_high_break(history)
     if len(close) < 60:
-        return _as_dict(HighProfile())
+        base = _as_dict(HighProfile())
+        if swing.get("swing_high_break"):
+            base |= _swing_as_high_profile(swing)
+        return base | swing
 
     recent = window_high_profile(history, 60)
     wide = window_high_profile(history, 252) if len(close) >= 252 else None
 
     chosen = _choose_profile(wide, recent)
-    return _as_dict(chosen or HighProfile())
+    base = _as_dict(chosen or HighProfile())
+    if swing.get("swing_high_break"):
+        base |= _swing_as_high_profile(swing)
+    return base | swing
+
+
+def _swing_as_high_profile(swing: dict[str, object]) -> dict[str, object]:
+    return {
+        "high_type": "SWING_HIGH_BREAK",
+        "high_label": HIGH_LABELS["SWING_HIGH_BREAK"],
+        "high_window_days": 30,
+        "high_price": swing.get("swing_high_price", ""),
+        "high_date": swing.get("swing_high_date", ""),
+        "dist_to_high_pct": swing.get("swing_high_break_pct", ""),
+    }
 
 
 def _choose_profile(wide: HighProfile | None, recent: HighProfile | None) -> HighProfile | None:
@@ -100,6 +120,63 @@ def _as_dict(profile: HighProfile) -> dict[str, object]:
     }
 
 
+
+def detect_swing_high_break(history: pd.DataFrame, min_lookback: int = 5, max_lookback: int = 30) -> dict[str, object]:
+    """Detect break above a clear recent swing high from 5-30 sessions ago.
+
+    Latest bar is the trigger bar. The swing high is selected from bars 5-30
+    sessions before the latest bar, using clear local highs first. Today's high
+    or close/current price breaking above that swing high triggers detection.
+    """
+    empty = {
+        "swing_high_price": "",
+        "swing_high_date": "",
+        "swing_high_break_pct": "",
+        "swing_high_break": False,
+        "swing_high_label": "",
+    }
+    if history.empty or "High" not in history.columns or len(history) < min_lookback + 1:
+        return empty
+
+    high = history["High"].astype(float)
+    close = history["Close"].astype(float) if "Close" in history.columns else high
+    latest_pos = len(history) - 1
+    start = max(0, latest_pos - max_lookback)
+    end = latest_pos - min_lookback + 1
+    if end <= start:
+        return empty
+
+    candidates: list[tuple[int, float]] = []
+    for pos in range(start, end):
+        if _is_clear_local_high(high, pos):
+            candidates.append((pos, float(high.iloc[pos])))
+    if not candidates:
+        return empty
+    pos, swing_price = max(candidates, key=lambda item: (item[1], item[0]))
+
+    trigger_price = max(float(high.iloc[-1]), float(close.iloc[-1]))
+    break_pct = (trigger_price / swing_price - 1.0) * 100 if swing_price > 0 else 0.0
+    swing_break = bool(swing_price > 0 and trigger_price > swing_price)
+    return {
+        "swing_high_price": round(swing_price, 1),
+        "swing_high_date": pd.Timestamp(history.index[pos]).date().isoformat(),
+        "swing_high_break_pct": round(break_pct, 2),
+        "swing_high_break": swing_break,
+        "swing_high_label": HIGH_LABELS["SWING_HIGH_BREAK"] if swing_break else "",
+    }
+
+
+def _is_clear_local_high(high: pd.Series, pos: int, left: int = 2, right: int = 2) -> bool:
+    target = float(high.iloc[pos])
+    start = max(0, pos - left)
+    end = min(len(high), pos + right + 1)
+    for other in range(start, end):
+        if other == pos:
+            continue
+        if float(high.iloc[other]) >= target:
+            return False
+    return True
+
 def build_high_sections_markdown(screening: pd.DataFrame, max_rows: int = 5) -> list[str]:
     if screening.empty or "rank" not in screening.columns:
         return []
@@ -124,6 +201,8 @@ def build_high_sections_markdown(screening: pd.DataFrame, max_rows: int = 5) -> 
     lines: list[str] = []
     for high_type in HIGH_TYPE_ORDER:
         group = candidates[candidates["high_type"].eq(high_type)].copy()
+        if high_type == "SWING_HIGH_BREAK":
+            group = _filter_swing_email_candidates(group)
         lines.append(f"## {HIGH_LABELS[high_type]}")
         lines.append("")
         if group.empty:
@@ -132,6 +211,26 @@ def build_high_sections_markdown(screening: pd.DataFrame, max_rows: int = 5) -> 
             continue
 
         group = group.sort_values(["_rank_order", "score", "dist_to_high_pct", "code"], ascending=[True, False, True, True])
+        if high_type == "SWING_HIGH_BREAK":
+            lines.append("| コード | 銘柄名 | ランク | スコア | swing高値 | swing日 | 上抜け率 | 出来高比 | 売買代金 | 理由 |")
+            lines.append("|---|---|---:|---:|---:|---|---:|---:|---:|---|")
+            for _, row in group.head(max_rows).iterrows():
+                lines.append(
+                    "| {code} | {name} | {rank} | {score} | {swing_price} | {swing_date} | {break_pct} | {vol} | {turnover} | {reason} |".format(
+                        code=_text(row, "code"),
+                        name=_text(row, "name"),
+                        rank=_text(row, "rank"),
+                        score=_text(row, "score"),
+                        swing_price=_text(row, "swing_high_price"),
+                        swing_date=_text(row, "swing_high_date"),
+                        break_pct=_text(row, "swing_high_break_pct"),
+                        vol=_text(row, "volume_ratio_5d_20d"),
+                        turnover=_text(row, "turnover_20d"),
+                        reason=_text(row, "reason"),
+                    )
+                )
+            lines.append("")
+            continue
         lines.append("| コード | 銘柄名 | ランク | スコア | 高値種別 | 高値日 | 高値まで | 理由 |")
         lines.append("|---|---|---:|---:|---|---|---:|---|")
         for _, row in group.head(max_rows).iterrows():
@@ -150,6 +249,26 @@ def build_high_sections_markdown(screening: pd.DataFrame, max_rows: int = 5) -> 
         lines.append("")
 
     return lines
+
+
+def _filter_swing_email_candidates(group: pd.DataFrame) -> pd.DataFrame:
+    if group.empty:
+        return group
+    required = ["swing_high_break", "volume_ratio_5d_20d", "current_price", "ma25", "turnover_20d"]
+    for column in required:
+        if column not in group.columns:
+            return group.iloc[0:0]
+    filtered = group.copy()
+    sector = filtered["sector"].astype(str) if "sector" in filtered.columns else pd.Series("", index=filtered.index)
+    name = filtered["name"].astype(str) if "name" in filtered.columns else pd.Series("", index=filtered.index)
+    etf_reit = sector.str.contains("ETF|REIT|リート|不動産投資", case=False, regex=True) | name.str.contains("ETF|REIT|リート|上場投信|投信", case=False, regex=True)
+    return filtered[
+        (~etf_reit)
+        & (filtered["swing_high_break"].astype(bool))
+        & (pd.to_numeric(filtered["volume_ratio_5d_20d"], errors="coerce").fillna(0) >= 1.5)
+        & (pd.to_numeric(filtered["current_price"], errors="coerce") > pd.to_numeric(filtered["ma25"], errors="coerce"))
+        & (pd.to_numeric(filtered["turnover_20d"], errors="coerce").fillna(0) >= 100_000_000)
+    ]
 
 
 def _text(row: pd.Series, key: str) -> str:

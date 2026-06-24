@@ -11,7 +11,7 @@ from paper_portfolio_discipline import build_discipline_portfolio
 from pattern_learn import build_pattern_summary
 from daily_note_mail import build_mail_body
 from note_autosave import extract_body_fragment, is_saved_draft_url, load_storage_state
-from scanner.highs import build_high_sections_markdown, classify_high_profile
+from scanner.highs import build_high_sections_markdown, classify_high_profile, detect_swing_high_break
 from scanner.indicators import calculate_indicators
 from scanner.scoring import meets_s_technical_gate, meets_strict_s_gate, score_stock
 from scanner.universe import JPX_CACHE_PATH, UniverseConfig, load_jpx_listed, normalize_jpx_listed
@@ -26,6 +26,7 @@ def main() -> None:
     _test_gmail_body()
     _test_note_autosave_and_mail_body()
     _test_high_classification()
+    _test_swing_high_break_9256_style()
     _test_journal_and_pattern_learning()
     print("self-test: OK")
 
@@ -180,6 +181,56 @@ def _test_gmail_body() -> None:
     assert "■ Sランク（6件中 最大5件表示）" in limited
     assert "■ Aランク（12件中 最大10件表示）" in limited
     assert "■ Bランク（12件中 最大10件表示）" in limited
+
+
+def _test_swing_high_break_9256_style() -> None:
+    dates = pd.bdate_range(end="2026-06-23", periods=260)
+    close = pd.Series(range(3000, 3260), index=dates, dtype=float)
+    high = close + 20
+    low = close - 20
+    volume = pd.Series(100_000, index=dates, dtype=float)
+
+    high.loc["2026-06-10"] = 3520
+    close.loc["2026-06-10"] = 3340
+    high.loc["2026-06-11":"2026-06-19"] = [3435, 3435, 3365, 2714, 1778, 2040, 2540]
+    close.loc["2026-06-11":"2026-06-19"] = [3340, 3340, 2640, 2140, 1640, 2040, 2540]
+    high.iloc[-1] = 3560
+    close.iloc[-1] = 3540
+    volume.iloc[-1] = 300_000
+
+    history = pd.DataFrame({"Open": close, "High": high, "Low": low, "Close": close, "Volume": volume})
+    swing = detect_swing_high_break(history)
+    assert swing["swing_high_price"] == 3520
+    assert swing["swing_high_date"] == "2026-06-10"
+    assert swing["swing_high_break"] is True
+
+    profile = classify_high_profile(history)
+    assert profile["high_type"] == "SWING_HIGH_BREAK"
+    assert profile["swing_high_label"] == "直近スイング高値ブレイク"
+
+    mail_df = pd.DataFrame(
+        [
+            {
+                "code": "9256",
+                "name": "サクシード",
+                "sector": "サービス業",
+                "rank": "S",
+                "score": 90,
+                "current_price": 3540,
+                "ma25": 3000,
+                "turnover_20d": 200_000_000,
+                "volume_ratio_5d_20d": 1.8,
+                "dist_52w_high_pct": 0,
+                "lot_value_100": 354000,
+                "reason": "テスト",
+                **profile,
+            }
+        ]
+    )
+    body = build_candidate_body(mail_df, "NORMAL")
+    assert "## 直近スイング高値ブレイク" in body
+    assert "9256" in body
+    assert "3520" in body
 
 
 def _test_journal_and_pattern_learning() -> None:

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from scanner.highs import classify_high_profile, window_high_profile
+from scanner.highs import classify_high_profile, detect_swing_high_break, window_high_profile
 from scanner.indicators import calculate_indicators, passes_base_filters
 from scanner.patterns import detect_cup_with_handle
 from scanner.prices import fetch_next_earnings_date, fetch_price_history, timestamped_csv_path
@@ -96,6 +96,11 @@ def analyze_code(code: str, lookup: dict[str, dict[str, object]]) -> dict[str, o
             "high_price": 0,
             "high_date": "",
             "dist_to_high_pct": 999,
+            "swing_high_price": "",
+            "swing_high_date": "",
+            "swing_high_break_pct": "",
+            "swing_high_break": False,
+            "swing_high_label": "",
             "volume_ratio_5d_20d": "",
             "volume_ok": False,
             "ma25": "",

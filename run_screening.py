@@ -107,6 +107,16 @@ def run_screening(
         result["dist_to_high_pct"] = 999
     result["dist_to_high_pct"] = pd.to_numeric(result["dist_to_high_pct"], errors="coerce").fillna(999)
 
+    for column, default in {
+        "swing_high_price": "",
+        "swing_high_date": "",
+        "swing_high_break_pct": "",
+        "swing_high_break": False,
+        "swing_high_label": "",
+    }.items():
+        if column not in result.columns:
+            result[column] = default
+
     rank_order = {"S": 0, "A": 1, "B": 2, "見送り": 3}
     result["_rank_order"] = result["rank"].map(rank_order).fillna(9)
     result = result.sort_values(["_rank_order", "score", "dist_52w_high_pct"], ascending=[True, False, True])
@@ -218,6 +228,11 @@ def main() -> None:
         "rank",
         "volume_ratio_5d_20d",
         "dist_52w_high_pct",
+        "swing_high_price",
+        "swing_high_date",
+        "swing_high_break_pct",
+        "swing_high_break",
+        "swing_high_label",
         "high_type",
         "high_label",
         "high_window_days",
