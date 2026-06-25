@@ -19,7 +19,6 @@ def parse_args() -> argparse.Namespace:
         choices=["prime", "standard", "growth"],
         default=["prime", "standard", "growth"],
     )
-    parser.add_argument("--limit", type=int, default=None, help="動作確認用。launchdでは指定しない")
     parser.add_argument("--output-dir", default=str(PROJECT_ROOT / "outputs"))
     parser.add_argument("--include-rejected", action="store_true")
     parser.add_argument("--send-gmail", action="store_true", help="GMAIL_USER/GMAIL_APP_PASSWORD/MAIL_TOでGmail通知を送る")
@@ -34,7 +33,7 @@ def main() -> None:
     regime = fetch_regime()
     screening = run_screening(
         markets=tuple(args.markets),
-        limit=args.limit,
+        limit=None,
         output_dir=args.output_dir,
         include_rejected=args.include_rejected,
         max_candidates=None if args.max_candidates == 0 else args.max_candidates,

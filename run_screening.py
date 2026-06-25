@@ -30,7 +30,10 @@ def run_screening(
     if not universe.empty:
         universe = universe[~universe.apply(lambda row: _is_rank_excluded_security(str(row.get("name", "")), str(row.get("market", "")), str(row.get("sector", ""))), axis=1)].reset_index(drop=True)
     if limit:
+        print(f"WARNING: run_screening limit={limit} is for tests only; production must use all symbols", flush=True)
+        before_limit_count = len(universe)
         universe = universe.head(limit)
+        print(f"WARNING: universe limited before data fetch: before={before_limit_count} after={len(universe)}", flush=True)
 
     rows: list[dict[str, object]] = []
     total = len(universe)

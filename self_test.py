@@ -25,7 +25,9 @@ def main() -> None:
     _test_jpx_universe_cache()
     _test_gmail_body()
     _test_note_autosave_and_mail_body()
+    _test_production_paths_do_not_use_limit()
     _test_high_classification()
+    _test_9256_limit50_excluded_but_full_universe_included()
     _test_swing_high_break_9256_style()
     _test_journal_and_pattern_learning()
     print("self-test: OK")
@@ -307,6 +309,30 @@ def _test_note_autosave_and_mail_body() -> None:
     body = build_mail_body(screening, discipline, "NORMAL", "https://note.com/notes/abc", "Note下書きURL")
     assert "Note下書きURL: https://note.com/notes/abc" in body
     assert "note_daily.md" in body
+
+
+def _test_production_paths_do_not_use_limit() -> None:
+    root = Path(__file__).resolve().parent
+    daily = (root / "daily_discipline_run.py").read_text(encoding="utf-8")
+    assert "--limit" not in daily
+    assert "limit=None" in daily
+    app = (root / "app.py").read_text(encoding="utf-8")
+    assert 'number_input("動作確認用の上限銘柄数' not in app
+    assert "limit=None" in app
+    for workflow in [root / ".github/workflows/daily-discipline.yml", root / ".github/workflows/note_autosave.yml"]:
+        text = workflow.read_text(encoding="utf-8")
+        assert "--limit" not in text
+    run_screening_text = (root / "run_screening.py").read_text(encoding="utf-8")
+    assert 'parser.add_argument("--limit"' in run_screening_text
+    assert "WARNING: run_screening limit=" in run_screening_text
+
+
+def _test_9256_limit50_excluded_but_full_universe_included() -> None:
+    from scanner.universe import UniverseConfig, load_jpx_listed
+    universe = load_jpx_listed(UniverseConfig(markets=("prime", "standard", "growth")))
+    codes = universe["code"].astype(str)
+    assert codes.eq("9256").any()
+    assert not codes.head(50).eq("9256").any()
 
 
 def _test_high_classification() -> None:

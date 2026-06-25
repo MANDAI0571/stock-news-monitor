@@ -20,7 +20,6 @@ market_options = {
 with st.sidebar:
     st.header("条件")
     selected = st.multiselect("対象市場", list(market_options), default=list(market_options))
-    limit = st.number_input("動作確認用の上限銘柄数", min_value=0, value=50, step=10)
     include_rejected = st.checkbox("見送りも表示", value=False)
 
 if st.button("スクリーニング開始", type="primary"):
@@ -31,7 +30,7 @@ if st.button("スクリーニング開始", type="primary"):
     with st.spinner("スクリーニング中..."):
         result = run_screening(
             markets=tuple(market_options[name] for name in selected),
-            limit=int(limit) or None,
+            limit=None,
             output_dir="outputs",
             include_rejected=include_rejected,
         )
