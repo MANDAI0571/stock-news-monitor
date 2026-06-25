@@ -13,6 +13,7 @@ from daily_note_mail import build_mail_body
 from note_autosave import extract_body_fragment, is_saved_draft_url, load_storage_state
 from scanner.highs import build_high_sections_markdown, classify_high_profile, detect_swing_high_break
 from scanner.indicators import calculate_indicators
+from scanner.openwork import add_openwork_scores, format_openwork_score
 from scanner.scoring import meets_s_technical_gate, meets_strict_s_gate, score_stock
 from scanner.universe import JPX_CACHE_PATH, UniverseConfig, load_jpx_listed, normalize_jpx_listed
 from trade_journal import load_journal, log_entry, log_exit
@@ -24,6 +25,7 @@ def main() -> None:
     _test_market_regime_local_fallback()
     _test_jpx_universe_cache()
     _test_gmail_body()
+    _test_openwork_display_only()
     _test_note_autosave_and_mail_body()
     _test_production_paths_do_not_use_limit()
     _test_high_classification()
@@ -233,6 +235,25 @@ def _test_swing_high_break_9256_style() -> None:
     assert "## 【直近高値ブレイク】" in body
     assert "9256" in body
     assert "3520" in body
+
+
+def _test_openwork_display_only() -> None:
+    with TemporaryDirectory() as tmp:
+        score_path = Path(tmp) / "openwork_scores.csv"
+        score_path.write_text("code,name,openwork_score\n1111,A,3.78\n", encoding="utf-8")
+        base = pd.DataFrame(
+            [
+                {"code": "1111", "name": "A", "rank": "A", "score": 80, "current_price": 1000, "dist_52w_high_pct": 1, "volume_ratio_5d_20d": 2, "reason": "テスト", "lot_value_100": 100000},
+                {"code": "2222", "name": "B", "rank": "A", "score": 90, "current_price": 1000, "dist_52w_high_pct": 1, "volume_ratio_5d_20d": 2, "reason": "テスト", "lot_value_100": 100000},
+            ]
+        )
+        merged = add_openwork_scores(base, score_path)
+        assert list(merged["score"]) == [80, 90]
+        assert format_openwork_score(merged.loc[0, "openwork_score"]) == "3.78"
+        assert format_openwork_score(merged.loc[1, "openwork_score"]) == "未取得"
+        body = build_candidate_body(merged, "NORMAL")
+        assert "OpenWork: 3.78" in body
+        assert "OpenWork: 未取得" in body
 
 
 def _test_journal_and_pattern_learning() -> None:

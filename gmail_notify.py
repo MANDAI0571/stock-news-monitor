@@ -11,6 +11,7 @@ from pathlib import Path
 import pandas as pd
 
 from scanner.highs import build_high_sections_markdown
+from scanner.openwork import format_openwork_score
 
 
 DISCLAIMER = "※これは投資助言ではなく、スクリーニング結果です。売買判断は自己責任で行ってください。"
@@ -210,9 +211,10 @@ def _format_candidate(row: pd.Series) -> list[str]:
     vol = _text(row, "volume_ratio_5d_20d")
     reason = _text(row, "reason")
     lot = _text(row, "lot_value_100")
+    openwork = format_openwork_score(row.get("openwork_score"))
     return [
         f"{code} {name}",
-        f"  株価:{price}円 / 点数:{score} / 100株:{lot}円",
+        f"  株価:{price}円 / 点数:{score} / 100株:{lot}円 / OpenWork: {openwork}",
         f"  52週高値差:{dist}% / 出来高比:{vol}",
         f"  理由:{reason}",
         "",

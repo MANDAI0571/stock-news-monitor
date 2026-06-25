@@ -4,6 +4,8 @@ from dataclasses import dataclass
 
 import pandas as pd
 
+from scanner.openwork import format_openwork_score
+
 
 HIGH_TYPE_ORDER = (
     "SWING_HIGH_BREAK",
@@ -214,15 +216,16 @@ def build_high_sections_markdown(screening: pd.DataFrame, max_rows: int = 5) -> 
             continue
         group = group.sort_values(["_rank_order", "score", "dist_to_high_pct", "code"], ascending=[True, False, True, True])
         if style == "swing":
-            lines.append("| コード | 銘柄名 | ランク | スコア | swing高値 | swing日 | 上抜け率 | 出来高比 | 売買代金 | 理由 |")
-            lines.append("|---|---|---:|---:|---:|---|---:|---:|---:|---|")
+            lines.append("| コード | 銘柄名 | ランク | スコア | OpenWork | swing高値 | swing日 | 上抜け率 | 出来高比 | 売買代金 | 理由 |")
+            lines.append("|---|---|---:|---:|---:|---:|---|---:|---:|---:|---|")
             for _, row in group.head(max_rows).iterrows():
                 lines.append(
-                    "| {code} | {name} | {rank} | {score} | {swing_price} | {swing_date} | {break_pct} | {vol} | {turnover} | {reason} |".format(
+                    "| {code} | {name} | {rank} | {score} | {openwork} | {swing_price} | {swing_date} | {break_pct} | {vol} | {turnover} | {reason} |".format(
                         code=_text(row, "code"),
                         name=_text(row, "name"),
                         rank=_text(row, "rank"),
                         score=_text(row, "score"),
+                        openwork=format_openwork_score(row.get("openwork_score")),
                         swing_price=_text(row, "swing_high_price"),
                         swing_date=_text(row, "swing_high_date"),
                         break_pct=_text(row, "swing_high_break_pct"),
@@ -232,15 +235,16 @@ def build_high_sections_markdown(screening: pd.DataFrame, max_rows: int = 5) -> 
                     )
                 )
         else:
-            lines.append("| コード | 銘柄名 | ランク | スコア | 高値種別 | 高値日 | 高値まで | 理由 |")
-            lines.append("|---|---|---:|---:|---|---|---:|---|")
+            lines.append("| コード | 銘柄名 | ランク | スコア | OpenWork | 高値種別 | 高値日 | 高値まで | 理由 |")
+            lines.append("|---|---|---:|---:|---:|---|---|---:|---|")
             for _, row in group.head(max_rows).iterrows():
                 lines.append(
-                    "| {code} | {name} | {rank} | {score} | {high_label} | {high_date} | {dist} | {reason} |".format(
+                    "| {code} | {name} | {rank} | {score} | {openwork} | {high_label} | {high_date} | {dist} | {reason} |".format(
                         code=_text(row, "code"),
                         name=_text(row, "name"),
                         rank=_text(row, "rank"),
                         score=_text(row, "score"),
+                        openwork=format_openwork_score(row.get("openwork_score")),
                         high_label=_text(row, "high_label"),
                         high_date=_text(row, "high_date"),
                         dist=_text(row, "dist_to_high_pct"),

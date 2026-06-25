@@ -10,6 +10,7 @@ from pathlib import Path
 import pandas as pd
 
 from scanner.highs import build_high_sections_markdown
+from scanner.openwork import add_openwork_scores, format_openwork_score
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -76,7 +77,7 @@ def load_screening(path: Path) -> pd.DataFrame:
     df["score"] = pd.to_numeric(df.get("score"), errors="coerce")
     df["current_price"] = pd.to_numeric(df.get("current_price"), errors="coerce")
     df["dist_52w_high_pct"] = pd.to_numeric(df.get("dist_52w_high_pct"), errors="coerce")
-    return df
+    return add_openwork_scores(df)
 
 
 def load_discipline(path: Path) -> pd.DataFrame:
@@ -175,16 +176,17 @@ def build_candidates_table(df: pd.DataFrame, title: str, max_rows: int = 10) -> 
         return lines
 
     headers = ["code", "name", "rank", "score", "current_price", "reason"]
-    lines.append("| コード | 銘柄名 | ランク | スコア | 現在値 | 理由 |")
-    lines.append("|---|---:|---:|---:|---:|---|")
+    lines.append("| コード | 銘柄名 | ランク | スコア | 現在値 | OpenWork | 理由 |")
+    lines.append("|---|---:|---:|---:|---:|---:|---|")
     for _, row in df.head(max_rows).iterrows():
         lines.append(
-            "| {code} | {name} | {rank} | {score} | {price} | {reason} |".format(
+            "| {code} | {name} | {rank} | {score} | {price} | {openwork} | {reason} |".format(
                 code=safe_text(row.get("code")),
                 name=safe_text(row.get("name")),
                 rank=safe_text(row.get("rank")),
                 score=safe_text(row.get("score")),
                 price=safe_text(row.get("current_price")),
+                openwork=format_openwork_score(row.get("openwork_score")),
                 reason=safe_text(row.get("reason")),
             )
         )
@@ -220,7 +222,7 @@ def build_note_body(screening: pd.DataFrame, discipline: pd.DataFrame, backtest:
         lines.append("|---|---:|---:|---:|---:|---|")
         for _, row in top10.iterrows():
             lines.append(
-                "| {code} | {name} | {rank} | {score} | {price} | {reason} |".format(
+                "| {code} | {name} | {rank} | {score} | {price} | {openwork} | {reason} |".format(
                     code=safe_text(row.get("code")),
                     name=safe_text(row.get("name")),
                     rank=safe_text(row.get("rank")),
@@ -239,7 +241,7 @@ def build_note_body(screening: pd.DataFrame, discipline: pd.DataFrame, backtest:
         lines.append("- 該当なし")
     else:
         for _, row in top10.iterrows():
-            lines.append(f"- {safe_text(row.get('code'))} {safe_text(row.get('name'))}: {safe_text(row.get('reason'))}")
+            lines.append(f"- {safe_text(row.get('code'))} {safe_text(row.get('name'))}: OpenWork: {format_openwork_score(row.get('openwork_score'))} / {safe_text(row.get('reason'))}")
 
     lines.extend([
         "",

@@ -7,6 +7,7 @@ from pathlib import Path
 import pandas as pd
 
 from scanner.indicators import calculate_indicators, passes_base_filters
+from scanner.openwork import add_openwork_scores
 from scanner.highs import classify_high_profile
 from scanner.patterns import detect_cup_with_handle
 from scanner.prices import fetch_next_earnings_date, fetch_price_history, timestamped_csv_path
@@ -135,8 +136,8 @@ def run_screening(
         candidates = candidates.head(max_candidates)
     rejected = result[~is_candidate]
     if include_rejected:
-        return pd.concat([candidates, rejected], ignore_index=True)
-    return candidates.reset_index(drop=True)
+        return add_openwork_scores(pd.concat([candidates, rejected], ignore_index=True))
+    return add_openwork_scores(candidates.reset_index(drop=True))
 
 
 
