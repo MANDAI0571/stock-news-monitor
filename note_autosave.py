@@ -102,17 +102,21 @@ def save_note_draft(
                 email, password = load_credentials()
                 _login(page, email, password)
                 page.goto(NOTE_NEW_URL, wait_until="domcontentloaded", timeout=60_000)
-            _fill_title(page, payload.title)
-            _fill_body(page, payload.body_html)
-            _try_save(page)
             try:
-                page.wait_for_url(re.compile(r"https://note\.com/notes/(?!new).*"), timeout=30_000)
-            except PlaywrightTimeoutError:
-                pass
-            page.wait_for_timeout(2000)
-            draft_url = page.url
-            if not is_saved_draft_url(draft_url):
-                raise RuntimeError(f"note draft URL を取得できませんでした: {draft_url}")
+                _fill_title(page, payload.title)
+                _fill_body(page, payload.body_html)
+                _try_save(page)
+                try:
+                    page.wait_for_url(re.compile(r"https://note\.com/notes/(?!new).*"), timeout=30_000)
+                except PlaywrightTimeoutError:
+                    pass
+                page.wait_for_timeout(2000)
+                draft_url = page.url
+                if not is_saved_draft_url(draft_url):
+                    raise RuntimeError(f"note draft URL を取得できませんでした: {draft_url}")
+            except Exception:
+                _save_error_debug(page)
+                raise
         finally:
             context.close()
             browser.close()
@@ -145,14 +149,41 @@ def _login(page, email: str, password: str) -> None:
 
 def _fill_title(page, title: str) -> None:
     selectors = [
-        'input[placeholder*="タイトル"]',
+        '[data-testid*="title"] textarea',
+        '[data-testid*="title"] input',
+        '[aria-label*="タイトル"]',
+        '[placeholder*="タイトル"]',
         'textarea[placeholder*="タイトル"]',
-        'input[name*="title"]',
+        'input[placeholder*="タイトル"]',
         'textarea[name*="title"]',
+        'input[name*="title"]',
+        '[contenteditable="true"][aria-label*="タイトル"]',
+        '[contenteditable="true"][data-placeholder*="タイトル"]',
+        '[contenteditable="true"][role="textbox"]',
         'input[type="text"]',
     ]
+
     if _fill_first(page, selectors, title):
         return
+
+    # noteの現行エディタでは、タイトルが短いcontenteditableとして出る場合がある
+    editable = page.locator('[contenteditable="true"]')
+    for idx in range(editable.count()):
+        candidate = editable.nth(idx)
+        try:
+            box = candidate.bounding_box()
+            text = candidate.evaluate("el => (el.innerText || el.textContent || '').trim()")
+        except Exception:
+            box = None
+            text = ""
+
+        if box and box.get("height", 0) < 140 and len(text) < 80:
+            candidate.click()
+            _select_all(page)
+            page.keyboard.type(title)
+            page.wait_for_timeout(500)
+            return
+
     raise RuntimeError("タイトル入力欄が見つかりません")
 
 
@@ -197,6 +228,18 @@ def _try_save(page) -> None:
 
 
 def _find_body_editor(page):
+    selectors = [
+        '[aria-label*="本文"][contenteditable="true"]',
+        '[data-placeholder*="本文"][contenteditable="true"]',
+        '.ProseMirror[contenteditable="true"]',
+        '[contenteditable="true"][role="textbox"]',
+    ]
+
+    for selector in selectors:
+        locator = page.locator(selector)
+        if locator.count() > 0:
+            return locator.last
+
     locator = page.locator('[contenteditable="true"]')
     for idx in range(locator.count()):
         candidate = locator.nth(idx)
@@ -206,9 +249,24 @@ def _find_body_editor(page):
             box = None
         if box and box.get("height", 0) >= 120:
             return candidate
+
     if locator.count() > 0:
         return locator.last
+
     return None
+
+
+def _save_error_debug(page) -> None:
+    try:
+        DEFAULT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        screenshot_path = DEFAULT_OUTPUT_DIR / "note_autosave_error.png"
+        page.screenshot(path=str(screenshot_path), full_page=True)
+
+        print(f"note_autosave_error_url={page.url}")
+        print(f"note_autosave_error_title={page.title()}")
+        print(f"note_autosave_error_screenshot={screenshot_path}")
+    except Exception as exc:
+        print(f"note_autosave_error_debug_failed={exc}")
 
 
 def _select_all(page) -> None:
