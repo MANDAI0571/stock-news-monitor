@@ -228,6 +228,11 @@ def build_note_body(screening: pd.DataFrame, discipline: pd.DataFrame, backtest:
                     rank=safe_text(row.get("rank")),
                     score=safe_text(row.get("score")),
                     price=safe_text(row.get("current_price")),
+                    openwork=(
+                        safe_text(row.get("openwork_score"))
+                        if not str(row.get("openwork_score")).lower() in ("", "nan", "none", "<na>")
+                        else "未取得"
+                    ),
                     reason=safe_text(row.get("reason")),
                 )
             )
