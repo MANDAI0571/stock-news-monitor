@@ -16,7 +16,11 @@ NOTE_TITLE_FILE = "note_title.txt"
 NOTE_HTML_FILE = "note_daily.html"
 NOTE_URL_FILE = "note_draft_url.txt"
 NOTE_NEW_URL = "https://note.com/notes/new"
-NOTE_DRAFT_URL_RE = re.compile(r"^https://note\.com/notes/([A-Za-z0-9_-]+)$")
+# 現行noteの下書きURLは editor.note.com/notes/<id>/edit/ 形式。
+# 旧 note.com/notes/<id> 形式も保険で許容（idが "new" 以外＝保存済み下書き）。
+NOTE_DRAFT_URL_RE = re.compile(
+    r"^https://(?:editor\.)?note\.com/notes/([A-Za-z0-9_-]+)(?:/edit)?/?$"
+)
 
 
 @dataclass(frozen=True)
@@ -108,7 +112,10 @@ def save_note_draft(
                 _fill_body(page, payload.body_html)
                 _try_save(page)
                 try:
-                    page.wait_for_url(re.compile(r"https://note\.com/notes/(?!new).*"), timeout=30_000)
+                    page.wait_for_url(
+                        re.compile(r"https://(?:editor\.)?note\.com/notes/(?!new)[A-Za-z0-9_-]+"),
+                        timeout=30_000,
+                    )
                 except PlaywrightTimeoutError:
                     pass
                 page.wait_for_timeout(2000)
@@ -126,7 +133,11 @@ def save_note_draft(
 
 
 def is_saved_draft_url(url: str) -> bool:
-    return bool(NOTE_DRAFT_URL_RE.fullmatch(url)) and url != NOTE_NEW_URL
+    match = NOTE_DRAFT_URL_RE.fullmatch(url)
+    if not match:
+        return False
+    note_id = match.group(1)
+    return note_id.lower() != "new"
 
 
 def _login(page, email: str, password: str) -> None:
@@ -276,7 +287,12 @@ def _save_error_debug(page) -> None:
     try:
         DEFAULT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
         screenshot_path = DEFAULT_OUTPUT_DIR / "note_autosave_error.png"
-        page.screenshot(path=str(screenshot_path), full_page=True)
+        # full_page=True は長い記事でフォント待ちにより30秒タイムアウトする事がある。
+        # 表示領域だけ・短いタイムアウトで確実に残す（デバッグ画像が本来のエラーを隠さないように）。
+        try:
+            page.screenshot(path=str(screenshot_path), full_page=False, timeout=10_000)
+        except Exception:
+            page.screenshot(path=str(screenshot_path), full_page=False, timeout=5_000)
 
         print(f"note_autosave_error_url={page.url}")
         print(f"note_autosave_error_title={page.title()}")
