@@ -103,6 +103,7 @@ def save_note_draft(
                 _login(page, email, password)
                 page.goto(NOTE_NEW_URL, wait_until="domcontentloaded", timeout=60_000)
             try:
+                _wait_for_editor_ready(page)
                 _fill_title(page, payload.title)
                 _fill_body(page, payload.body_html)
                 _try_save(page)
@@ -147,42 +148,53 @@ def _login(page, email: str, password: str) -> None:
     page.wait_for_timeout(2000)
 
 
-def _fill_title(page, title: str) -> None:
-    selectors = [
+def _wait_for_editor_ready(page, timeout_ms: int = 60_000) -> None:
+    """note.com はSPA。goto直後はローディング表示だけで、タイトル/本文の編集欄は
+    まだDOMに無い（失敗時スクショが3点ローディングだけだったのが証拠）。
+    編集欄が実際に描画されるまで待ってから入力する＝『欄が見つかりません』を防ぐ。"""
+    from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+
+    # 通信が落ち着くまで（ベストエフォート。常駐通信で落ち着かない事もあるので例外は無視）
+    try:
+        page.wait_for_load_state("networkidle", timeout=timeout_ms)
+    except PlaywrightTimeoutError:
+        pass
+
+    # タイトルか本文の編集領域が「表示される」まで待つ
+    editor_selectors = ", ".join([
+        '[contenteditable="true"]',
         '[data-testid*="title"] textarea',
         '[data-testid*="title"] input',
-        '[aria-label*="タイトル"]',
-        '[placeholder*="タイトル"]',
         'textarea[placeholder*="タイトル"]',
         'input[placeholder*="タイトル"]',
+        '.ProseMirror',
+    ])
+    try:
+        page.wait_for_selector(editor_selectors, state="visible", timeout=timeout_ms)
+    except PlaywrightTimeoutError as exc:
+        raise RuntimeError("noteエディタの読み込みが完了しませんでした（描画待ちタイムアウト）") from exc
+
+    # 描画直後はまだ入力を受け付けない事があるので少し待つ
+    page.wait_for_timeout(1500)
+
+
+def _fill_title(page, title: str) -> None:
+    # noteの記事エディタ(editor.note.com)のタイトルは <textarea>。
+    # 本文(ProseMirrorのcontenteditable)とは別要素。失敗時スクショ＝タイトルは
+    # 大きな見出しのtextarea、本文は「あなたの日記も…」プレースホルダのcontenteditable。
+    # 旧コードのcontenteditableフォールバックは本文(背の高いcontenteditable)しか掴めず
+    # 『タイトル入力欄が見つかりません』になっていたので、textareaを直接狙う。
+    selectors = [
+        'textarea[placeholder*="タイトル"]',
+        'textarea[placeholder*="記事"]',
+        'textarea[aria-label*="タイトル"]',
+        '[data-testid*="title"] textarea',
         'textarea[name*="title"]',
-        'input[name*="title"]',
-        '[contenteditable="true"][aria-label*="タイトル"]',
-        '[contenteditable="true"][data-placeholder*="タイトル"]',
-        '[contenteditable="true"][role="textbox"]',
-        'input[type="text"]',
+        'textarea',  # noteエディタのタイトルは先頭のtextarea（プレースホルダ非一致時の保険）
     ]
 
     if _fill_first(page, selectors, title):
         return
-
-    # noteの現行エディタでは、タイトルが短いcontenteditableとして出る場合がある
-    editable = page.locator('[contenteditable="true"]')
-    for idx in range(editable.count()):
-        candidate = editable.nth(idx)
-        try:
-            box = candidate.bounding_box()
-            text = candidate.evaluate("el => (el.innerText || el.textContent || '').trim()")
-        except Exception:
-            box = None
-            text = ""
-
-        if box and box.get("height", 0) < 140 and len(text) < 80:
-            candidate.click()
-            _select_all(page)
-            page.keyboard.type(title)
-            page.wait_for_timeout(500)
-            return
 
     raise RuntimeError("タイトル入力欄が見つかりません")
 
@@ -193,8 +205,10 @@ def _fill_body(page, body_html: str) -> None:
         raise RuntimeError("本文入力欄が見つかりません")
 
     plain_text = _html_to_plain_text(body_html)
+    # page.evaluate は引数を1つしか取らない。htmlとtextはdictにまとめて渡す
+    # （旧コードは2つ渡して TypeError: evaluate() takes ... but 4 were given になっていた）。
     page.evaluate(
-        """async (html, text) => {
+        """async ({ html, text }) => {
             try {
                 await navigator.clipboard.write([
                     new ClipboardItem({
@@ -206,12 +220,11 @@ def _fill_body(page, body_html: str) -> None:
                 await navigator.clipboard.writeText(text);
             }
         }""",
-        body_html,
-        plain_text,
+        {"html": body_html, "text": plain_text},
     )
     editor.click()
     _select_all(page)
-    page.keyboard.press("Control+V")
+    _paste(page)
     page.wait_for_timeout(1500)
     if _editor_text_length(editor) < 80:
         raise RuntimeError("本文入力後の長さが不足しています")
@@ -228,10 +241,13 @@ def _try_save(page) -> None:
 
 
 def _find_body_editor(page):
+    # noteの本文は ProseMirror の contenteditable（スクショの「+」「あなたの日記も…」の領域）。
+    # タイトルは textarea なのでここには掛からない＝本文だけを確実に掴む。
     selectors = [
+        '.ProseMirror[contenteditable="true"]',
+        '.ProseMirror',
         '[aria-label*="本文"][contenteditable="true"]',
         '[data-placeholder*="本文"][contenteditable="true"]',
-        '.ProseMirror[contenteditable="true"]',
         '[contenteditable="true"][role="textbox"]',
     ]
 
@@ -274,6 +290,14 @@ def _select_all(page) -> None:
         page.keyboard.press("Meta+A")
     else:
         page.keyboard.press("Control+A")
+
+
+def _paste(page) -> None:
+    # macOS(posix)の貼り付けは Cmd+V。Control+V では貼れず本文が空のままになる。
+    if os.name == "posix":
+        page.keyboard.press("Meta+V")
+    else:
+        page.keyboard.press("Control+V")
 
 
 def _editor_text_length(editor) -> int:

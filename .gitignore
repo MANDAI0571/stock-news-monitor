@@ -6,3 +6,8 @@ outputs/*.out
 outputs/*.err
 cache/
 launchd/
+
+# note.com 認証セッション（絶対にコミットしない＝漏洩防止）
+note_state.json
+note_state.b64
+outputs/note_autosave_error.png
