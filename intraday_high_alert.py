@@ -30,6 +30,7 @@ import argparse
 import json
 import os
 from dataclasses import dataclass, asdict
+from functools import lru_cache
 from datetime import date, datetime
 from pathlib import Path
 
@@ -37,7 +38,8 @@ import pandas as pd
 
 from scanner.highs import classify_high_profile
 from scanner.indicators import calculate_indicators
-from scanner.prices import ensure_output_dir, fetch_price_history
+from scanner.openwork import format_openwork_score, load_openwork_scores
+from scanner.prices import ensure_output_dir, fetch_next_earnings_date, fetch_price_history
 from scanner.universe import UniverseConfig, load_jpx_listed
 
 
@@ -79,10 +81,64 @@ class Alert:
     volume_ratio: float      # 出来高比（5日平均/20日平均）
     turnover_20d: int        # 20日平均売買代金（円）
     reason: str              # 判定理由
+    earnings_date: str = "未取得"    # 決算予定日（7営業日以内なら警告付き）
+    openwork_score: str = "未取得"   # OpenWork評価
 
     def dedup_key(self) -> str:
         return f"{self.code}|{self.alert_type}"
 
+
+
+# --------------------------------------------------------------------------
+# 補足情報（決算予定日 / OpenWork）
+# --------------------------------------------------------------------------
+def _code_text(code: object) -> str:
+    text = str(code).strip()
+    return text[:-2] if text.endswith(".0") else text
+
+
+@lru_cache(maxsize=1024)
+def _fetch_earnings_label(code: str) -> str:
+    """決算予定日を取得。失敗時は未取得。7営業日以内は警告を付ける。"""
+    try:
+        d = fetch_next_earnings_date(f"{_code_text(code)}.T")
+    except Exception:
+        d = None
+    if d is None:
+        return "未取得"
+    text = d.isoformat()
+    try:
+        today = pd.Timestamp(date.today())
+        target = pd.Timestamp(d)
+        if target >= today:
+            bdays = max(len(pd.bdate_range(today, target)) - 1, 0)
+            if bdays <= 7:
+                return f"{text} ⚠️ 決算接近"
+    except Exception:
+        pass
+    return text
+
+
+def _load_openwork_map() -> dict[str, str]:
+    """data/openwork_scores.csv を code で引く。無ければ空。"""
+    try:
+        scores = load_openwork_scores()
+    except Exception:
+        return {}
+    if scores.empty:
+        return {}
+    out: dict[str, str] = {}
+    for _, row in scores.iterrows():
+        code = _code_text(row.get("code"))
+        out[code] = format_openwork_score(row.get("openwork_score"))
+    return out
+
+
+def _apply_extra_fields(alert: Alert, code: object, openwork_map: dict[str, str]) -> Alert:
+    code_text = _code_text(code)
+    alert.earnings_date = _fetch_earnings_label(code_text)
+    alert.openwork_score = openwork_map.get(code_text, "未取得") or "未取得"
+    return alert
 
 # --------------------------------------------------------------------------
 # 純粋ロジック（ネット不要・クラウドでも検証可能）
@@ -216,6 +272,8 @@ def _format_alert(alert: Alert) -> list[str]:
         f"  現在値:{alert.current_price:,.1f}円 / 種別:{alert.alert_type}",
         f"  {alert.line_label}ライン:{alert.line_price:,.1f}円 / ラインまで:{dist_text}",
         f"  出来高比:{alert.volume_ratio:.2f}倍 / 売買代金:{alert.turnover_20d / 100_000_000:.1f}億円",
+        f"  🗓 決算予定日:{alert.earnings_date}",
+        f"  👥 OpenWork評価:{alert.openwork_score}",
         f"  理由:{alert.reason}",
         "",
     ]
@@ -295,6 +353,7 @@ def scan(
         universe = universe.head(limit)
 
     total = len(universe)
+    openwork_map = _load_openwork_map()
     alerts: list[Alert] = []
     for idx, stock in enumerate(universe.itertuples(index=False), start=1):
         if idx % 200 == 0:
@@ -307,7 +366,7 @@ def scan(
             high_info = classify_high_profile(history)
             alert = build_alert(stock.code, stock.name, indicators, high_info)
             if alert is not None:
-                alerts.append(alert)
+                alerts.append(_apply_extra_fields(alert, stock.code, openwork_map))
         except Exception as exc:  # 1銘柄の失敗で全体を止めない
             print(f"skip {stock.ticker}: {exc}", flush=True)
             continue
@@ -467,6 +526,7 @@ def _self_test() -> int:
     ]
     body = build_body(multi)
     assert "52週高値更新（1件）" in body and "52週高値接近（1件）" in body, body
+    assert "決算予定日" in body and "OpenWork評価" in body, body
     assert DISCLAIMER in body
     assert "ほか1件" in build_subject(multi)
 
