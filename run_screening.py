@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import os
+import time
 from datetime import date
 from pathlib import Path
 
@@ -18,6 +20,88 @@ from scanner.universe import UniverseConfig, load_jpx_listed
 PROJECT_ROOT = Path(__file__).resolve().parent
 CAPITAL = 3_000_000
 
+# 結果CSV / コンソール表示で使う列。
+DISPLAY_COLUMNS = [
+    "code",
+    "name",
+    "market",
+    "current_price",
+    "score",
+    "rank",
+    "volume_ratio_5d_20d",
+    "dist_52w_high_pct",
+    "swing_high_price",
+    "swing_high_date",
+    "swing_high_break_pct",
+    "swing_high_break",
+    "swing_high_label",
+    "duke_old_high_support",
+    "old_52w_high",
+    "old_52w_high_date",
+    "dist_to_old_52w_high_pct",
+    "recent_high_after_breakout",
+    "pullback_from_recent_high_pct",
+    "duke_support_score",
+    "duke_support_signal",
+    "duke_support_rank",
+    "high_type",
+    "high_label",
+    "high_window_days",
+    "high_price",
+    "high_date",
+    "dist_to_high_pct",
+    "days_since_52w_high",
+    "ma25_rising",
+    "ma75_rising",
+    "ma75_gap_pct",
+    "ma200_gap_pct",
+    "lot_value_100",
+    "max_positions_3m",
+    "reason",
+]
+
+
+# outputs/ に必ず残す固定名の結果CSV（GitHub Actions の Artifacts 用）。
+FIXED_RESULT_NAME = "screening_result.csv"
+# 進捗の経過時間ログを何銘柄ごとに出すか。
+PROGRESS_EVERY = int(os.environ.get("PROGRESS_EVERY", "25"))
+
+
+def _env_truthy(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def resolve_symbol_limit(explicit_limit: int | None) -> int | None:
+    """処理する銘柄数の上限を決める。
+    優先順位: 明示の --limit > QUICK_MODE(MAX_SYMBOLS) > 制限なし(本番)。
+    QUICK_MODE=true のとき MAX_SYMBOLS(既定30)件だけ処理して短時間で完了させる。"""
+    if explicit_limit is not None:
+        return explicit_limit
+    if _env_truthy("QUICK_MODE"):
+        try:
+            return max(1, int(os.environ.get("MAX_SYMBOLS", "30")))
+        except ValueError:
+            return 30
+    return None
+
+
+def _log_step(label: str, seconds: float, extra: str = "") -> None:
+    suffix = f" {extra}" if extra else ""
+    print(f"[timing] {label}: {seconds:.1f}s{suffix}", flush=True)
+
+
+def write_result_csv(result: pd.DataFrame, output_dir: str | Path) -> Path:
+    """outputs/screening_result.csv を必ず保存する（GitHub Actions の Artifacts 用）。
+    候補が0件・列無しでも、表示用ヘッダーだけの空CSVを残す（ファイルが無い事態を防ぐ）。"""
+    directory = Path(output_dir)
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / FIXED_RESULT_NAME
+    if result is None or result.empty or len(result.columns) == 0:
+        pd.DataFrame(columns=DISPLAY_COLUMNS).to_csv(path, index=False, encoding="utf-8-sig")
+    else:
+        result.to_csv(path, index=False, encoding="utf-8-sig")
+    return path
+
 
 def run_screening(
     markets: tuple[str, ...],
@@ -27,9 +111,17 @@ def run_screening(
     max_candidates: int | None = 20,
     strict: bool = False,
 ) -> pd.DataFrame:
+    run_started = time.perf_counter()
+    # QUICK_MODE / MAX_SYMBOLS の解決（明示の --limit が最優先）。
+    limit = resolve_symbol_limit(limit)
+    if _env_truthy("QUICK_MODE"):
+        print(f"QUICK_MODE=ON max_symbols={limit} (テスト用の軽量実行)", flush=True)
+
+    t0 = time.perf_counter()
     universe = _load_universe(markets, output_dir)
     if not universe.empty:
         universe = universe[~universe.apply(lambda row: _is_rank_excluded_security(str(row.get("name", "")), str(row.get("market", "")), str(row.get("sector", ""))), axis=1)].reset_index(drop=True)
+    _log_step("universe_load", time.perf_counter() - t0, f"rows={len(universe)}")
     if limit:
         print(f"WARNING: run_screening limit={limit} is for tests only; production must use all symbols", flush=True)
         before_limit_count = len(universe)
@@ -46,8 +138,14 @@ def run_screening(
     total = len(universe)
     today = date.today()
 
+    loop_started = time.perf_counter()
     for idx, stock in enumerate(universe.itertuples(index=False), start=1):
         print(f"[{idx}/{total}] {stock.ticker} {stock.name}", flush=True)
+        if PROGRESS_EVERY > 0 and idx % PROGRESS_EVERY == 0:
+            elapsed = time.perf_counter() - loop_started
+            rate = elapsed / idx if idx else 0.0
+            eta = rate * (total - idx)
+            print(f"[timing] progress {idx}/{total} elapsed={elapsed:.0f}s eta={eta:.0f}s", flush=True)
         row_base = {
             "code": stock.code,
             "ticker": stock.ticker,
@@ -113,12 +211,14 @@ def run_screening(
             if include_rejected:
                 rows.append(row_base | rejection_row(None, f"エラー: {exc}"))
 
+    _log_step("scan_loop", time.perf_counter() - loop_started, f"symbols={total} rows={len(rows)}")
     result = pd.DataFrame(rows)
     # 専用CSVはメイン候補の有無に依存させない。該当0件なら書かない。
     _write_aux_csv(pullback_rows, output_dir, "screening_pullback")
     _write_aux_csv(highs_rows, output_dir, "screening_highs")
     _write_aux_csv(retest_rows, output_dir, "screening_52w_retest")
     if result.empty:
+        _log_step("run_screening_total", time.perf_counter() - run_started, "candidates=0")
         return result
 
     if "dist_52w_high_pct" not in result.columns:
@@ -169,6 +269,7 @@ def run_screening(
     if max_candidates is not None and len(candidates) > max_candidates:
         candidates = candidates.head(max_candidates)
     rejected = result[~is_candidate]
+    _log_step("run_screening_total", time.perf_counter() - run_started, f"candidates={len(candidates)}")
     if include_rejected:
         return add_openwork_scores(pd.concat([candidates, rejected], ignore_index=True))
     return add_openwork_scores(candidates.reset_index(drop=True))
@@ -409,65 +510,49 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    result = run_screening(
-        markets=tuple(args.markets),
-        limit=args.limit,
-        output_dir=args.output_dir,
-        include_rejected=args.include_rejected,
-        max_candidates=args.max_candidates,
-        strict=args.strict,
-    )
+    started = time.perf_counter()
+
+    # QUICK_MODE のときは --limit 指定が無くても自動で MAX_SYMBOLS 件に絞る。
+    # 上限の最終決定は run_screening 内（resolve_symbol_limit）で行うが、
+    # ここでも例外時に空CSVを残せるように事前に解決しておく。
+    effective_limit = resolve_symbol_limit(args.limit)
+    if effective_limit is not None:
+        print(f"QUICK_MODE/limit active: max_symbols={effective_limit}", flush=True)
+
+    # 途中で止まっても screening_result.csv を必ず残す（GitHub Actions が安定して回るように）。
+    result = pd.DataFrame()
+    try:
+        result = run_screening(
+            markets=tuple(args.markets),
+            limit=args.limit,
+            output_dir=args.output_dir,
+            include_rejected=args.include_rejected,
+            max_candidates=args.max_candidates,
+            strict=args.strict,
+        )
+    except Exception as exc:  # noqa: BLE001 - ワークフローを止めないため全例外を捕捉
+        print(f"ERROR run_screening failed: {exc}", flush=True)
+
+    # 1) 固定名 outputs/screening_result.csv は必ず保存（空でもヘッダー付き）。
+    fixed_path = write_result_csv(result, args.output_dir)
+    print(f"保存しました（固定名・必ず保存）: {fixed_path}", flush=True)
+    # 2) タイムスタンプ付きの履歴用CSVも従来どおり残す。
+    stamped_path = timestamped_csv_path(args.output_dir)
+    result.to_csv(stamped_path, index=False, encoding="utf-8-sig")
+    print(f"保存しました: {stamped_path}", flush=True)
 
     if result.empty:
-        print("条件に合う銘柄はありませんでした。")
+        print("条件に合う銘柄はありませんでした（または取得失敗）。空のCSVを保存しました。")
+        _log_step("run_screening_main", time.perf_counter() - started, "candidates=0")
         return
 
-    path = timestamped_csv_path(args.output_dir)
-    result.to_csv(path, index=False, encoding="utf-8-sig")
     print("\n=== 300万円運用向け日本株スクリーニング ===\n")
-    display_columns = [
-        "code",
-        "name",
-        "market",
-        "current_price",
-        "score",
-        "rank",
-        "volume_ratio_5d_20d",
-        "dist_52w_high_pct",
-        "swing_high_price",
-        "swing_high_date",
-        "swing_high_break_pct",
-        "swing_high_break",
-        "swing_high_label",
-        "duke_old_high_support",
-        "old_52w_high",
-        "old_52w_high_date",
-        "dist_to_old_52w_high_pct",
-        "recent_high_after_breakout",
-        "pullback_from_recent_high_pct",
-        "duke_support_score",
-        "duke_support_signal",
-        "duke_support_rank",
-        "high_type",
-        "high_label",
-        "high_window_days",
-        "high_price",
-        "high_date",
-        "dist_to_high_pct",
-        "days_since_52w_high",
-        "ma25_rising",
-        "ma75_rising",
-        "ma75_gap_pct",
-        "ma200_gap_pct",
-        "lot_value_100",
-        "max_positions_3m",
-        "reason",
-    ]
-    for column in display_columns:
-        if column not in result.columns:
-            result[column] = ""
-    print(result[display_columns].to_string(index=False))
-    print(f"\n保存しました: {path}")
+    display = result.copy()
+    for column in DISPLAY_COLUMNS:
+        if column not in display.columns:
+            display[column] = ""
+    print(display[DISPLAY_COLUMNS].to_string(index=False))
+    _log_step("run_screening_main", time.perf_counter() - started, f"candidates={len(result)}")
 
 
 if __name__ == "__main__":

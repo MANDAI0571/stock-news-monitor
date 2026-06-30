@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import os
+import time
 from pathlib import Path
 
 from gmail_notify import maybe_send_gmail
@@ -11,6 +13,22 @@ from scanner.prices import timestamped_csv_path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
+
+
+def _quick_limit_from_env() -> int | None:
+    quick = os.environ.get("QUICK_MODE", "").lower() in {"1", "true", "yes", "on"}
+    max_symbols = os.environ.get("MAX_SYMBOLS", "").strip()
+    if max_symbols:
+        try:
+            return max(1, int(max_symbols))
+        except ValueError:
+            print(f"WARNING invalid MAX_SYMBOLS={max_symbols}; ignored", flush=True)
+    return 30 if quick else None
+
+
+def _log_step(name: str, started: float) -> None:
+    elapsed = time.perf_counter() - started
+    print(f"[TIMER] {name} elapsed={elapsed:.1f}s", flush=True)
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="平日引け後のスクリーニング+規律版判定")
     parser.add_argument(
@@ -30,7 +48,18 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    total_start = time.perf_counter()
+    # 本番経路は常に全銘柄(limit=None)。ただし QUICK_MODE=true のときは run_screening 内部の
+    # resolve_symbol_limit が MAX_SYMBOLS 件に自動で絞る（GitHub Actions の短時間テスト用）。
+    quick_limit = _quick_limit_from_env()
+    if quick_limit is not None:
+        print(f"QUICK_MODE active: MAX_SYMBOLS={quick_limit}", flush=True)
+
+    step = time.perf_counter()
     regime = fetch_regime()
+    _log_step("fetch_regime", step)
+
+    step = time.perf_counter()
     screening = run_screening(
         markets=tuple(args.markets),
         limit=None,
@@ -39,8 +68,12 @@ def main() -> None:
         max_candidates=None if args.max_candidates == 0 else args.max_candidates,
         strict=args.strict,
     )
+    _log_step("run_screening", step)
+
     screening_path = timestamped_csv_path(args.output_dir, prefix="screening_result")
     screening.to_csv(screening_path, index=False, encoding="utf-8-sig")
+    fixed_screening_path = Path(args.output_dir) / "screening_result.csv"
+    screening.to_csv(fixed_screening_path, index=False, encoding="utf-8-sig")
     s_rank_path = timestamped_csv_path(args.output_dir, prefix="s_rank_candidates")
     write_s_rank_csv(screening, s_rank_path)
 
@@ -55,6 +88,7 @@ def main() -> None:
     print_candidate_summary(screening)
     print_s_rank_details(screening)
     print(f"screening_csv={screening_path}")
+    print(f"screening_csv_latest={fixed_screening_path}")
     print(f"s_rank_csv={s_rank_path}")
     print(f"discipline_csv={discipline_path}")
     note_md_path = Path(args.output_dir) / "note_daily.md"
@@ -66,6 +100,7 @@ def main() -> None:
         max_rows=args.mail_max_rows,
         attachments=attachments,
     )
+    _log_step("total", total_start)
 
 
 def print_candidate_summary(screening) -> None:

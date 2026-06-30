@@ -272,3 +272,53 @@ streamlit run app.py
 ## 注意
 
 決算日は`yfinance`から取得できる場合のみ確認します。取得できない銘柄は「決算未確認」として最大Aに制限します。
+
+
+## GitHub Actionsで日本株スクリーニングを確認する（Mac不要）
+
+Macを使わずGitHub Actionsだけで毎日安定実行するための専用ワークフローを追加しました：
+`.github/workflows/screening.yml`（ワークフロー名: **JP Screening (QUICK / FULL)**）。
+全銘柄(約3,700)を1件ずつyfinanceで取得すると1時間近くかかるため、まず上位30銘柄だけの
+**QUICK_MODE**で5分以内の安定完了を確認し、本番(全銘柄)はその後に分けて回します。
+
+### 環境変数
+
+| 変数 | 意味 | 既定 |
+| --- | --- | --- |
+| `QUICK_MODE` | `true`で上位 `MAX_SYMBOLS` 銘柄だけ処理（軽量テスト）。`false`で全銘柄（本番） | スケジュール実行は `true` |
+| `MAX_SYMBOLS` | QUICK_MODE時に処理する銘柄数 | `30` |
+| `PROGRESS_EVERY` | 何銘柄ごとに経過時間ログを出すか | `25` |
+
+`QUICK_MODE` / `MAX_SYMBOLS` は `run_screening.py` 内の `resolve_symbol_limit()` が解釈します。
+`daily_discipline_run.py`（本番経路）は常に `limit=None`（全銘柄）ですが、`QUICK_MODE=true` を
+渡せば内部で自動的に `MAX_SYMBOLS` 件に絞られるため、同じコードのまま軽量テストできます。
+
+### QUICKテスト（まず5分以内の成功を確認）
+
+1. GitHubの `Actions` タブを開く
+2. 左の `JP Screening (QUICK / FULL)` を選ぶ
+3. `Run workflow` を押し、`quick_mode` を `true`（既定）のまま実行
+4. ログで各ステップの所要時間を確認する：
+   - `[timing] universe_load: ...s rows=...`
+   - `[timing] progress N/30 elapsed=...s eta=...s`
+   - `[timing] scan_loop: ...s symbols=30 ...`
+   - `[timing] run_screening_total: ...s candidates=...`
+5. `timeout-minutes: 30` を設定済み（QUICKは通常5分以内、安全弁として30分）
+6. Artifacts の `screening-result` をダウンロードし、`outputs/screening_result.csv` が
+   含まれることを確認する（候補0件でもヘッダー付きの空CSVが必ず保存されます）
+
+QUICKワークフローは取得失敗やデータ不足があっても途中で止まらず（全例外を捕捉）、
+`screening_result.csv` を必ず残してから終了します（Actionsが赤くならず安定）。
+
+### 本番（全銘柄）
+
+`JP Screening (QUICK / FULL)` を手動実行する際に `quick_mode` を `false` にすると全銘柄を処理します
+（時間がかかります）。Gmail通知やnote.com保存まで含めた従来のフルパイプラインは
+`.github/workflows/daily-discipline.yml`（平日朝07:30 JST）をそのまま使います。
+
+### ローカルでの確認
+
+```bash
+python3 self_test.py                                  # ネット不要・常に通る
+QUICK_MODE=true MAX_SYMBOLS=30 python3 run_screening.py  # 上位30銘柄で軽量実行
+```

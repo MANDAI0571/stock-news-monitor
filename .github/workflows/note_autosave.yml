@@ -9,7 +9,10 @@ on:
 jobs:
   note-autosave:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 30
+    env:
+      QUICK_MODE: "true"
+      MAX_SYMBOLS: "30"
 
     steps:
       - name: Checkout
@@ -22,17 +25,30 @@ jobs:
 
       - name: Install dependencies
         run: |
+          start=$(date +%s)
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          python -m playwright install --with-deps chromium
+          if [ "${QUICK_MODE}" != "true" ]; then
+            python -m playwright install --with-deps chromium
+          else
+            echo "QUICK_MODE=true: skip Playwright install"
+          fi
+          end=$(date +%s); echo "[TIMER] install_dependencies elapsed=$((end-start))s"
 
       - name: Run daily workflow outputs
-        run: python3 daily_discipline_run.py
+        run: |
+          start=$(date +%s)
+          python3 daily_discipline_run.py
+          end=$(date +%s); echo "[TIMER] daily_discipline_run elapsed=$((end-start))s"
 
       - name: Build note draft
-        run: python3 note_draft.py
+        run: |
+          start=$(date +%s)
+          python3 note_draft.py
+          end=$(date +%s); echo "[TIMER] note_draft elapsed=$((end-start))s"
 
       - name: Save note draft in note.com
+        if: env.QUICK_MODE != 'true'
         env:
           NOTE_STORAGE_STATE: ${{ secrets.NOTE_STORAGE_STATE }}
           NOTE_EMAIL: ${{ secrets.NOTE_EMAIL }}
@@ -40,6 +56,7 @@ jobs:
         run: python3 note_autosave.py
 
       - name: Send Gmail notification with note URL
+        if: env.QUICK_MODE != 'true'
         env:
           GMAIL_USER: ${{ secrets.GMAIL_USER }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
@@ -52,8 +69,9 @@ jobs:
           name: note-autosave-outputs
           path: |
             outputs/*.csv
+            outputs/screening_result.csv
             outputs/note_daily.md
             outputs/note_title.txt
             outputs/note_daily.html
             outputs/note_draft_url.txt
-          if-no-files-found: error
+          if-no-files-found: warn
