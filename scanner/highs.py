@@ -168,6 +168,384 @@ def detect_swing_high_break(history: pd.DataFrame, min_lookback: int = 5, max_lo
     }
 
 
+def detect_52w_high_retest(
+    history: pd.DataFrame,
+    window_days: int = 252,
+    retest_pct: float = 3.0,
+    collapse_pct: float = 8.0,
+) -> dict[str, object]:
+    """T-C(2026-06-28): 52週新高値ブレイク後のリテスト候補を検出（純関数・通信なし）。
+
+    高重さんの定義に忠実:
+      ①52週新高値（窓内の過去終値を上抜け＝最初に抜けた新高値ライン line_price）
+      ②その後さらに上昇（その後の高値 post_high > line_price）
+      ③そこから下落（現値 < post_high）
+      ④最初に抜けた新高値ライン付近まで戻る（|現値-line_price|/line_price ≤ retest_pct）
+    トレンド崩壊（現値が line_price から -collapse_pct% より下）は除外。
+    データ不足・条件未達は False（捏造しない）。
+    """
+    empty = {
+        "retest_52w": False,
+        "retest_line_price": "",
+        "retest_breakout_date": "",
+        "retest_dist_pct": "",
+        "retest_post_high": "",
+    }
+    if history.empty or "Close" not in history.columns or len(history) < 60:
+        return empty
+
+    close = history["Close"].astype(float)
+    window = close.tail(window_days)
+    series = window.reset_index(drop=True)
+    n = len(series)
+    if n < 30:
+        return empty
+
+    current = float(series.iloc[-1])
+    prior_running_high = series.cummax().shift(1)
+    # ①最初に「窓内の過去終値」を上抜けした日（最初に抜けた新高値ライン）
+    breakout_positions = [
+        i for i in range(1, n)
+        if pd.notna(prior_running_high.iloc[i]) and float(series.iloc[i]) > float(prior_running_high.iloc[i])
+    ]
+    if not breakout_positions:
+        return empty
+    first_bo = breakout_positions[0]
+    line_price = float(prior_running_high.iloc[first_bo])
+    if line_price <= 0:
+        return empty
+
+    # ②ブレイク後にさらに上昇したか（その後の最高値）
+    post_high = float(series.iloc[first_bo:].max())
+    if post_high <= line_price:
+        return empty
+    # ③ピークから下落して現在は天井より下
+    if not (current < post_high):
+        return empty
+    # ④新高値ライン付近まで戻っているか
+    dist_pct = (current - line_price) / line_price * 100.0
+    if abs(dist_pct) > retest_pct:
+        return empty
+    # トレンド崩壊（ラインを大きく割り込み）は除外
+    if dist_pct < -collapse_pct:
+        return empty
+
+    breakout_date = pd.Timestamp(window.index[first_bo]).date().isoformat()
+    return {
+        "retest_52w": True,
+        "retest_line_price": round(line_price, 1),
+        "retest_breakout_date": breakout_date,
+        "retest_dist_pct": round(dist_pct, 2),
+        "retest_post_high": round(post_high, 1),
+    }
+
+
+def detect_previous_52w_high_line_retest(
+    history: pd.DataFrame,
+    indicators: dict[str, float],
+    breakout_lookback_days: int = 120,
+    line_min_age_days: int = 10,
+    min_turnover_20d: float = 100_000_000,
+    min_volume_20d: float = 50_000,
+) -> dict[str, object]:
+    """Detect pullbacks to the prior 52-week high line after a recent new high.
+
+    前回52週高値ライン = 52週新高値を上抜いた日の直前252営業日終値高値。
+    このラインまでの押し戻りを、300万円運用候補の専用スコアとして評価する。
+    """
+    empty = {
+        "prev_52w_retest": False,
+        "prev_52w_retest_score": 0,
+        "prev_52w_retest_rank": "見送り",
+        "prev_52w_retest_reason": "",
+        "prev_52w_retest_signs": "",
+        "previous_52w_high_line": "",
+        "previous_52w_high_date": "",
+        "breakout_52w_date": "",
+        "recent_52w_high": "",
+        "recent_52w_high_date": "",
+        "line_deviation_pct": "",
+        "drawdown_from_recent_high_pct": "",
+        "candidate_action": "CASH",
+    }
+    required = {"Open", "High", "Low", "Close", "Volume"}
+    if history.empty or not required.issubset(history.columns) or len(history) < 253:
+        return empty | {"prev_52w_retest_reason": "価格データ不足"}
+    if float(indicators.get("turnover_20d", 0.0)) < min_turnover_20d:
+        return empty | {"prev_52w_retest_reason": "売買代金20日平均1億円未満"}
+    if float(indicators.get("volume_20d", 0.0)) < min_volume_20d:
+        return empty | {"prev_52w_retest_reason": "出来高20日平均不足"}
+
+    close = history["Close"].astype(float)
+    prior_52w_high = close.rolling(252).max().shift(1)
+    start = max(252, len(close) - breakout_lookback_days)
+    breakout_positions = [
+        pos for pos in range(start, len(close))
+        if pd.notna(prior_52w_high.iloc[pos]) and close.iloc[pos] > prior_52w_high.iloc[pos]
+    ]
+    if not breakout_positions:
+        return empty | {"prev_52w_retest_reason": "過去120営業日以内の52週新高値更新なし"}
+
+    breakout_pos = breakout_positions[0]
+    line_price = float(prior_52w_high.iloc[breakout_pos])
+    if line_price <= 0:
+        return empty | {"prev_52w_retest_reason": "前回52週高値ラインなし"}
+
+    previous_window = close.iloc[:breakout_pos]
+    previous_matches = previous_window.reset_index(drop=True).eq(line_price)
+    if not previous_matches.any():
+        return empty | {"prev_52w_retest_reason": "前回52週高値日を特定できない"}
+    previous_pos = int(previous_matches[previous_matches].index[-1])
+    if breakout_pos - previous_pos < line_min_age_days:
+        return empty | {"prev_52w_retest_reason": "前回52週高値ラインが近すぎる"}
+
+    post_breakout = close.iloc[breakout_pos:]
+    recent_high = float(post_breakout.max())
+    recent_high_rel_pos = int(post_breakout.reset_index(drop=True).idxmax())
+    recent_high_pos = breakout_pos + recent_high_rel_pos
+    current = float(close.iloc[-1])
+    if recent_high <= line_price:
+        return empty | {"prev_52w_retest_reason": "ブレイク後の上昇不足"}
+
+    line_deviation_pct = (current - line_price) / line_price * 100.0
+    drawdown_pct = (current / recent_high - 1.0) * 100.0
+    hard_fail: list[str] = []
+    if not (-3.0 <= line_deviation_pct <= 5.0):
+        hard_fail.append("前回高値ライン乖離が-3%〜+5%外")
+    if not (-30.0 <= drawdown_pct <= -8.0):
+        hard_fail.append("直近高値からの押し幅が-8%〜-30%外")
+    if not current > float(indicators.get("ma75", float("inf"))):
+        hard_fail.append("75日線以下")
+    if not (bool(indicators.get("ma25_rising")) or bool(indicators.get("ma50_rising"))):
+        hard_fail.append("25日線/50日線が上向きでない")
+
+    signs = _recent_rebound_signs(history)
+    score, score_reasons = _score_previous_52w_retest(indicators, line_deviation_pct, drawdown_pct, signs)
+    rank = _rank_previous_52w_retest(score, bool(hard_fail))
+    reasons = score_reasons + signs + hard_fail
+
+    return {
+        "prev_52w_retest": rank != "見送り",
+        "prev_52w_retest_score": score,
+        "prev_52w_retest_rank": rank,
+        "prev_52w_retest_reason": " / ".join(reasons),
+        "prev_52w_retest_signs": " / ".join(signs),
+        "previous_52w_high_line": round(line_price, 1),
+        "previous_52w_high_date": pd.Timestamp(history.index[previous_pos]).date().isoformat(),
+        "breakout_52w_date": pd.Timestamp(history.index[breakout_pos]).date().isoformat(),
+        "recent_52w_high": round(recent_high, 1),
+        "recent_52w_high_date": pd.Timestamp(history.index[recent_high_pos]).date().isoformat(),
+        "line_deviation_pct": round(line_deviation_pct, 2),
+        "drawdown_from_recent_high_pct": round(drawdown_pct, 2),
+        "candidate_action": "BUY" if rank == "S" else "CASH",
+    }
+
+
+
+def detect_duke_old_high_support(
+    history: pd.DataFrame,
+    indicators: dict[str, float],
+    breakout_lookback_days: int = 120,
+    min_turnover_20d: float = 100_000_000,
+) -> dict[str, object]:
+    """DUKE式「旧52週高値サポート押し目」判定。
+
+    52週新高値を一度突破した後、ブレイク前の旧52週高値ライン付近まで
+    押してきた銘柄を検出する。ETF/REIT等はユニバース側で除外し、ここでは
+    価格・出来高・売買代金の条件だけを評価する。
+    """
+    empty = {
+        "duke_old_high_support": False,
+        "old_52w_high": "",
+        "old_52w_high_date": "",
+        "dist_to_old_52w_high_pct": "",
+        "recent_high_after_breakout": "",
+        "pullback_from_recent_high_pct": "",
+        "duke_support_score": 0,
+        "duke_support_signal": False,
+        "duke_support_rank": "見送り",
+        "duke_support_reason": "",
+    }
+    required = {"Open", "High", "Low", "Close", "Volume"}
+    if history.empty or not required.issubset(history.columns) or len(history) < 260:
+        return empty | {"duke_support_reason": "価格データ260営業日未満"}
+    if float(indicators.get("turnover_20d", 0.0)) < min_turnover_20d:
+        return empty | {"duke_support_reason": "売買代金20日平均1億円未満"}
+
+    high = history["High"].astype(float)
+    close = history["Close"].astype(float)
+    volume = history["Volume"].astype(float)
+    prior_52w_high = high.rolling(252).max().shift(1)
+    start = max(252, len(high) - breakout_lookback_days)
+    breakout_positions = [
+        pos for pos in range(start, len(high))
+        if pd.notna(prior_52w_high.iloc[pos]) and high.iloc[pos] > prior_52w_high.iloc[pos]
+    ]
+    if not breakout_positions:
+        return empty | {"duke_support_reason": "直近120営業日以内の52週新高値更新なし"}
+
+    # 最初に旧52週高値を突破した日をブレイク日とする。
+    breakout_pos = breakout_positions[0]
+    old_line = float(prior_52w_high.iloc[breakout_pos])
+    if old_line <= 0:
+        return empty | {"duke_support_reason": "旧52週高値ラインなし"}
+
+    old_window = high.iloc[:breakout_pos]
+    old_matches = old_window.reset_index(drop=True).eq(old_line)
+    if not old_matches.any():
+        return empty | {"duke_support_reason": "旧52週高値日を特定できない"}
+    old_pos = int(old_matches[old_matches].index[-1])
+
+    current = float(close.iloc[-1])
+    recent_high = float(high.iloc[breakout_pos:].max())
+    if recent_high <= old_line:
+        return empty | {"duke_support_reason": "ブレイク後の上昇不足"}
+
+    dist_pct = (current - old_line) / old_line * 100.0
+    pullback_pct = (current / recent_high - 1.0) * 100.0
+    signs = _recent_rebound_signs(history)
+
+    score = 0
+    reasons: list[str] = []
+    hard_fail: list[str] = []
+
+    if 0.0 <= dist_pct <= 3.0:
+        score += 30
+        reasons.append("旧52週高値ライン0〜3%以内")
+    elif -3.0 <= dist_pct <= 5.0:
+        score += 20
+        reasons.append("旧52週高値ライン-3〜+5%以内")
+    else:
+        hard_fail.append("旧52週高値ライン-3%〜+5%外")
+
+    if -20.0 <= pullback_pct <= -10.0:
+        score += 20
+        reasons.append("直近高値から10〜20%押し")
+    elif -30.0 <= pullback_pct <= -8.0:
+        score += 10
+        reasons.append("直近高値から8〜30%押し")
+    else:
+        hard_fail.append("直近高値からの下落率が-8%〜-30%外")
+
+    if current > float(indicators.get("ma75", float("inf"))):
+        score += 15
+        reasons.append("75日線より上")
+    if bool(indicators.get("ma25_rising")):
+        score += 15
+        reasons.append("25日線上向き")
+    if float(indicators.get("volume_5d", 0.0)) > float(indicators.get("volume_20d", float("inf"))):
+        score += 10
+        reasons.append("出来高5日平均>20日平均")
+    if "直近5日内に陽線" in signs:
+        score += 5
+        reasons.append("直近5日以内に陽線")
+    if "直近5日内に下ヒゲ" in signs:
+        score += 5
+        reasons.append("直近5日以内に下ヒゲ")
+
+    rank = _rank_duke_support(score)
+    if hard_fail:
+        rank = "見送り"
+    all_reasons = reasons + signs + hard_fail
+
+    return {
+        "duke_old_high_support": rank != "見送り",
+        "old_52w_high": round(old_line, 1),
+        "old_52w_high_date": pd.Timestamp(history.index[old_pos]).date().isoformat(),
+        "dist_to_old_52w_high_pct": round(dist_pct, 2),
+        "recent_high_after_breakout": round(recent_high, 1),
+        "pullback_from_recent_high_pct": round(pullback_pct, 2),
+        "duke_support_score": int(score),
+        "duke_support_signal": rank != "見送り",
+        "duke_support_rank": rank,
+        "duke_support_reason": " / ".join(all_reasons),
+    }
+
+
+def _rank_duke_support(score: int) -> str:
+    if score >= 80:
+        return "S"
+    if score >= 65:
+        return "A"
+    if score >= 50:
+        return "B"
+    return "見送り"
+
+def _recent_rebound_signs(history: pd.DataFrame, lookback_days: int = 5) -> list[str]:
+    recent = history.tail(lookback_days).copy()
+    if recent.empty:
+        return []
+    open_ = recent["Open"].astype(float)
+    high = recent["High"].astype(float)
+    low = recent["Low"].astype(float)
+    close = recent["Close"].astype(float)
+    volume = history["Volume"].astype(float)
+    volume_20d = float(volume.rolling(20).mean().iloc[-1]) if len(volume) >= 20 else 0.0
+
+    signs: list[str] = []
+    if bool((close > open_).any()):
+        signs.append("直近5日内に陽線")
+    candle_range = (high - low).replace(0, pd.NA)
+    lower_wick = pd.concat([open_, close], axis=1).min(axis=1) - low
+    body = (close - open_).abs()
+    lower_wick_signal = ((lower_wick >= body) & ((lower_wick / candle_range) >= 0.35)).fillna(False)
+    if bool(lower_wick_signal.any()):
+        signs.append("直近5日内に下ヒゲ")
+    if volume_20d > 0 and float(recent["Volume"].max()) > volume_20d:
+        signs.append("直近5日内に出来高増加")
+    if len(close) >= 2 and float(close.iloc[-1]) > float(close.iloc[-2]):
+        signs.append("終値反発")
+    return signs
+
+
+def _score_previous_52w_retest(
+    indicators: dict[str, float],
+    line_deviation_pct: float,
+    drawdown_pct: float,
+    signs: list[str],
+) -> tuple[int, list[str]]:
+    score = 0
+    reasons: list[str] = []
+    if 0.0 <= line_deviation_pct <= 3.0:
+        score += 30
+        reasons.append("前回高値ライン0〜3%以内")
+    elif -3.0 <= line_deviation_pct <= 5.0:
+        score += 20
+        reasons.append("前回高値ライン-3〜+5%以内")
+    if -20.0 <= drawdown_pct <= -10.0:
+        score += 20
+        reasons.append("直近高値から10〜20%押し")
+    elif -30.0 <= drawdown_pct <= -8.0:
+        score += 12
+        reasons.append("直近高値から8〜30%押し")
+    if float(indicators.get("current_price", 0.0)) > float(indicators.get("ma75", float("inf"))):
+        score += 15
+        reasons.append("75日線より上")
+    if bool(indicators.get("ma25_rising")):
+        score += 15
+        reasons.append("25日線上向き")
+    elif bool(indicators.get("ma50_rising")):
+        score += 10
+        reasons.append("50日線上向き")
+    if "直近5日内に出来高増加" in signs:
+        score += 10
+    if "直近5日内に陽線" in signs or "直近5日内に下ヒゲ" in signs:
+        score += 10
+    return score, reasons
+
+
+def _rank_previous_52w_retest(score: int, hard_fail: bool) -> str:
+    if hard_fail:
+        return "見送り"
+    if score >= 85:
+        return "S"
+    if score >= 70:
+        return "A"
+    if score >= 55:
+        return "B"
+    return "見送り"
+
+
 def _is_clear_local_high(high: pd.Series, pos: int, left: int = 2, right: int = 2) -> bool:
     target = float(high.iloc[pos])
     start = max(0, pos - left)

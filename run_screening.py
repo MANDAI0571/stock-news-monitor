@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pandas as pd
 
-from scanner.indicators import calculate_indicators, passes_base_filters
+from scanner.indicators import calculate_indicators, detect_ma_touches, passes_base_filters
 from scanner.openwork import add_openwork_scores
-from scanner.highs import classify_high_profile
+from scanner.highs import classify_high_profile, detect_52w_high_retest, detect_duke_old_high_support, detect_previous_52w_high_line_retest
 from scanner.patterns import detect_cup_with_handle
 from scanner.prices import fetch_next_earnings_date, fetch_price_history, timestamped_csv_path
 from scanner.scoring import assess_earnings_window, rejection_row, score_stock
@@ -37,6 +37,12 @@ def run_screening(
         print(f"WARNING: universe limited before data fetch: before={before_limit_count} after={len(universe)}", flush=True)
 
     rows: list[dict[str, object]] = []
+    # T-D(2026-06-28): メインの300万/ブレイク候補とは独立に、押し目(タッチ/リテスト)と
+    # 高値更新(52週新高値・接近)を専用収集する。メインゲート(current>MA25/75/200 等)を通らない
+    # 押し目銘柄も拾うため、ベースフィルター前に収集する。
+    pullback_rows: list[dict[str, object]] = []
+    highs_rows: list[dict[str, object]] = []
+    retest_rows: list[dict[str, object]] = []
     total = len(universe)
     today = date.today()
 
@@ -59,10 +65,23 @@ def run_screening(
                     rows.append(row_base | high_info | rejection_row(None, "価格データ不足"))
                 continue
 
+            duke_support = detect_duke_old_high_support(history, indicators)
+
+            # T-D: 押し目(タッチ/リテスト)・高値更新の専用収集（メインゲートとは独立）。
+            pullback_extra = _collect_pullback_row(row_base, indicators, high_info, history)
+            if pullback_extra is not None:
+                pullback_rows.append(pullback_extra)
+            retest_extra = _collect_previous_52w_retest_row(row_base, indicators, history)
+            if retest_extra is not None:
+                retest_rows.append(retest_extra)
+            highs_extra = _collect_highs_row(row_base, indicators, high_info)
+            if highs_extra is not None:
+                highs_rows.append(highs_extra)
+
             passed, reject_reasons = passes_base_filters(indicators)
             if not passed:
                 if include_rejected:
-                    rows.append(row_base | format_indicators(indicators) | high_info | rejection_row(indicators, " / ".join(reject_reasons)))
+                    rows.append(row_base | format_indicators(indicators) | high_info | duke_support | rejection_row(indicators, " / ".join(reject_reasons)))
                 continue
 
             earnings_date = fetch_next_earnings_date(stock.ticker)
@@ -73,17 +92,19 @@ def run_screening(
                         row_base
                         | format_indicators(indicators)
                         | high_info
+                        | duke_support
                         | earnings
                         | rejection_row(indicators, "決算14営業日前〜決算翌営業日のため除外")
                     )
                 continue
 
             cwh = detect_cup_with_handle(history["Close"])
-            scored = score_stock(indicators, cwh, earnings, capital=CAPITAL, name=stock.name, sector=stock.sector, strict=strict)
+            scored = score_stock(indicators, cwh, earnings, capital=CAPITAL, name=stock.name, sector=stock.sector, strict=strict, duke_support=duke_support)
             rows.append(
                 row_base
                 | format_indicators(indicators)
                 | high_info
+                | duke_support
                 | format_cwh(cwh)
                 | earnings
                 | scored
@@ -93,6 +114,10 @@ def run_screening(
                 rows.append(row_base | rejection_row(None, f"エラー: {exc}"))
 
     result = pd.DataFrame(rows)
+    # 専用CSVはメイン候補の有無に依存させない。該当0件なら書かない。
+    _write_aux_csv(pullback_rows, output_dir, "screening_pullback")
+    _write_aux_csv(highs_rows, output_dir, "screening_highs")
+    _write_aux_csv(retest_rows, output_dir, "screening_52w_retest")
     if result.empty:
         return result
 
@@ -119,6 +144,15 @@ def run_screening(
         "swing_high_break_pct": "",
         "swing_high_break": False,
         "swing_high_label": "",
+        "duke_old_high_support": False,
+        "old_52w_high": "",
+        "old_52w_high_date": "",
+        "dist_to_old_52w_high_pct": "",
+        "recent_high_after_breakout": "",
+        "pullback_from_recent_high_pct": "",
+        "duke_support_score": 0,
+        "duke_support_signal": False,
+        "duke_support_rank": "見送り",
     }.items():
         if column not in result.columns:
             result[column] = default
@@ -138,6 +172,130 @@ def run_screening(
     if include_rejected:
         return add_openwork_scores(pd.concat([candidates, rejected], ignore_index=True))
     return add_openwork_scores(candidates.reset_index(drop=True))
+
+
+def _collect_pullback_row(
+    row_base: dict[str, object],
+    indicators: dict[str, float],
+    high_info: dict[str, object],
+    history: pd.DataFrame,
+) -> dict[str, object] | None:
+    """25/200/240MAタッチ または 52週新高値後リテストに該当する銘柄行を返す（非該当はNone）。
+    流動性ゲート（20日平均売買代金1億円以上）のみ課す。捏造しない。"""
+    if float(indicators.get("turnover_20d", 0)) < 100_000_000:
+        return None
+    touches = detect_ma_touches(indicators)
+    retest = detect_52w_high_retest(history)
+    if not (touches.get("ma_touch_any") or retest.get("retest_52w")):
+        return None
+
+    labels: list[str] = []
+    if retest.get("retest_52w"):
+        labels.append("52週新高値リテスト")
+    if touches.get("ma_touch_labels"):
+        labels.append(str(touches["ma_touch_labels"]))
+
+    return {
+        **row_base,
+        "current_price": round(float(indicators["current_price"]), 1),
+        "high_52w": round(float(indicators["high_52w"]), 1),
+        "dist_52w_high_pct": round(float(indicators["dist_52w_high_pct"]), 2),
+        "ma25": round(float(indicators["ma25"]), 1),
+        "ma75": round(float(indicators["ma75"]), 1),
+        "ma200": round(float(indicators["ma200"]), 1),
+        "ma240": round(float(indicators["ma240"]), 1),
+        "ma25_rising": bool(indicators["ma25_rising"]),
+        "ma200_rising": bool(indicators["ma200_rising"]),
+        "ma240_rising": bool(indicators["ma240_rising"]),
+        "ma25_touch": bool(touches.get("ma25_touch")),
+        "ma200_touch": bool(touches.get("ma200_touch")),
+        "ma240_touch": bool(touches.get("ma240_touch")),
+        "ma25_touch_pct": round(float(indicators["ma25_touch_pct"]), 2),
+        "ma200_touch_pct": round(float(indicators["ma200_touch_pct"]), 2),
+        "ma240_touch_pct": round(float(indicators["ma240_touch_pct"]), 2),
+        "retest_52w": bool(retest.get("retest_52w")),
+        "retest_line_price": retest.get("retest_line_price", ""),
+        "retest_breakout_date": retest.get("retest_breakout_date", ""),
+        "retest_dist_pct": retest.get("retest_dist_pct", ""),
+        "retest_post_high": retest.get("retest_post_high", ""),
+        "turnover_20d": int(indicators["turnover_20d"]),
+        "volume_ratio_5d_20d": round(float(indicators["volume_ratio_5d_20d"]), 2),
+        "label": " / ".join(labels),
+    }
+
+
+def _collect_previous_52w_retest_row(
+    row_base: dict[str, object],
+    indicators: dict[str, float],
+    history: pd.DataFrame,
+) -> dict[str, object] | None:
+    retest = detect_previous_52w_high_line_retest(history, indicators)
+    if str(retest.get("prev_52w_retest_rank", "見送り")) == "見送り":
+        return None
+
+    return {
+        **row_base,
+        "current_price": round(float(indicators["current_price"]), 1),
+        "recent_52w_high": retest.get("recent_52w_high", ""),
+        "recent_52w_high_date": retest.get("recent_52w_high_date", ""),
+        "previous_52w_high_line": retest.get("previous_52w_high_line", ""),
+        "previous_52w_high_date": retest.get("previous_52w_high_date", ""),
+        "breakout_52w_date": retest.get("breakout_52w_date", ""),
+        "line_deviation_pct": retest.get("line_deviation_pct", ""),
+        "drawdown_from_recent_high_pct": retest.get("drawdown_from_recent_high_pct", ""),
+        "ma25": round(float(indicators["ma25"]), 1),
+        "ma50": round(float(indicators["ma50"]), 1),
+        "ma75": round(float(indicators["ma75"]), 1),
+        "ma25_rising": bool(indicators["ma25_rising"]),
+        "ma50_rising": bool(indicators["ma50_rising"]),
+        "volume_20d": int(indicators["volume_20d"]),
+        "turnover_20d": int(indicators["turnover_20d"]),
+        "volume_ratio_5d_20d": round(float(indicators["volume_ratio_5d_20d"]), 2),
+        "rebound_sign": retest.get("prev_52w_retest_signs", ""),
+        "score": int(retest.get("prev_52w_retest_score", 0)),
+        "rank": retest.get("prev_52w_retest_rank", "見送り"),
+        "candidate_action": retest.get("candidate_action", "CASH"),
+        "reason": retest.get("prev_52w_retest_reason", ""),
+    }
+
+
+def _collect_highs_row(
+    row_base: dict[str, object],
+    indicators: dict[str, float],
+    high_info: dict[str, object],
+) -> dict[str, object] | None:
+    """52週新高値(52W_NEW_HIGH) または 52週高値接近(52W_NEAR_HIGH) に該当する銘柄行を返す。
+    流動性ゲート（20日平均売買代金1億円以上）のみ課す。捏造しない。"""
+    high_type = str(high_info.get("high_type", ""))
+    if high_type not in ("52W_NEW_HIGH", "52W_NEAR_HIGH"):
+        return None
+    if float(indicators.get("turnover_20d", 0)) < 100_000_000:
+        return None
+    return {
+        **row_base,
+        "high_type": high_type,
+        "high_label": high_info.get("high_label", ""),
+        "high_price": high_info.get("high_price", ""),
+        "high_date": high_info.get("high_date", ""),
+        "dist_to_high_pct": high_info.get("dist_to_high_pct", ""),
+        "current_price": round(float(indicators["current_price"]), 1),
+        "high_52w": round(float(indicators["high_52w"]), 1),
+        "dist_52w_high_pct": round(float(indicators["dist_52w_high_pct"]), 2),
+        "days_since_52w_high": int(indicators["days_since_52w_high"]),
+        "ma25": round(float(indicators["ma25"]), 1),
+        "ma50": round(float(indicators["ma50"]), 1),
+        "ma200": round(float(indicators["ma200"]), 1),
+        "turnover_20d": int(indicators["turnover_20d"]),
+        "volume_ratio_5d_20d": round(float(indicators["volume_ratio_5d_20d"]), 2),
+    }
+
+
+def _write_aux_csv(rows: list[dict[str, object]], output_dir: str, prefix: str) -> None:
+    if not rows:
+        return
+    path = timestamped_csv_path(output_dir, prefix=prefix)
+    pd.DataFrame(rows).to_csv(path, index=False, encoding="utf-8-sig")
+    print(f"保存しました: {path}", flush=True)
 
 
 
@@ -186,16 +344,28 @@ def format_indicators(indicators: dict[str, float]) -> dict[str, object]:
         "dist_52w_high_pct": round(indicators["dist_52w_high_pct"], 2),
         "days_since_52w_high": int(indicators["days_since_52w_high"]),
         "ma25": round(indicators["ma25"], 1),
+        "ma50": round(indicators["ma50"], 1),
         "ma75": round(indicators["ma75"], 1),
         "ma200": round(indicators["ma200"], 1),
+        "ma240": round(indicators["ma240"], 1),
         "ma25_slope": round(indicators["ma25_slope"], 3),
+        "ma50_slope": round(indicators["ma50_slope"], 3),
         "ma75_slope": round(indicators["ma75_slope"], 3),
+        "ma200_slope": round(indicators["ma200_slope"], 3),
+        "ma240_slope": round(indicators["ma240_slope"], 3),
         "ma25_rising": bool(indicators["ma25_rising"]),
+        "ma50_rising": bool(indicators["ma50_rising"]),
         "ma75_rising": bool(indicators["ma75_rising"]),
+        "ma200_rising": bool(indicators["ma200_rising"]),
+        "ma240_rising": bool(indicators["ma240_rising"]),
         "ma25_gap_pct": round(indicators["ma25_gap_pct"], 2),
+        "ma50_gap_pct": round(indicators["ma50_gap_pct"], 2),
         "ma75_gap_pct": round(indicators["ma75_gap_pct"], 2),
         "ma200_gap_pct": round(indicators["ma200_gap_pct"], 2),
+        "ma240_gap_pct": round(indicators["ma240_gap_pct"], 2),
+        "ma25_touch_pct": round(indicators["ma25_touch_pct"], 2),
         "ma200_touch_pct": round(indicators["ma200_touch_pct"], 2),
+        "ma240_touch_pct": round(indicators["ma240_touch_pct"], 2),
         "volume_ratio_5d_20d": round(indicators["volume_ratio_5d_20d"], 2),
         "turnover_20d": int(indicators["turnover_20d"]),
         "lot_value_100": int(indicators["lot_value_100"]),
@@ -269,6 +439,15 @@ def main() -> None:
         "swing_high_break_pct",
         "swing_high_break",
         "swing_high_label",
+        "duke_old_high_support",
+        "old_52w_high",
+        "old_52w_high_date",
+        "dist_to_old_52w_high_pct",
+        "recent_high_after_breakout",
+        "pullback_from_recent_high_pct",
+        "duke_support_score",
+        "duke_support_signal",
+        "duke_support_rank",
         "high_type",
         "high_label",
         "high_window_days",

@@ -11,7 +11,7 @@ from paper_portfolio_discipline import build_discipline_portfolio
 from pattern_learn import build_pattern_summary
 from daily_note_mail import build_mail_body
 from note_autosave import extract_body_fragment, is_saved_draft_url, load_storage_state
-from scanner.highs import build_high_sections_markdown, classify_high_profile, detect_swing_high_break
+from scanner.highs import build_high_sections_markdown, classify_high_profile, detect_duke_old_high_support, detect_previous_52w_high_line_retest, detect_swing_high_break
 from scanner.indicators import calculate_indicators
 from scanner.openwork import add_openwork_scores, format_openwork_score
 from scanner.scoring import meets_s_technical_gate, meets_strict_s_gate, score_stock
@@ -29,6 +29,8 @@ def main() -> None:
     _test_note_autosave_and_mail_body()
     _test_production_paths_do_not_use_limit()
     _test_high_classification()
+    _test_previous_52w_high_line_retest()
+    _test_duke_old_high_support()
     _test_9256_limit50_excluded_but_full_universe_included()
     _test_swing_high_break_9256_style()
     _test_journal_and_pattern_learning()
@@ -380,6 +382,64 @@ def _test_high_classification() -> None:
     assert any("【52週高値更新】" in line for line in lines)
     assert any("【その他】" in line for line in lines)
     assert any("直近高値接近" in line for line in lines)
+
+
+def _test_previous_52w_high_line_retest() -> None:
+    dates = pd.bdate_range("2025-01-01", periods=280)
+    close = pd.Series(900.0, index=dates)
+    close.iloc[:180] = pd.Series(range(800, 980), index=dates[:180], dtype=float)
+    close.iloc[180:252] = 950
+    close.iloc[252] = 1005
+    close.iloc[253:270] = pd.Series(range(1020, 1190, 10), index=dates[253:270], dtype=float)
+    close.iloc[270:] = [1160, 1130, 1100, 1070, 1040, 1010, 995, 1005, 1010, 1008]
+    open_ = close * 0.995
+    high = close * 1.01
+    low = close * 0.985
+    volume = pd.Series(100_000, index=dates, dtype=float)
+    volume.iloc[-3:] = [120_000, 180_000, 160_000]
+    history = pd.DataFrame({"Open": open_, "High": high, "Low": low, "Close": close, "Volume": volume})
+    indicators = calculate_indicators(history)
+    assert indicators is not None
+    retest = detect_previous_52w_high_line_retest(history, indicators, min_volume_20d=10_000)
+    assert retest["previous_52w_high_line"] == 979.0
+    assert retest["line_deviation_pct"] == 2.96
+    assert retest["drawdown_from_recent_high_pct"] < -8
+    assert retest["prev_52w_retest_rank"] in {"S", "A", "B"}
+    assert retest["candidate_action"] == ("BUY" if retest["prev_52w_retest_rank"] == "S" else "CASH")
+
+
+def _test_duke_old_high_support() -> None:
+    dates = pd.bdate_range("2025-01-01", periods=280)
+    close = pd.Series(950.0, index=dates, dtype=float)
+    high = pd.Series(950.0, index=dates, dtype=float)
+    low = close - 15
+    open_ = close - 5
+    high.iloc[:180] = pd.Series(range(800, 980), index=dates[:180], dtype=float)
+    close.iloc[:180] = high.iloc[:180] - 2
+    high.iloc[180:252] = 950
+    close.iloc[180:252] = 945
+    high.iloc[252] = 1005
+    close.iloc[252] = 1000
+    high.iloc[253] = 1180
+    close.iloc[253] = 1160
+    pullback = pd.Series([980 + i * (35 / 25) for i in range(26)], index=dates[254:280], dtype=float)
+    close.iloc[254:280] = pullback
+    high.iloc[254:280] = pullback + 8
+    open_.iloc[254:280] = pullback - 4
+    low.iloc[254:280] = pullback - 18
+    volume = pd.Series(100_000, index=dates, dtype=float)
+    volume.iloc[-5:] = 180_000
+    history = pd.DataFrame({"Open": open_, "High": high, "Low": low, "Close": close, "Volume": volume})
+    indicators = calculate_indicators(history)
+    assert indicators is not None
+    duke = detect_duke_old_high_support(history, indicators, min_turnover_20d=1)
+    assert duke["duke_old_high_support"] is True, duke
+    assert duke["old_52w_high"] == 979.0, duke
+    assert duke["duke_support_score"] >= 80, duke
+    assert duke["duke_support_rank"] == "S", duke
+    scored = score_stock(indicators, None, {"earnings_status": "確認済"}, duke_support=duke)
+    assert scored["score"] >= duke["duke_support_score"], scored
+    assert "DUKE旧52週高値サポート" in scored["reason"], scored
 
 
 if __name__ == "__main__":

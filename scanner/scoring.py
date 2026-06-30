@@ -34,6 +34,7 @@ def score_stock(
     name: str = "",
     sector: str = "",
     strict: bool = False,
+    duke_support: dict[str, object] | None = None,
 ) -> dict[str, object]:
     score = 0
     reasons: list[str] = []
@@ -117,6 +118,12 @@ def score_stock(
     elif lot_value <= capital * 0.20:
         score += 5
         reasons.append("100株購入額が資金20%以内")
+
+    if duke_support and bool(duke_support.get("duke_support_signal")):
+        duke_score = int(duke_support.get("duke_support_score", 0) or 0)
+        if duke_score > 0:
+            score += duke_score
+            reasons.append(f"DUKE旧52週高値サポート+{duke_score}")
 
     rank = _rank(score)
     # Sランクは「スコア合計≥85」だけでなく、上昇トレンドのテクニカル必須条件を
