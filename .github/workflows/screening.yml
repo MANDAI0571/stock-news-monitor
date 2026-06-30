@@ -1,0 +1,74 @@
+name: JP Screening (QUICK / FULL)
+
+# 日本株スクリーニングを Mac 無しで GitHub Actions だけで安定実行するための専用ワークフロー。
+# - QUICK: 上位 MAX_SYMBOLS(既定30) 銘柄だけ。5分以内で完了するテスト用。
+# - FULL : 全銘柄。本番（時間がかかるので分離）。
+# 既存の daily-discipline.yml / note_autosave.yml には手を加えていない。
+
+on:
+  workflow_dispatch:
+    inputs:
+      quick_mode:
+        description: "QUICK_MODE (true=上位30銘柄だけの軽量テスト / false=全銘柄の本番)"
+        type: boolean
+        default: true
+      max_symbols:
+        description: "QUICK_MODE 時に処理する銘柄数"
+        type: string
+        default: "30"
+  schedule:
+    # 毎平日 07:40 JST(=22:40 UTC, 月〜金=UTCの日〜木) に QUICK テストを自動実行。
+    # 本番(FULL)は手動実行 or 既存の daily-discipline.yml を使う。
+    - cron: "40 22 * * 0-4"
+
+jobs:
+  screening:
+    runs-on: ubuntu-latest
+    # 要求どおりタイムアウトは30分。QUICK は通常5分以内で終わる安全弁。
+    timeout-minutes: 30
+
+    env:
+      # スケジュール実行(手動入力なし)のときは QUICK 既定。手動実行は入力値を尊重。
+      QUICK_MODE: ${{ github.event.inputs.quick_mode == 'false' && 'false' || 'true' }}
+      MAX_SYMBOLS: ${{ github.event.inputs.max_symbols || '30' }}
+      PROGRESS_EVERY: "25"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Self test (no network)
+        run: python3 self_test.py
+
+      - name: Run screening
+        run: |
+          echo "QUICK_MODE=$QUICK_MODE MAX_SYMBOLS=$MAX_SYMBOLS"
+          python3 run_screening.py --include-rejected
+
+      - name: Show result summary
+        if: always()
+        run: |
+          echo "=== outputs ==="
+          ls -la outputs/ || true
+          echo "=== head of screening_result.csv ==="
+          head -n 5 outputs/screening_result.csv || echo "screening_result.csv not found"
+
+      - name: Upload screening result CSV
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: screening-result
+          path: |
+            outputs/screening_result.csv
+            outputs/screening_result_*.csv
+          if-no-files-found: warn
