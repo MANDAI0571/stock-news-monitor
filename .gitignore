@@ -11,3 +11,6 @@ launchd/
 note_state.json
 note_state.b64
 outputs/note_autosave_error.png
+
+# local generated outputs
+outputs/
