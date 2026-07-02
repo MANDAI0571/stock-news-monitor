@@ -19,22 +19,29 @@ def calculate_indicators(history: pd.DataFrame) -> dict[str, float] | None:
     last_high_52w_position = int(high_52w_positions[high_52w_positions].index[-1])
     days_since_52w_high = int(len(high_52w_window) - 1 - last_high_52w_position)
     ma25_series = close.rolling(25).mean()
+    ma50_series = close.rolling(50).mean()
     ma75_series = close.rolling(75).mean()
     ma200_series = close.rolling(200).mean()
+    # T-A(2026-06-28): 240日移動平均(Yahoo標準の長期線)を追加。len>=252 を保証済みなので240本は安全。
+    ma240_series = close.rolling(240).mean()
     ma25 = float(ma25_series.iloc[-1])
+    ma50 = float(ma50_series.iloc[-1])
     ma75 = float(ma75_series.iloc[-1])
     ma200 = float(ma200_series.iloc[-1])
+    ma240 = float(ma240_series.iloc[-1])
     # ③④ 移動平均線の「上向き」判定: 直近 slope_lookback 営業日での移動平均の変化量。
-    # 正なら上向き（＝上昇トレンド継続）。len>=252 を保証しているのでMA200の参照も安全。
+    # 正なら上向き（＝上昇トレンド継続）。len>=252 を保証しているのでMA200/240の参照も安全。
     slope_lookback = 5
     ma25_slope = ma25 - float(ma25_series.iloc[-1 - slope_lookback])
+    ma50_slope = ma50 - float(ma50_series.iloc[-1 - slope_lookback])
     ma75_slope = ma75 - float(ma75_series.iloc[-1 - slope_lookback])
     ma200_slope = ma200 - float(ma200_series.iloc[-1 - slope_lookback])
+    ma240_slope = ma240 - float(ma240_series.iloc[-1 - slope_lookback])
     volume_5d = float(volume.rolling(5).mean().iloc[-1])
     volume_20d = float(volume.rolling(20).mean().iloc[-1])
     turnover_20d = float(turnover.rolling(20).mean().iloc[-1])
 
-    if min(current, high_52w, ma25, ma75, ma200, volume_20d) <= 0:
+    if min(current, high_52w, ma25, ma50, ma75, ma200, ma240, volume_20d) <= 0:
         return None
 
     return {
@@ -44,18 +51,28 @@ def calculate_indicators(history: pd.DataFrame) -> dict[str, float] | None:
         "dist_52w_high_pct": (high_52w - current) / high_52w * 100,
         "days_since_52w_high": days_since_52w_high,
         "ma25": ma25,
+        "ma50": ma50,
         "ma75": ma75,
         "ma200": ma200,
+        "ma240": ma240,
         "ma25_slope": ma25_slope,
+        "ma50_slope": ma50_slope,
         "ma75_slope": ma75_slope,
         "ma200_slope": ma200_slope,
+        "ma240_slope": ma240_slope,
         "ma25_rising": ma25_slope > 0,
+        "ma50_rising": ma50_slope > 0,
         "ma75_rising": ma75_slope > 0,
         "ma200_rising": ma200_slope > 0,
+        "ma240_rising": ma240_slope > 0,
         "ma25_gap_pct": (current - ma25) / ma25 * 100,
+        "ma50_gap_pct": (current - ma50) / ma50 * 100,
         "ma75_gap_pct": (current - ma75) / ma75 * 100,
         "ma200_gap_pct": (current - ma200) / ma200 * 100,
+        "ma240_gap_pct": (current - ma240) / ma240 * 100,
+        "ma25_touch_pct": abs(current - ma25) / ma25 * 100,
         "ma200_touch_pct": abs(current - ma200) / ma200 * 100,
+        "ma240_touch_pct": abs(current - ma240) / ma240 * 100,
         "volume_5d": volume_5d,
         "volume_20d": volume_20d,
         "volume_ratio_5d_20d": volume_5d / volume_20d,
@@ -63,6 +80,36 @@ def calculate_indicators(history: pd.DataFrame) -> dict[str, float] | None:
         "turnover_20d": turnover_20d,
         "lot_value_100": current * 100,
     }
+
+
+def detect_ma_touches(indicators: dict[str, float], touch_pct: float = 3.0) -> dict[str, object]:
+    """T-B(2026-06-28): 25/200/240MA への『押し目タッチ』判定（純関数・通信なし）。
+
+    各MAについて「上昇トレンド中(該当MAが右肩上がり)に、現値がそのMAから touch_pct% 以内まで
+    押した」状態を True とする。単なる25MA上抜けではなく、上昇トレンドの押し目を拾う狙い。
+    データが揃わない(ma240等が無い)場合は False。捏造しない。
+    """
+    result: dict[str, object] = {}
+    touched_labels: list[str] = []
+    specs = (
+        ("ma25", "ma25_rising", "ma25_touch_pct", "25MAタッチ"),
+        ("ma200", "ma200_rising", "ma200_touch_pct", "200MAタッチ"),
+        ("ma240", "ma240_rising", "ma240_touch_pct", "240MAタッチ"),
+    )
+    for key, rising_key, touch_key, label in specs:
+        rising = bool(indicators.get(rising_key, False))
+        touch_distance = indicators.get(touch_key)
+        try:
+            touch_distance = float(touch_distance)
+        except (TypeError, ValueError):
+            touch_distance = None
+        is_touch = bool(rising and touch_distance is not None and touch_distance <= touch_pct)
+        result[f"{key}_touch"] = is_touch
+        if is_touch:
+            touched_labels.append(label)
+    result["ma_touch_any"] = bool(touched_labels)
+    result["ma_touch_labels"] = " / ".join(touched_labels)
+    return result
 
 
 def passes_base_filters(indicators: dict[str, float]) -> tuple[bool, list[str]]:
