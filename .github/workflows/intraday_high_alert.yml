@@ -36,7 +36,12 @@ jobs:
   intraday-high-alert:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    # 本番(schedule)は必ず全銘柄。QUICK_MODE は手動実行(workflow_dispatch)のテスト時だけ有効。
+    # 前日EODのスクリーニング結果アーティファクトを読むため read 権限が要る。
+    permissions:
+      contents: read
+      actions: read
+    # 本番(schedule)は必ず全銘柄が母集団だが、intraday_watchlist.csv があれば200〜500銘柄に絞る。
+    # QUICK_MODE は手動実行(workflow_dispatch)のテスト時だけ有効。
     env:
       QUICK_MODE: ${{ github.event_name == 'schedule' && 'false' || (github.event.inputs.quick_mode == 'false' && 'false' || 'true') }}
       MAX_SYMBOLS: ${{ github.event.inputs.max_symbols || '30' }}
@@ -82,12 +87,38 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      # 前日引け後の daily-discipline ジョブが上げた screening_result.csv を取得（ジョブ間はFS非共有のため）。
+      # 取得できなくても失敗にしない＝ウォッチリストが無ければ intraday は全銘柄にフォールバックする。
+      - name: Fetch latest EOD screening result (best-effort)
+        if: steps.holiday.outputs.skip != 'true'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p outputs
+          run_id=$(gh run list --workflow daily-discipline.yml --status success --limit 1 --json databaseId --jq '.[0].databaseId' 2>/dev/null || true)
+          if [ -n "$run_id" ]; then
+            echo "download screening artifact from run_id=$run_id"
+            gh run download "$run_id" -n stock-news-monitor-outputs -D outputs 2>/dev/null || echo "artifact download skipped"
+          else
+            echo "no successful daily-discipline run found -> full universe fallback"
+          fi
+          find outputs -name 'screening_result*.csv' 2>/dev/null || true
+
+      # 前日EODの結果から日中監視用ウォッチリスト（200〜500銘柄）を作る。無ければ全銘柄フォールバック。
+      - name: Build intraday watchlist (200-500 symbols)
+        if: steps.holiday.outputs.skip != 'true'
+        run: |
+          python3 build_intraday_watchlist.py || echo "watchlist build skipped -> full universe fallback"
+
       - name: Run intraday high alert
         if: steps.holiday.outputs.skip != 'true'
         env:
           GMAIL_USER: ${{ secrets.GMAIL_USER }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           MAIL_TO: ${{ secrets.MAIL_TO }}
+          # 既定でウォッチリストを優先（存在すれば200〜500銘柄に絞る。無ければ全銘柄）。
+          INTRADAY_USE_WATCHLIST: "1"
         run: |
           start=$(date +%s)
           if [ "${QUICK_MODE}" = "true" ]; then

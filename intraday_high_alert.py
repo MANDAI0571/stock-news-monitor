@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 from dataclasses import dataclass, asdict
 from functools import lru_cache
 from datetime import date, datetime
@@ -46,7 +47,43 @@ from scanner.universe import UniverseConfig, load_jpx_listed
 PROJECT_ROOT = Path(__file__).resolve().parent
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "outputs"
 
+# 日中監視の軽量ウォッチリスト（前日EODから build_intraday_watchlist.py が生成）。
+# これがあれば全銘柄ではなく200〜500銘柄だけを監視する。無ければ全銘柄にフォールバック。
+WATCHLIST_NAME = "intraday_watchlist.csv"
+
 DISCLAIMER = "※これは投資助言ではなく、スクリーニング通知です。売買判断は自己責任で行ってください。"
+
+
+def _watchlist_enabled() -> bool:
+    """INTRADAY_USE_WATCHLIST（既定 1=有効）。0/false でウォッチリストを無視し全銘柄に戻す。"""
+    return os.environ.get("INTRADAY_USE_WATCHLIST", "1").strip().lower() not in ("0", "false", "no", "off")
+
+
+def load_watchlist_codes(path: Path) -> set[str] | None:
+    """intraday_watchlist.csv から監視対象コードを読む。無ければ None（＝全銘柄フォールバック）。
+    英数字4桁コード(285A等)もそのまま保持する。捏造しない。"""
+    path = Path(path)
+    if not path.exists() or path.stat().st_size == 0:
+        return None
+    try:
+        df = pd.read_csv(path, dtype={"code": str}, encoding="utf-8-sig")
+    except Exception as exc:  # 壊れていても全体は止めない
+        print(f"watchlist_read_error={exc} -> 全銘柄にフォールバック", flush=True)
+        return None
+    if "code" not in df.columns or df.empty:
+        return None
+    codes: set[str] = set()
+    for raw in df["code"].tolist():
+        s = str(raw).strip().upper()
+        if not s:
+            continue
+        if re.fullmatch(r"[0-9A-Z]{4}", s):
+            codes.add(s)
+        else:
+            digits = re.sub(r"\D", "", s)
+            if digits:
+                codes.add(digits.zfill(4))
+    return codes or None
 
 # 流動性ゲート（出来高が極端に少ない銘柄を弾く）。20日平均売買代金の下限（円）。
 MIN_TURNOVER = float(os.environ.get("IH_MIN_TURNOVER", "100000000"))  # 1億円
@@ -346,8 +383,17 @@ def scan(
     markets: tuple[str, ...] = ("prime", "standard", "growth"),
     limit: int | None = None,
     period: str = "14mo",
+    watchlist_codes: set[str] | None = None,
 ) -> list[Alert]:
     universe = load_jpx_listed(UniverseConfig(markets=markets))
+    if watchlist_codes:
+        # 日中は前日EODで選んだ200〜500銘柄だけを監視（軽量化）。該当0件なら絞らない（フォールバック）。
+        filtered = universe[universe["code"].astype(str).str.strip().str.upper().isin(watchlist_codes)]
+        if not filtered.empty:
+            print(f"intraday_watchlist_applied={len(filtered)}/{len(universe)}銘柄", flush=True)
+            universe = filtered.reset_index(drop=True)
+        else:
+            print("intraday_watchlist_empty_match -> 全銘柄で実行", flush=True)
     if limit:
         print(f"WARNING: limit={limit} は動作確認用。本番は全銘柄で実行してください。", flush=True)
         universe = universe.head(limit)
@@ -401,8 +447,15 @@ def run(
     dry_run: bool,
 ) -> int:
     day = date.today().strftime("%Y%m%d")
+    watchlist_codes: set[str] | None = None
+    if _watchlist_enabled():
+        watchlist_codes = load_watchlist_codes(output_dir / WATCHLIST_NAME)
+        if watchlist_codes:
+            print(f"intraday_watchlist_loaded={len(watchlist_codes)}銘柄 path={output_dir / WATCHLIST_NAME}", flush=True)
+        else:
+            print("intraday_watchlist_none -> 全銘柄で監視（フォールバック）", flush=True)
     try:
-        alerts = scan(markets=markets, limit=limit)
+        alerts = scan(markets=markets, limit=limit, watchlist_codes=watchlist_codes)
     except Exception as exc:
         print(f"intraday_scan_error={exc}")
         print("（ネット未接続のクラウドでは取得できません。GitHub Actions / Mac で実行してください）")

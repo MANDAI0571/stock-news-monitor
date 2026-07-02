@@ -34,6 +34,7 @@ def main() -> None:
     _test_9256_limit50_excluded_but_full_universe_included()
     _test_swing_high_break_9256_style()
     _test_journal_and_pattern_learning()
+    _test_intraday_watchlist()
     print("self-test: OK")
 
 
@@ -440,6 +441,53 @@ def _test_duke_old_high_support() -> None:
     scored = score_stock(indicators, None, {"earnings_status": "確認済"}, duke_support=duke)
     assert scored["score"] >= duke["duke_support_score"], scored
     assert "DUKE旧52週高値サポート" in scored["reason"], scored
+
+
+def _test_intraday_watchlist() -> None:
+    """日中監視ウォッチリスト: 選定・優先順・上限クリップ・英数字コード・全銘柄フォールバック。"""
+    from build_intraday_watchlist import select_watchlist, build, WATCHLIST_NAME
+    from intraday_high_alert import load_watchlist_codes
+
+    df = pd.DataFrame([
+        {"code": "7203", "name": "トヨタ", "market": "東証プライム", "rank": "S", "score": 90,
+         "dist_52w_high_pct": 0.5, "turnover_20d": 5e10, "high_type": "52W_NEW_HIGH", "volume_ratio_5d_20d": 2.0},
+        {"code": "285A", "name": "キオクシア", "market": "東証プライム", "rank": "見送り", "score": 40,
+         "dist_52w_high_pct": 2.0, "turnover_20d": 1e10, "high_type": "52W_NEAR_HIGH", "volume_ratio_5d_20d": 1.1},
+        {"code": "0000", "name": "除外", "market": "東証スタンダード", "rank": "見送り", "score": 5,
+         "dist_52w_high_pct": 50.0, "turnover_20d": 1e7, "high_type": "OTHER", "volume_ratio_5d_20d": 0.8},
+    ])
+    wl = select_watchlist(df, max_symbols=300, near_pct=5.0, turnover_top=2, vol_mult=1.5)
+    codes = list(wl["code"])
+    assert codes[0] == "7203", codes            # S候補が最優先
+    assert "285A" in codes                        # 英数字コードが52週接近で残る
+    assert "0000" not in codes                    # 非該当は除外
+
+    # 上限クリップ（200〜500）
+    big = pd.DataFrame([
+        {"code": f"{1000 + i}", "name": f"n{i}", "market": "東証プライム", "rank": "S", "score": 100 - i,
+         "dist_52w_high_pct": 0.1, "turnover_20d": 1e9, "high_type": "52W_NEW_HIGH", "volume_ratio_5d_20d": 1.6}
+        for i in range(600)
+    ])
+    assert len(select_watchlist(big, max_symbols=1000)) == 500
+    assert len(select_watchlist(big, max_symbols=50)) == 200
+
+    # turnover_20d 列が無くても落ちない
+    assert "7203" in list(select_watchlist(df.drop(columns=["turnover_20d", "volume_ratio_5d_20d"]))["code"])
+    # 空入力 → 空
+    assert select_watchlist(pd.DataFrame()).empty
+
+    with TemporaryDirectory() as tmp:
+        out = Path(tmp)
+        # screening_result.csv から build → intraday が読める
+        df.to_csv(out / "screening_result.csv", index=False, encoding="utf-8-sig")
+        path = build(out)
+        assert path is not None and path.name == WATCHLIST_NAME
+        loaded = load_watchlist_codes(path)
+        assert loaded is not None and "7203" in loaded and "285A" in loaded, loaded
+        # ファイルが無ければ None（＝全銘柄フォールバック）
+        assert load_watchlist_codes(out / "does_not_exist.csv") is None
+        # screening が無ければ build は None（フォールバック）
+        assert build(Path(tmp) / "empty_sub") is None
 
 
 if __name__ == "__main__":
