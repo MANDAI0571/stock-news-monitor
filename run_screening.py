@@ -108,13 +108,26 @@ def _log_step(label: str, seconds: float, extra: str = "") -> None:
     print(f"[timing] {label}: {seconds:.1f}s{suffix}", flush=True)
 
 
-def write_result_csv(result: pd.DataFrame, output_dir: str | Path) -> Path:
-    """outputs/screening_result.csv を必ず保存する（GitHub Actions の Artifacts 用）。
-    候補が0件・列無しでも、表示用ヘッダーだけの空CSVを残す（ファイルが無い事態を防ぐ）。"""
+def write_result_csv(
+    result: pd.DataFrame,
+    output_dir: str | Path,
+    allow_empty_overwrite: bool = True,
+) -> Path:
+    """outputs/screening_result.csv を保存する（GitHub Actions の Artifacts 用）。
+    候補が0件・列無しでも、表示用ヘッダーだけの空CSVを残す（ファイルが無い事態を防ぐ）。
+    ただし allow_empty_overwrite=False（例外発生時など）で結果が空のときは、
+    既存の正常な結果CSVを空で上書きしない（前回の正常候補を保持する）。"""
     directory = Path(output_dir)
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / FIXED_RESULT_NAME
-    if result is None or result.empty or len(result.columns) == 0:
+    is_empty = result is None or result.empty or len(result.columns) == 0
+    if is_empty:
+        if not allow_empty_overwrite and path.exists():
+            print(
+                f"WARNING: 例外/空結果のため固定CSVは上書きしません（前回の正常結果を保持）: {path}",
+                flush=True,
+            )
+            return path
         pd.DataFrame(columns=DISPLAY_COLUMNS).to_csv(path, index=False, encoding="utf-8-sig")
     else:
         result.to_csv(path, index=False, encoding="utf-8-sig")
@@ -230,7 +243,6 @@ def run_screening(
                 rows.append(row_base | rejection_row(None, f"エラー: {exc}"))
 
     _log_step("scan_loop", time.perf_counter() - loop_started, f"symbols={total} rows={len(rows)}")
-    print(f"[TIMER] run_screening_loop elapsed={time.perf_counter() - screening_started:.1f}s rows={len(rows)}", flush=True)
     result = pd.DataFrame(rows)
     # 専用CSVはメイン候補の有無に依存させない。該当0件なら書かない。
     _write_aux_csv(pullback_rows, output_dir, "screening_pullback")
@@ -540,6 +552,7 @@ def main() -> None:
 
     # 途中で止まっても screening_result.csv を必ず残す（GitHub Actions が安定して回るように）。
     result = pd.DataFrame()
+    failed = False
     try:
         result = run_screening(
             markets=tuple(args.markets),
@@ -550,18 +563,28 @@ def main() -> None:
             strict=args.strict,
         )
     except Exception as exc:  # noqa: BLE001 - ワークフローを止めないため全例外を捕捉
+        failed = True
+        import traceback
         print(f"ERROR run_screening failed: {exc}", flush=True)
+        traceback.print_exc()
 
-    # 1) 固定名 outputs/screening_result.csv は必ず保存（空でもヘッダー付き）。
-    fixed_path = write_result_csv(result, args.output_dir)
-    print(f"保存しました（固定名・必ず保存）: {fixed_path}", flush=True)
-    # 2) タイムスタンプ付きの履歴用CSVも従来どおり残す。
-    stamped_path = timestamped_csv_path(args.output_dir)
-    result.to_csv(stamped_path, index=False, encoding="utf-8-sig")
-    print(f"保存しました: {stamped_path}", flush=True)
+    # 1) 固定名 outputs/screening_result.csv は必ず保存（正常な0件ならヘッダー付き空CSV）。
+    #    ただし例外発生（failed）で空になった場合は、前回の正常な結果CSVを空で上書きしない。
+    fixed_path = write_result_csv(result, args.output_dir, allow_empty_overwrite=not failed)
+    print(f"保存しました（固定名）: {fixed_path}", flush=True)
+    # 2) タイムスタンプ付きの履歴用CSVは、例外で空のときは作らない（空ファイルを増やさない）。
+    if not (failed and result.empty):
+        stamped_path = timestamped_csv_path(args.output_dir)
+        result.to_csv(stamped_path, index=False, encoding="utf-8-sig")
+        print(f"保存しました: {stamped_path}", flush=True)
+    else:
+        print("例外発生のため履歴用CSVは作成しません（前回の正常結果を保持）。", flush=True)
 
     if result.empty:
-        print("条件に合う銘柄はありませんでした（または取得失敗）。空のCSVを保存しました。")
+        if failed:
+            print("例外により候補を取得できませんでした（前回の固定CSVは保持）。", flush=True)
+        else:
+            print("条件に合う銘柄はありませんでした（または取得失敗）。空のCSVを保存しました。", flush=True)
         _log_step("run_screening_main", time.perf_counter() - started, "candidates=0")
         return
 
