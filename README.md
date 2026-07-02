@@ -346,3 +346,28 @@ timeout-minutes: 30
 6. `screening_result.csv` または `screening_result_YYYYMMDD_HHMMSS.csv` が含まれることを確認する
 
 QUICK_MODEではnote.com保存とGmail通知はスキップします。まず5分以内の安定完了を確認し、その後に `QUICK_MODE=false` または環境変数削除で全銘柄運用へ戻します。
+
+
+## GitHub Actionsクラウド運用方針
+
+日常処理はMacのlaunchdやローカル常駐では動かさず、GitHub Actionsだけで実行します。
+
+- 日次スクリーニングとNote下書き4本生成: `.github/workflows/daily-discipline.yml`
+- 生成物: Artifacts `stock-news-monitor-outputs`
+  - `outputs/note_highs.md`（52週新高値到達・接近）
+  - `outputs/note_pullback.md`（新高値後の押し目・25MA/200MA/240MA付近候補）
+  - `outputs/note_chatgpt.md`（300万円運用 ChatGPT版）
+  - `outputs/note_claude.md`（300万円運用 Claude版）
+- Gmail通知: `.github/workflows/intraday_high_alert.yml` の直近高値接近・到達アラートだけ
+- 送らないメール:
+  - note下書き完了通知
+  - 300万円運用通知
+  - 52週高値更新/接近通知
+  - 25MA/200MA/240MA/リテスト通知
+
+Macで日常実行する必要はありません。確認用の最小コマンドだけを使います。
+
+```bash
+cd ~/stock-news-monitor
+python3 self_test.py
+```

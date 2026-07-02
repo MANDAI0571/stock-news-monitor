@@ -1,12 +1,10 @@
 """ザラ場中のリアルタイム高値アラート（Gmail通知）。
 
-目的: ザラ場中に「直近高値の接近・ブレイク」と「52週高値の接近・更新」に該当した
-個別株だけを Gmail で即通知する。日次note処理（daily_discipline_run.py /
-note_draft.py / note_autosave.py）とは完全に独立。投稿・公開は一切しない。
+目的: ザラ場中に「直近高値の接近・ブレイク」に該当した
+個別株だけを Gmail で即通知する。52週高値メール、note下書き通知、300万円運用通知は送らない。
+日次note処理（daily_discipline_run.py / note_draft.py / note_autosave.py）とは完全に独立。投稿・公開は一切しない。
 
 通知する対象（high_type）:
-  - 52W_NEW_HIGH   → 「52週高値更新」
-  - 52W_NEAR_HIGH  → 「52週高値接近」（52週高値まで3%以内）
   - SWING_HIGH_BREAK / RECENT_NEW_HIGH → 「直近高値ブレイク」
   - RECENT_NEAR_HIGH → 「直近高値接近」（直近スイング高値まで3%以内）
 
@@ -88,20 +86,19 @@ def load_watchlist_codes(path: Path) -> set[str] | None:
 # 流動性ゲート（出来高が極端に少ない銘柄を弾く）。20日平均売買代金の下限（円）。
 MIN_TURNOVER = float(os.environ.get("IH_MIN_TURNOVER", "100000000"))  # 1億円
 
-# 通知対象の high_type → アラート種別（日本語）。これ以外（MAタッチ/リテスト等）は対象外。
+# 通知対象の high_type → アラート種別（日本語）。
+# Gmail通知は「直近高値接近・到達」だけ。52週高値系、MAタッチ、リテスト、note通知は対象外。
 ALERT_TYPE_BY_HIGH_TYPE: dict[str, str] = {
-    "52W_NEW_HIGH": "52週高値更新",
-    "52W_NEAR_HIGH": "52週高値接近",
     "SWING_HIGH_BREAK": "直近高値ブレイク",
     "RECENT_NEW_HIGH": "直近高値ブレイク",
     "RECENT_NEAR_HIGH": "直近高値接近",
 }
 
 # 「更新・ブレイク」系（接近ではなく既に達成）の high_type。
-BREAK_HIGH_TYPES = {"52W_NEW_HIGH", "SWING_HIGH_BREAK", "RECENT_NEW_HIGH"}
+BREAK_HIGH_TYPES = {"SWING_HIGH_BREAK", "RECENT_NEW_HIGH"}
 
-# 52週系か直近系かでラインの出所を変える。
-FIFTYTWO_HIGH_TYPES = {"52W_NEW_HIGH", "52W_NEAR_HIGH"}
+# 52週系はメール通知しないため空。
+FIFTYTWO_HIGH_TYPES: set[str] = set()
 
 
 @dataclass
@@ -109,9 +106,9 @@ class Alert:
     code: str
     name: str
     current_price: float
-    alert_type: str          # 52週高値更新 / 52週高値接近 / 直近高値ブレイク / 直近高値接近
+    alert_type: str          # 直近高値ブレイク / 直近高値接近
     high_type: str           # 元の high_type（監査用）
-    line_label: str          # 「52週高値」/「直近高値」
+    line_label: str          # 「直近高値」
     line_price: float        # 高値ライン
     dist_pct: float          # 高値ラインまでの乖離率（%）。更新時は0.0。
     is_break: bool           # 更新・ブレイクなら True
@@ -280,8 +277,8 @@ def build_body(new_alerts: list[Alert]) -> str:
         f"新規アラート: {len(new_alerts)}件",
         "",
     ]
-    # 種別ごとにまとめる（更新→接近の順）
-    order = ["52週高値更新", "52週高値接近", "直近高値ブレイク", "直近高値接近"]
+    # 種別ごとにまとめる（直近高値のブレイク→接近の順）。52週高値系はメールしない。
+    order = ["直近高値ブレイク", "直近高値接近"]
     grouped: dict[str, list[Alert]] = {key: [] for key in order}
     for alert in new_alerts:
         grouped.setdefault(alert.alert_type, []).append(alert)
@@ -506,64 +503,71 @@ def _self_test() -> int:
         base.update(kw)
         return base
 
-    # 52週高値更新
-    a = build_alert("7173", "東京きらぼし", ind(), {"high_type": "52W_NEW_HIGH"})
-    assert a is not None and a.alert_type == "52週高値更新" and a.is_break and a.dist_pct == 0.0, a
-
-    # 52週高値接近
-    a = build_alert("8524", "北洋銀行",
-                    ind(current_price=992.0, dist_52w_high_pct=0.8),
-                    {"high_type": "52W_NEAR_HIGH"})
-    assert a is not None and a.alert_type == "52週高値接近" and not a.is_break and a.dist_pct == 0.8, a
-    subj = build_subject([a])
-    assert "52週高値まで0.8%" in subj, subj
+    # 52週高値系はNote対象であり、Gmailリアルタイム通知はしない。
+    assert build_alert("7173", "東京きらぼし", ind(), {"high_type": "52W_NEW_HIGH"}) is None
+    assert build_alert("8524", "北洋銀行", ind(current_price=992.0, dist_52w_high_pct=0.8), {"high_type": "52W_NEAR_HIGH"}) is None
 
     # 直近高値ブレイク（スイング）
-    a = build_alert("7011", "三菱重工",
-                    ind(), {"high_type": "SWING_HIGH_BREAK", "high_price": 990.0,
-                            "dist_to_high_pct": 0.0})
+    a = build_alert("7011", "三菱重工", ind(), {
+        "high_type": "SWING_HIGH_BREAK",
+        "high_price": 990.0,
+        "dist_to_high_pct": 0.0,
+    })
     assert a is not None and a.alert_type == "直近高値ブレイク" and a.is_break, a
+    assert a.line_label == "直近高値", a
 
     # 直近高値接近（recent near）
-    a = build_alert("6951", "日本電子",
-                    ind(), {"high_type": "RECENT_NEAR_HIGH", "high_price": 1010.0,
-                            "dist_to_high_pct": 1.0})
+    a = build_alert("6951", "日本電子", ind(), {
+        "high_type": "RECENT_NEAR_HIGH",
+        "high_price": 1010.0,
+        "dist_to_high_pct": 1.0,
+    })
     assert a is not None and a.alert_type == "直近高値接近" and a.line_label == "直近高値" and a.dist_pct == 1.0, a
+    subj = build_subject([a])
+    assert "直近高値まで1.0%" in subj, subj
 
     # 対象外: MAタッチ・分類外は None
     assert build_alert("0000", "x", ind(), {"high_type": "OTHER"}) is None
     assert build_alert("0000", "x", ind(), {"high_type": "RETEST_52W"}) is None
 
     # 流動性不足は None
-    assert build_alert("0000", "x", ind(turnover_20d=10_000_000.0),
-                       {"high_type": "52W_NEW_HIGH"}) is None
+    assert build_alert("0000", "x", ind(turnover_20d=10_000_000.0), {
+        "high_type": "RECENT_NEAR_HIGH",
+        "high_price": 1010.0,
+        "dist_to_high_pct": 1.0,
+    }) is None
 
     # 重複通知防止
     import tempfile
     with tempfile.TemporaryDirectory() as td:
-        sp = state_path(Path(td), "20260628")
-        st = DedupState(sp, "20260628")
-        alert = build_alert("7173", "東京きらぼし", ind(), {"high_type": "52W_NEW_HIGH"})
+        sp = state_path(Path(td), "20260703")
+        st = DedupState(sp, "20260703")
+        alert = build_alert("7173", "東京きらぼし", ind(), {
+            "high_type": "SWING_HIGH_BREAK",
+            "high_price": 990.0,
+            "dist_to_high_pct": 0.0,
+        })
         assert st.is_new(alert)
         st.mark(alert)
         st.save()
-        st2 = DedupState(sp, "20260628")
+        st2 = DedupState(sp, "20260703")
         assert not st2.is_new(alert), "同日・同種別は再通知しないはず"
         # 別種別なら通知可
-        near = build_alert("7173", "東京きらぼし",
-                           ind(current_price=992.0, dist_52w_high_pct=0.8),
-                           {"high_type": "52W_NEAR_HIGH"})
+        near = build_alert("7173", "東京きらぼし", ind(), {
+            "high_type": "RECENT_NEAR_HIGH",
+            "high_price": 1010.0,
+            "dist_to_high_pct": 1.0,
+        })
         assert st2.is_new(near), "別アラート種別は通知できるはず"
         # 翌日は同種別でも再通知
-        st3 = DedupState(state_path(Path(td), "20260629"), "20260629")
+        st3 = DedupState(state_path(Path(td), "20260704"), "20260704")
         assert st3.is_new(alert)
 
     # CSV出力（新規フラグ付き）
     with tempfile.TemporaryDirectory() as td:
         alerts = [
-            build_alert("7173", "A", ind(), {"high_type": "52W_NEW_HIGH"}),
-            build_alert("8524", "B", ind(current_price=992.0, dist_52w_high_pct=0.8),
-                        {"high_type": "52W_NEAR_HIGH"}),
+            build_alert("7173", "A", ind(), {"high_type": "SWING_HIGH_BREAK", "high_price": 990.0, "dist_to_high_pct": 0.0}),
+            build_alert("8524", "B", ind(), {"high_type": "RECENT_NEAR_HIGH", "high_price": 1010.0, "dist_to_high_pct": 0.8}),
         ]
         new_keys = {alerts[0].dedup_key()}
         path = write_csv(alerts, new_keys, Path(td))
@@ -573,19 +577,18 @@ def _self_test() -> int:
 
     # 本文・件名（複数）
     multi = [
-        build_alert("7173", "東京きらぼし", ind(), {"high_type": "52W_NEW_HIGH"}),
-        build_alert("8524", "北洋銀行", ind(current_price=992.0, dist_52w_high_pct=0.8),
-                    {"high_type": "52W_NEAR_HIGH"}),
+        build_alert("7173", "東京きらぼし", ind(), {"high_type": "SWING_HIGH_BREAK", "high_price": 990.0, "dist_to_high_pct": 0.0}),
+        build_alert("8524", "北洋銀行", ind(), {"high_type": "RECENT_NEAR_HIGH", "high_price": 1010.0, "dist_to_high_pct": 0.8}),
     ]
     body = build_body(multi)
-    assert "52週高値更新（1件）" in body and "52週高値接近（1件）" in body, body
+    assert "直近高値ブレイク（1件）" in body and "直近高値接近（1件）" in body, body
+    assert "52週高値" not in body, body
     assert "決算予定日" in body and "OpenWork評価" in body, body
     assert DISCLAIMER in body
     assert "ほか1件" in build_subject(multi)
 
     print("SELF_TEST_PASS")
     return 0
-
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="ザラ場リアルタイム高値アラート（Gmail）")

@@ -2,9 +2,6 @@ name: Note Autosave
 
 on:
   workflow_dispatch:
-  schedule:
-    # 07:30 JST, Monday-Friday. GitHub Actions uses UTC.
-    - cron: "30 22 * * 0-4"
 
 jobs:
   note-autosave:
@@ -55,14 +52,6 @@ jobs:
           NOTE_PASSWORD: ${{ secrets.NOTE_PASSWORD }}
         run: python3 note_autosave.py
 
-      - name: Send Gmail notification with note URL
-        if: env.QUICK_MODE != 'true'
-        env:
-          GMAIL_USER: ${{ secrets.GMAIL_USER }}
-          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
-          MAIL_TO: ${{ secrets.MAIL_TO }}
-        run: python3 daily_note_mail.py
-
       - name: Upload outputs
         uses: actions/upload-artifact@v4
         with:
@@ -73,5 +62,18 @@ jobs:
             outputs/note_daily.md
             outputs/note_title.txt
             outputs/note_daily.html
+            outputs/note_chatgpt.md
+            outputs/note_claude.md
+            outputs/note_pullback.md
+            outputs/note_highs.md
+            outputs/note_chatgpt.html
+            outputs/note_claude.html
+            outputs/note_pullback.html
+            outputs/note_highs.html
+            outputs/note_chatgpt_title.txt
+            outputs/note_claude_title.txt
+            outputs/note_pullback_title.txt
+            outputs/note_highs_title.txt
+            outputs/note_drafts_manifest.json
             outputs/note_draft_url.txt
           if-no-files-found: warn
