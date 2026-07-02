@@ -322,3 +322,27 @@ QUICKワークフローは取得失敗やデータ不足があっても途中で
 python3 self_test.py                                  # ネット不要・常に通る
 QUICK_MODE=true MAX_SYMBOLS=30 python3 run_screening.py  # 上位30銘柄で軽量実行
 ```
+
+
+### GitHub Actions QUICK_MODE確認
+
+Actionsの初期確認は全銘柄ではなく30銘柄で短時間完了させます。
+workflowには以下を設定しています。
+
+```yaml
+env:
+  QUICK_MODE: "true"
+  MAX_SYMBOLS: "30"
+timeout-minutes: 30
+```
+
+確認手順:
+
+1. GitHubの `Actions` タブを開く
+2. `Daily Discipline Screening` を選ぶ
+3. `Run workflow` を押す
+4. ログで `[TIMER] install_dependencies` / `[TIMER] daily_discipline_run` / `[TIMER] note_draft` を確認する
+5. Artifacts の `stock-news-monitor-outputs` をダウンロードする
+6. `screening_result.csv` または `screening_result_YYYYMMDD_HHMMSS.csv` が含まれることを確認する
+
+QUICK_MODEではnote.com保存とGmail通知はスキップします。まず5分以内の安定完了を確認し、その後に `QUICK_MODE=false` または環境変数削除で全銘柄運用へ戻します。

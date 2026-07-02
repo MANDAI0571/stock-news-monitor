@@ -20,6 +20,24 @@ from scanner.universe import UniverseConfig, load_jpx_listed
 PROJECT_ROOT = Path(__file__).resolve().parent
 CAPITAL = 3_000_000
 
+
+def _quick_limit_from_env() -> int | None:
+    quick = os.environ.get("QUICK_MODE", "").lower() in {"1", "true", "yes", "on"}
+    max_symbols = os.environ.get("MAX_SYMBOLS", "").strip()
+    if max_symbols:
+        try:
+            return max(1, int(max_symbols))
+        except ValueError:
+            print(f"WARNING invalid MAX_SYMBOLS={max_symbols}; ignored", flush=True)
+    return 30 if quick else None
+
+
+def _write_latest_screening_copy(result: pd.DataFrame, output_dir: str | Path) -> Path:
+    path = Path(output_dir) / "screening_result.csv"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    result.to_csv(path, index=False, encoding="utf-8-sig")
+    return path
+
 # 結果CSV / コンソール表示で使う列。
 DISPLAY_COLUMNS = [
     "code",
@@ -212,6 +230,7 @@ def run_screening(
                 rows.append(row_base | rejection_row(None, f"エラー: {exc}"))
 
     _log_step("scan_loop", time.perf_counter() - loop_started, f"symbols={total} rows={len(rows)}")
+    print(f"[TIMER] run_screening_loop elapsed={time.perf_counter() - screening_started:.1f}s rows={len(rows)}", flush=True)
     result = pd.DataFrame(rows)
     # 専用CSVはメイン候補の有無に依存させない。該当0件なら書かない。
     _write_aux_csv(pullback_rows, output_dir, "screening_pullback")

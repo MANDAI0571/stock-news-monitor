@@ -14,6 +14,15 @@ name: Intraday High Alert
 
 on:
   workflow_dispatch:
+    inputs:
+      quick_mode:
+        description: "テスト用に先頭N銘柄だけ実行（手動確認用）"
+        type: boolean
+        default: true
+      max_symbols:
+        description: "QUICK_MODE時に処理する銘柄数"
+        type: string
+        default: "30"
   schedule:
     # 前場: 00:00〜02:30 UTC（= 09:00〜11:30 JST）平日のみ、15分ごと
     - cron: "0,15,30,45 0,1 * * 1-5"
@@ -27,9 +36,10 @@ jobs:
   intraday-high-alert:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # 本番(schedule)は必ず全銘柄。QUICK_MODE は手動実行(workflow_dispatch)のテスト時だけ有効。
     env:
-      QUICK_MODE: "true"
-      MAX_SYMBOLS: "30"
+      QUICK_MODE: ${{ github.event_name == 'schedule' && 'false' || (github.event.inputs.quick_mode == 'false' && 'false' || 'true') }}
+      MAX_SYMBOLS: ${{ github.event.inputs.max_symbols || '30' }}
 
     steps:
       - name: Checkout

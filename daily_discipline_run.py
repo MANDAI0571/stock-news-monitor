@@ -38,6 +38,9 @@ def parse_args() -> argparse.Namespace:
         default=["prime", "standard", "growth"],
     )
     parser.add_argument("--output-dir", default=str(PROJECT_ROOT / "outputs"))
+    # 本番の毎日スクリーニングは必ず全銘柄対象(limit=None)。動作確認用の絞り込みは
+    # QUICK_MODE / MAX_SYMBOLS 環境変数（run_screening 内部の resolve_symbol_limit）で行う。
+    # 本番経路にコマンドライン引数の銘柄数制限は置かない。
     parser.add_argument("--include-rejected", action="store_true")
     parser.add_argument("--send-gmail", action="store_true", help="GMAIL_USER/GMAIL_APP_PASSWORD/MAIL_TOでGmail通知を送る")
     parser.add_argument("--mail-max-rows", type=int, default=30, help="メール本文に表示するS/A/B候補の最大件数")
