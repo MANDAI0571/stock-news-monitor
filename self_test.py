@@ -36,6 +36,7 @@ def main() -> None:
     _test_journal_and_pattern_learning()
     _test_intraday_watchlist()
     _test_learning_log()
+    _test_decision_engine()
     print("self-test: OK")
 
 
@@ -543,6 +544,78 @@ def _test_learning_log() -> None:
         assert third.appended_rows == 2 and third.total_rows == 4
         saved = pd.read_csv(out, dtype={"code": str})
         assert {"date", "code", "strategy", "current", "volume_ratio"}.issubset(saved.columns)
+
+
+def _test_decision_engine() -> None:
+    import decision_engine as de
+
+    # A=BUY（Sランク・資金内・高値近い・出来高増・MA上・地合いNORMAL）
+    a = {
+        "code": "6920", "name": "テストA", "rank": "S", "score": 90,
+        "current_price": 3000, "dist_to_high_pct": 1.0, "volume_ratio_5d_20d": 1.5,
+        "ma25": 2500, "ma75": 2400, "ma200": 2000,
+    }
+    # B=WATCH（Sだが100株=120万で資金20%(60万)超＝高すぎ）
+    b = {
+        "code": "6857", "name": "テストB", "rank": "S", "score": 85,
+        "current_price": 12000, "dist_to_high_pct": 1.0, "volume_ratio_5d_20d": 1.5,
+        "ma25": 10000, "ma75": 9000, "ma200": 8000,
+    }
+    # C=SKIP（ランクB・高値から遠い・出来高細り・MA割れ）
+    c = {
+        "code": "1301", "name": "テストC", "rank": "B", "score": 40,
+        "current_price": 2000, "dist_to_high_pct": 18.0, "volume_ratio_5d_20d": 0.8,
+        "ma25": 2100, "ma75": 2200, "ma200": 2300,
+    }
+
+    df = pd.DataFrame([a, b, c])
+    dec = de.build_decisions(df, learning=None, regime="NORMAL")
+    by = {r["code"]: r for _, r in dec.iterrows()}
+
+    assert by["6920"]["decision"] == "BUY"
+    assert by["6920"]["position_size"] == 100
+    assert "Sランク" in by["6920"]["entry_reason"]
+    assert float(by["6920"]["stop_loss_price"]) == 2790.0
+    assert float(by["6920"]["take_profit_price"]) == 3450.0
+
+    assert by["6857"]["decision"] == "WATCH"
+    assert by["6857"]["position_size"] == 0
+    assert "高すぎ" in by["6857"]["skip_reason"] or "資金20%" in by["6857"]["skip_reason"]
+
+    assert by["1301"]["decision"] == "SKIP"
+    assert by["1301"]["entry_reason"] == ""
+    assert by["1301"]["skip_reason"] != ""
+
+    # 地合いSTOPなら BUY はゼロ（新規停止）
+    dec_stop = de.build_decisions(df, learning=None, regime="STOP")
+    assert int((dec_stop["decision"] == "BUY").sum()) == 0
+
+    # 最大3銘柄の枠上限（BUY適格4件→BUY3＋WATCH1に降格）
+    many = pd.DataFrame([
+        {"code": f"A{i}", "name": f"m{i}", "rank": "S", "score": s,
+         "current_price": 3000, "dist_to_high_pct": 1.0, "volume_ratio_5d_20d": 1.5,
+         "ma25": 2500, "ma75": 2400, "ma200": 2000}
+        for i, s in enumerate([90, 85, 80, 75], start=1)
+    ])
+    dec_many = de.build_decisions(many, learning=None, regime="NORMAL")
+    assert int((dec_many["decision"] == "BUY").sum()) == de.MAX_POSITIONS
+    assert int((dec_many["decision"] == "WATCH").sum()) == 1
+
+    # run(): CSV + MD 出力、集計、入力欠損の安全動作
+    with TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        inp = tmp_path / "screening_result.csv"
+        df.to_csv(inp, index=False, encoding="utf-8-sig")
+        res = de.run(screening_path=inp, learning_path=tmp_path / "none.csv",
+                     out_dir=tmp_path, regime="NORMAL")
+        assert res["input_exists"] is True
+        assert res["buy"] == 1 and res["watch"] == 1 and res["skip"] == 1
+        assert (tmp_path / "decision_result.csv").exists()
+        assert (tmp_path / "decision_report.md").exists()
+
+        missing = de.run(screening_path=tmp_path / "no_such.csv",
+                         learning_path=tmp_path / "none.csv", out_dir=tmp_path)
+        assert missing["input_exists"] is False and missing["rows"] == 0
 
 
 if __name__ == "__main__":
