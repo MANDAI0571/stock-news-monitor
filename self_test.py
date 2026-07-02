@@ -35,6 +35,7 @@ def main() -> None:
     _test_swing_high_break_9256_style()
     _test_journal_and_pattern_learning()
     _test_intraday_watchlist()
+    _test_learning_log()
     print("self-test: OK")
 
 
@@ -488,6 +489,60 @@ def _test_intraday_watchlist() -> None:
         assert load_watchlist_codes(out / "does_not_exist.csv") is None
         # screening が無ければ build は None（フォールバック）
         assert build(Path(tmp) / "empty_sub") is None
+
+
+def _test_learning_log() -> None:
+    from learning_log import append_learning_candidates, build_learning_rows, infer_strategy
+
+    sample = pd.DataFrame([
+        {
+            "code": "1111",
+            "ticker": "1111.T",
+            "name": "A",
+            "market": "東証プライム",
+            "sector": "情報・通信業",
+            "score": 90,
+            "rank": "S",
+            "current_price": 1000,
+            "dist_52w_high_pct": 1.2,
+            "pullback_from_recent_high_pct": -12.3,
+            "volume_ratio_5d_20d": 1.8,
+            "turnover_20d": 200_000_000,
+            "high_type": "SWING_HIGH_BREAK",
+            "reason": "テスト",
+        },
+        {
+            "code": "2222",
+            "name": "B",
+            "score": 70,
+            "rank": "A",
+            "current_price": 800,
+            "duke_old_high_support": True,
+            "duke_support_score": 85,
+            "duke_support_rank": "S",
+            "duke_support_signal": True,
+            "reason": "DUKE",
+        },
+    ])
+    rows = build_learning_rows(sample, run_date="2026-07-03")
+    assert list(rows["code"]) == ["1111", "2222"]
+    assert rows.loc[0, "strategy"] == "swing_high_break"
+    assert rows.loc[1, "strategy"] == "duke_old_high_support"
+    assert infer_strategy(sample.iloc[1]) == "duke_old_high_support"
+
+    with TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        inp = tmp_path / "screening_result.csv"
+        out = tmp_path / "learning_candidates.csv"
+        sample.to_csv(inp, index=False, encoding="utf-8-sig")
+        first = append_learning_candidates(inp, out, run_date="2026-07-03")
+        assert first.input_rows == 2 and first.appended_rows == 2 and first.total_rows == 2
+        second = append_learning_candidates(inp, out, run_date="2026-07-03")
+        assert second.input_rows == 2 and second.appended_rows == 0 and second.total_rows == 2
+        third = append_learning_candidates(inp, out, run_date="2026-07-04")
+        assert third.appended_rows == 2 and third.total_rows == 4
+        saved = pd.read_csv(out, dtype={"code": str})
+        assert {"date", "code", "strategy", "current", "volume_ratio"}.issubset(saved.columns)
 
 
 if __name__ == "__main__":
