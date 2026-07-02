@@ -1,0 +1,21 @@
+﻿signal_date,code,name,decision,rank,score,confidence,near_high,vol_up,entry_date,entry_open,entry_close,close_d2,close_d3,close_d5,close_d10,max_gain_pct,max_drop_pct,stop_hit,tp_hit,first_hit,exit_date,exit_price,exit_return_pct,exit_reason,status,last_updated
+2026-07-03,1860,戸田建設,BUY,S,106,100,True,True,,,,,,,,,,,,,,,,,PENDING,2026-07-03
+2026-07-03,3105,日清紡ホールディングス,BUY,S,113,100,True,True,,,,,,,,,,,,,,,,,PENDING,2026-07-03
+2026-07-03,7747,朝日インテック,BUY,S,108,100,True,True,,,,,,,,,,,,,,,,,PENDING,2026-07-03
+2026-07-03,2175,エス・エム・エス,WATCH,S,108,88,False,True,,,,,,,,,,,,,,,,,PENDING,2026-07-03
+2026-07-03,2810,ハウス食品グループ本社,WATCH,S,103,88,False,True,,,,,,,,,,,,,,,,,PENDING,2026-07-03
+2026-07-03,3436,ＳＵＭＣＯ,WATCH,S,103,77,False,False,,,,,,,,,,,,,,,,,PENDING,2026-07-03
+2026-07-03,6315,ＴＯＷＡ,WATCH,S,103,77,False,False,,,,,,,,,,,,,,,,,PENDING,2026-07-03
+2026-07-03,6525,ＫＯＫＵＳＡＩ　ＥＬＥＣＴＲＩＣ,WATCH,S,111,77,False,True,,,,,,,,,,,,,,,,,PENDING,2026-07-03
+2026-07-03,6707,サンケン電気,WATCH,S,103,77,False,True,,,,,,,,,,,,,,,,,PENDING,2026-07-03
+2026-07-03,6752,パナソニック　ホールディングス,WATCH,S,103,77,False,False,,,,,,,,,,,,,,,,,PENDING,2026-07-03
+2026-07-03,6925,ウシオ電機,WATCH,S,108,88,False,True,,,,,,,,,,,,,,,,,PENDING,2026-07-03
+2026-07-03,7735,ＳＣＲＥＥＮホールディングス,WATCH,S,111,77,False,True,,,,,,,,,,,,,,,,,PENDING,2026-07-03
+2026-07-03,7966,リンテック,WATCH,S,103,77,False,True,,,,,,,,,,,,,,,,,PENDING,2026-07-03
+2026-07-03,7976,三菱鉛筆,WATCH,S,103,100,True,True,,,,,,,,,,,,,,,,,PENDING,2026-07-03
+2026-07-03,8035,東京エレクトロン,WATCH,S,106,77,True,False,,,,,,,,,,,,,,,,,PENDING,2026-07-03
+2026-07-03,8366,滋賀銀行,WATCH,S,121,88,False,True,,,,,,,,,,,,,,,,,PENDING,2026-07-03
+2026-07-03,8381,山陰合同銀行,WATCH,S,116,77,False,False,,,,,,,,,,,,,,,,,PENDING,2026-07-03
+2026-07-03,8609,岡三証券グループ,WATCH,S,113,88,True,False,,,,,,,,,,,,,,,,,PENDING,2026-07-03
+2026-07-03,9401,ＴＢＳホールディングス,WATCH,S,103,88,True,True,,,,,,,,,,,,,,,,,PENDING,2026-07-03
+2026-07-03,9502,中部電力,WATCH,S,121,88,False,True,,,,,,,,,,,,,,,,,PENDING,2026-07-03

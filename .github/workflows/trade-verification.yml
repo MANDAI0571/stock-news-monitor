@@ -1,0 +1,101 @@
+name: Trade Verification (BUY検証)
+
+# BUY/WATCH シグナルを毎日記録し、翌営業日以降の株価で
+# 勝率・平均損益・PF・最大DDを自動集計する。結果はリポジトリにコミットして蓄積する。
+# - data/trade_history.csv        … シグナルと検証結果の蓄積（追記）
+# - outputs/performance_report.md … 毎日更新される集計レポート
+#
+# outputs/ は gitignore のためチェックアウトに decision_result.csv が無い。
+# そこでこのワークフロー内で スクリーニング → 判定 → 記録 まで通す。
+
+on:
+  workflow_dispatch:
+    inputs:
+      quick_mode:
+        description: "QUICK_MODE (true=上位銘柄のみの軽量実行 / false=全銘柄)"
+        type: boolean
+        default: true
+      max_symbols:
+        description: "QUICK_MODE 時に処理する銘柄数"
+        type: string
+        default: "30"
+  schedule:
+    # 毎平日 16:10 JST(=07:10 UTC, 月〜金) 大引け後に実行。
+    # 当日のシグナルを記録し、過去シグナルを当日終値まで評価する。
+    - cron: "10 7 * * 1-5"
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      QUICK_MODE: ${{ github.event.inputs.quick_mode == 'false' && 'false' || 'true' }}
+      MAX_SYMBOLS: ${{ github.event.inputs.max_symbols || '30' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Self test (no network)
+        run: python3 self_test.py
+
+      - name: Run screening (fresh candidates)
+        run: |
+          echo "QUICK_MODE=$QUICK_MODE MAX_SYMBOLS=$MAX_SYMBOLS"
+          python3 run_screening.py
+
+      - name: Run decision engine (BUY/WATCH/SKIP)
+        run: python3 decision_engine.py
+
+      - name: Record signals / update prices / build report
+        run: |
+          python3 trade_verification.py --record
+          python3 trade_verification.py --update
+          python3 trade_verification.py --report
+
+      - name: Show summary
+        if: always()
+        run: |
+          echo "=== trade_history.csv (tail) ==="
+          tail -n 10 data/trade_history.csv || echo "trade_history.csv not found"
+          echo "=== performance_report.md (head) ==="
+          head -n 30 outputs/performance_report.md || echo "performance_report.md not found"
+
+      - name: Commit results back to repo
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/trade_history.csv
+          git add -f outputs/performance_report.md
+          if git diff --cached --quiet; then
+            echo "変更なし（コミットしない）"
+          else
+            git commit -m "chore: trade verification update ($(date -u +%Y-%m-%d))"
+            git pull --rebase origin "${GITHUB_REF_NAME}" || true
+            git push origin HEAD:"${GITHUB_REF_NAME}"
+          fi
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trade-verification
+          path: |
+            data/trade_history.csv
+            outputs/performance_report.md
+            outputs/decision_result.csv
+          if-no-files-found: warn

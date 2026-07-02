@@ -13,4 +13,7 @@ note_state.b64
 outputs/note_autosave_error.png
 
 # local generated outputs
-outputs/
+# （outputs/ ではなく outputs/* にしているのは、performance_report.md だけ
+#   git の追跡対象に戻すため。ディレクトリごと無視すると ! が効かない）
+outputs/*
+!outputs/performance_report.md

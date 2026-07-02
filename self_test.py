@@ -17,6 +17,7 @@ from scanner.openwork import add_openwork_scores, format_openwork_score
 from scanner.scoring import meets_s_technical_gate, meets_strict_s_gate, score_stock
 from scanner.universe import JPX_CACHE_PATH, UniverseConfig, load_jpx_listed, normalize_jpx_listed
 from trade_journal import load_journal, log_entry, log_exit
+import trade_verification as tv
 
 
 def main() -> None:
@@ -37,6 +38,7 @@ def main() -> None:
     _test_intraday_watchlist()
     _test_learning_log()
     _test_decision_engine()
+    _test_trade_verification()
     print("self-test: OK")
 
 
@@ -616,6 +618,116 @@ def _test_decision_engine() -> None:
         missing = de.run(screening_path=tmp_path / "no_such.csv",
                          learning_path=tmp_path / "none.csv", out_dir=tmp_path)
         assert missing["input_exists"] is False and missing["rows"] == 0
+
+
+def _test_trade_verification() -> None:
+    """BUY3銘柄の自動検証（record→update→report）をオフラインで検証する。"""
+
+    def _prices(opens_hlc: list[tuple[float, float, float, float]],
+                start: str = "2026-06-01") -> pd.DataFrame:
+        idx = pd.bdate_range(start, periods=len(opens_hlc))
+        return pd.DataFrame(
+            [{"Open": o, "High": h, "Low": lo, "Close": c} for o, h, lo, c in opens_hlc],
+            index=idx,
+        )
+
+    # ── evaluate_signal 単体 ─────────────────────
+    from datetime import date as _date
+    signal = _date(2026, 5, 31)  # 6/1(月)が翌営業日
+
+    # 利確: 3日目に高値が +15% を超える
+    tp_days = [(1000, 1010, 990, 1005), (1010, 1100, 1000, 1090), (1090, 1160, 1080, 1150)]
+    r = tv.evaluate_signal(signal, _prices(tp_days))
+    assert r["status"] == "CLOSED" and r["first_hit"] == "TP"
+    assert r["entry_open"] == 1000.0 and r["exit_return_pct"] == 15.0
+    assert r["tp_hit"] is True and r["stop_hit"] is False
+
+    # 損切り: 2日目に安値が -7% を割る
+    stop_days = [(1000, 1010, 980, 990), (985, 990, 920, 930), (930, 940, 900, 910)]
+    r = tv.evaluate_signal(signal, _prices(stop_days))
+    assert r["status"] == "CLOSED" and r["first_hit"] == "STOP"
+    assert r["exit_return_pct"] == -7.0
+
+    # 同日に両方到達 → 保守的に損切り扱い
+    both_days = [(1000, 1200, 900, 1000)]
+    r = tv.evaluate_signal(signal, _prices(both_days))
+    assert r["first_hit"] == "STOP" and r["exit_return_pct"] == -7.0
+
+    # 時間切れ: 10営業日 ±7%以内 → 10日目の引けで決済
+    flat_days = [(1000 + i, 1000 + i + 20, 1000 + i - 20, 1000 + i + 10) for i in range(12)]
+    r = tv.evaluate_signal(signal, _prices(flat_days))
+    assert r["status"] == "CLOSED" and "時間切れ" in r["exit_reason"]
+    assert r["close_d2"] == 1011.0 and r["close_d3"] == 1012.0
+    assert r["close_d5"] == 1014.0 and r["close_d10"] == 1019.0
+    assert r["exit_price"] == 1019.0
+    assert r["max_gain_pct"] == round((1029 / 1000 - 1) * 100, 2)
+    assert r["max_drop_pct"] == round((980 / 1000 - 1) * 100, 2)
+
+    # 途中経過: 3営業日分しか無い → OPEN（捏造しない）
+    r = tv.evaluate_signal(signal, _prices(flat_days[:3]))
+    assert r["status"] == "OPEN" and "close_d10" not in r
+    assert r["close_d3"] == 1012.0
+
+    # 翌営業日がまだ来ていない → PENDING
+    r = tv.evaluate_signal(_date(2026, 6, 30), _prices(flat_days))
+    assert r["status"] == "PENDING"
+
+    # ── record → update → report の一連 ─────────────
+    with TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        dec_path = tmp_path / "decision_result.csv"
+        hist_path = tmp_path / "trade_history.csv"
+        rep_path = tmp_path / "performance_report.md"
+
+        pd.DataFrame([
+            {"code": "6920", "name": "レーザーテック", "decision": "BUY", "rank": "S",
+             "score": 90, "confidence": 100,
+             "entry_reason": "Sランク / 52週高値まで1%（近い） / 出来高1.5倍（増加）",
+             "skip_reason": ""},
+            {"code": "7203", "name": "トヨタ自動車", "decision": "WATCH", "rank": "S",
+             "score": 80, "confidence": 88, "entry_reason": "Sランク",
+             "skip_reason": "出来高0.9倍（細り）"},
+            {"code": "1301", "name": "極洋", "decision": "SKIP", "rank": "B",
+             "score": 40, "confidence": 10, "entry_reason": "", "skip_reason": "ランク不足"},
+        ]).to_csv(dec_path, index=False, encoding="utf-8-sig")
+
+        rec = tv.record_signals(dec_path, hist_path, run_date="2026-05-31")
+        assert rec["appended"] == 2 and rec["total"] == 2  # SKIP は記録しない
+        rec2 = tv.record_signals(dec_path, hist_path, run_date="2026-05-31")
+        assert rec2["appended"] == 0 and rec2["total"] == 2  # 同日重複なし
+
+        hist = tv.load_history(hist_path)
+        assert set(hist["decision"]) == {"BUY", "WATCH"}
+        assert (hist["status"] == "PENDING").all()
+        buy_row = hist[hist["code"] == "6920"].iloc[0]
+        assert str(buy_row["near_high"]).lower() == "true"
+        assert str(buy_row["vol_up"]).lower() == "true"
+
+        fake = {"6920": _prices(tp_days), "7203": _prices(stop_days)}
+        upd = tv.update_history(hist_path, fetcher=lambda c: fake.get(c),
+                                today=_date(2026, 6, 20))
+        assert upd["updated"] == 2 and upd["closed"] == 2
+
+        hist = tv.load_history(hist_path)
+        assert tv._num(hist[hist["code"] == "6920"].iloc[0]["exit_return_pct"]) == 15.0
+        assert tv._num(hist[hist["code"] == "7203"].iloc[0]["exit_return_pct"]) == -7.0
+
+        stats = tv.aggregate(hist)
+        buy_stats = stats[stats["decision"] == "BUY"].iloc[0]
+        assert buy_stats["trades"] == 1 and buy_stats["win_rate_pct"] == 100.0
+        watch_stats = stats[stats["decision"] == "WATCH"].iloc[0]
+        assert watch_stats["win_rate_pct"] == 0.0
+
+        out = tv.write_report(hist_path, rep_path, today=_date(2026, 6, 20))
+        text = out.read_text(encoding="utf-8")
+        assert "BUY銘柄 検証レポート" in text
+        assert "| BUY | 1 | 100.0% |" in text
+        assert "利確(+15%)" in text and "損切り(-7%)" in text
+
+        # 履歴なしでも空レポートを安全に出す
+        empty_rep = tv.write_report(tmp_path / "no_hist.csv", tmp_path / "empty.md",
+                                    today=_date(2026, 6, 20))
+        assert "確定トレードがまだありません" in empty_rep.read_text(encoding="utf-8")
 
 
 if __name__ == "__main__":
