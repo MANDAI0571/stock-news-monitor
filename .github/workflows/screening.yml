@@ -16,10 +16,8 @@ on:
         description: "QUICK_MODE 時に処理する銘柄数"
         type: string
         default: "30"
-  schedule:
-    # 毎平日 07:40 JST(=22:40 UTC, 月〜金=UTCの日〜木) に QUICK テストを自動実行。
-    # 本番(FULL)は手動実行 or 既存の daily-discipline.yml を使う。
-    - cron: "40 22 * * 0-4"
+  # NOTE: 本番の毎日実行は daily-discipline.yml に一本化したため、
+  # このワークフローは手動テスト専用（schedule は撤去済み）。
 
 jobs:
   screening:
@@ -28,7 +26,7 @@ jobs:
     timeout-minutes: 30
 
     env:
-      # スケジュール実行(手動入力なし)のときは QUICK 既定。手動実行は入力値を尊重。
+      # 手動実行の入力値を尊重（未指定は QUICK 既定）。
       QUICK_MODE: ${{ github.event.inputs.quick_mode == 'false' && 'false' || 'true' }}
       MAX_SYMBOLS: ${{ github.event.inputs.max_symbols || '30' }}
       PROGRESS_EVERY: "25"

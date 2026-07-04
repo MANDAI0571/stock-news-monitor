@@ -9,10 +9,7 @@ on:
 jobs:
   daily-discipline:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    env:
-      QUICK_MODE: "true"
-      MAX_SYMBOLS: "30"
+    timeout-minutes: 90
 
     steps:
       - name: Checkout
@@ -23,16 +20,19 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Restore price/universe cache
+        uses: actions/cache@v4
+        with:
+          path: cache
+          key: stock-cache-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            stock-cache-${{ runner.os }}-
+
       - name: Install dependencies
         run: |
           start=$(date +%s)
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          if [ "${QUICK_MODE}" != "true" ]; then
-            python -m playwright install --with-deps chromium
-          else
-            echo "QUICK_MODE=true: skip Playwright install"
-          fi
           end=$(date +%s); echo "[TIMER] install_dependencies elapsed=$((end-start))s"
 
       - name: Run screening and discipline portfolio
