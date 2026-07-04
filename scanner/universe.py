@@ -68,6 +68,9 @@ def normalize_jpx_listed(source: pd.DataFrame, markets: tuple[str, ...]) -> pd.D
 
     for _, item in source.iterrows():
         code = str(item[code_col]).strip()
+        # Excelでコードが数値として読まれると "1000.0" 形式になるため末尾の .0 を除去する。
+        if code.endswith(".0"):
+            code = code[:-2]
         name = str(item[name_col]).strip()
         market_raw = str(item[market_col]).strip()
         sector = str(item[sector_col]).strip() if sector_col else "-"

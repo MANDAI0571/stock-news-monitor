@@ -29,6 +29,7 @@ def main() -> None:
     _test_openwork_display_only()
     _test_note_autosave_and_mail_body()
     _test_production_paths_do_not_use_limit()
+    _test_jpx_float_codes_normalized()
     _test_price_cache_and_prefetch()
     _test_high_classification()
     _test_previous_52w_high_line_retest()
@@ -357,6 +358,29 @@ def _test_production_paths_do_not_use_limit() -> None:
     run_screening_text = (root / "run_screening.py").read_text(encoding="utf-8")
     assert 'parser.add_argument("--limit"' in run_screening_text
     assert "WARNING: run_screening limit=" in run_screening_text
+    # pandas 3系は文字列列への数値代入がTypeErrorになるため、2系固定を必須にする。
+    requirements = (root / "requirements.txt").read_text(encoding="utf-8")
+    assert "pandas>=2.2,<3.0" in requirements, "requirements.txt で pandas を 2 系に固定してください"
+
+
+def _test_jpx_float_codes_normalized() -> None:
+    """Excelがコード列を数値(1000.0形式)で返しても銘柄が弾かれないこと。"""
+    source = pd.DataFrame(
+        {
+            "コード": [1000.0, 1301.0, "7203", 1305.0],
+            "銘柄名": ["テスト製造", "極洋", "トヨタ自動車", "テストETF上場投信"],
+            "市場・商品区分": [
+                "プライム（内国株式）",
+                "プライム（内国株式）",
+                "プライム（内国株式）",
+                "ETF・ETN",
+            ],
+            "33業種区分": ["機械", "水産・農林業", "輸送用機器", "-"],
+        }
+    )
+    out = normalize_jpx_listed(source, ("prime", "standard", "growth"))
+    assert set(out["code"]) == {"1000", "1301", "7203"}, out["code"].tolist()
+    assert set(out["ticker"]) == {"1000.T", "1301.T", "7203.T"}
 
 
 def _test_price_cache_and_prefetch() -> None:

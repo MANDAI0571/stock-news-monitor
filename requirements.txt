@@ -1,4 +1,6 @@
-pandas
+# pandas 3.x は文字列列への数値代入が TypeError になる仕様変更があり、
+# 本プロジェクトの複数箇所が未対応のため 2 系に固定する（検証済み: 2.3.3）。
+pandas>=2.2,<3.0
 numpy
 requests
 yfinance
