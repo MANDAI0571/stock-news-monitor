@@ -12,7 +12,7 @@ from scanner.indicators import calculate_indicators, detect_ma_touches, passes_b
 from scanner.openwork import add_openwork_scores
 from scanner.highs import classify_high_profile, detect_52w_high_retest, detect_duke_old_high_support, detect_previous_52w_high_line_retest
 from scanner.patterns import detect_cup_with_handle
-from scanner.prices import fetch_next_earnings_date, fetch_price_history, timestamped_csv_path
+from scanner.prices import fetch_next_earnings_date, fetch_price_history, prefetch_price_histories, timestamped_csv_path
 from scanner.scoring import assess_earnings_window, rejection_row, score_stock
 from scanner.universe import UniverseConfig, load_jpx_listed
 
@@ -158,6 +158,12 @@ def run_screening(
         before_limit_count = len(universe)
         universe = universe.head(limit)
         print(f"WARNING: universe limited before data fetch: before={before_limit_count} after={len(universe)}", flush=True)
+
+    # 価格データを事前に一括取得してキャッシュへ保存（銘柄ループは fetch_price_history の
+    # キャッシュヒットで高速化される。プリフェッチ失敗銘柄はループ内で従来通り単発取得）。
+    t0 = time.perf_counter()
+    prefetch_stats = prefetch_price_histories([str(t) for t in universe["ticker"].tolist()]) if not universe.empty else {}
+    _log_step("price_prefetch", time.perf_counter() - t0, f"stats={prefetch_stats}")
 
     rows: list[dict[str, object]] = []
     # T-D(2026-06-28): メインの300万/ブレイク候補とは独立に、押し目(タッチ/リテスト)と

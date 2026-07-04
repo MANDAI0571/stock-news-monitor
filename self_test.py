@@ -29,6 +29,7 @@ def main() -> None:
     _test_openwork_display_only()
     _test_note_autosave_and_mail_body()
     _test_production_paths_do_not_use_limit()
+    _test_price_cache_and_prefetch()
     _test_high_classification()
     _test_previous_52w_high_line_retest()
     _test_duke_old_high_support()
@@ -350,9 +351,91 @@ def _test_production_paths_do_not_use_limit() -> None:
     for workflow in [root / ".github/workflows/daily-discipline.yml", root / ".github/workflows/note_autosave.yml"]:
         text = workflow.read_text(encoding="utf-8")
         assert "--limit" not in text
+        # 本番ワークフローに QUICK_MODE / MAX_SYMBOLS が固定されていないこと（全銘柄で実行される）。
+        assert "QUICK_MODE" not in text, f"{workflow.name} に QUICK_MODE が残っています"
+        assert "MAX_SYMBOLS" not in text, f"{workflow.name} に MAX_SYMBOLS が残っています"
     run_screening_text = (root / "run_screening.py").read_text(encoding="utf-8")
     assert 'parser.add_argument("--limit"' in run_screening_text
     assert "WARNING: run_screening limit=" in run_screening_text
+
+
+def _test_price_cache_and_prefetch() -> None:
+    """価格キャッシュ: バッチプリフェッチ→キャッシュヒットで再ダウンロードしないこと（オフライン）。"""
+    import numpy as np
+
+    from scanner import prices
+
+    def _fake_history(days: int = 30) -> pd.DataFrame:
+        idx = pd.bdate_range(end=pd.Timestamp.today().normalize(), periods=days)
+        close = pd.Series(np.linspace(100, 110, days), index=idx)
+        return pd.DataFrame(
+            {
+                "Open": close,
+                "High": close * 1.01,
+                "Low": close * 0.99,
+                "Close": close,
+                "Volume": 100000,
+            },
+            index=idx,
+        )
+
+    calls = {"batch": 0, "single": 0}
+
+    def fake_download(tickers, *args, **kwargs):
+        if isinstance(tickers, (list, tuple)):
+            calls["batch"] += 1
+            frames = {}
+            for t in tickers:
+                if t == "9998.T":
+                    continue  # データ無し銘柄（空マーカーが保存されるはず）
+                frames[t] = _fake_history()
+            if not frames:
+                return pd.DataFrame()
+            return pd.concat(frames, axis=1)
+        calls["single"] += 1
+        return _fake_history()
+
+    original_root = prices.PRICE_CACHE_ROOT
+    original_download = prices.yf.download
+    try:
+        with TemporaryDirectory() as tmp:
+            prices.PRICE_CACHE_ROOT = Path(tmp) / "prices"
+            prices.yf.download = fake_download
+
+            tickers = ["1001.T", "1002.T", "9998.T"]
+            stats = prefetch_stats = prices.prefetch_price_histories(tickers, batch_size=2)
+            assert prefetch_stats["fetched"] == 2, stats
+            assert prefetch_stats["empty"] == 1, stats
+            assert calls["batch"] == 2  # batch_size=2 で3銘柄→2チャンク
+
+            # キャッシュヒット: 単発ダウンロードが発生しないこと
+            hist = prices.fetch_price_history("1001.T")
+            assert not hist.empty
+            assert list(hist.columns) == ["Open", "High", "Low", "Close", "Volume"]
+            empty_hist = prices.fetch_price_history("9998.T")
+            assert empty_hist.empty
+            assert calls["single"] == 0
+
+            # 2回目のプリフェッチは全てキャッシュ扱いで追加ダウンロード無し
+            stats2 = prices.prefetch_price_histories(tickers, batch_size=2)
+            assert stats2["cached"] == 3, stats2
+            assert calls["batch"] == 2
+
+            # キャッシュ未登録銘柄は従来通り単発取得され、以後はキャッシュされる
+            hist_new = prices.fetch_price_history("2002.T")
+            assert not hist_new.empty
+            assert calls["single"] == 1
+            prices.fetch_price_history("2002.T")
+            assert calls["single"] == 1
+
+            # 古い日付ディレクトリの掃除
+            old_dir = prices.PRICE_CACHE_ROOT / "2000-01-01__18mo"
+            old_dir.mkdir(parents=True, exist_ok=True)
+            prices.cleanup_old_price_cache()
+            assert not old_dir.exists()
+    finally:
+        prices.PRICE_CACHE_ROOT = original_root
+        prices.yf.download = original_download
 
 
 def _test_9256_limit50_excluded_but_full_universe_included() -> None:
