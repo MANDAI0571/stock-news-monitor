@@ -45,6 +45,7 @@ jobs:
     env:
       QUICK_MODE: ${{ github.event_name == 'schedule' && 'false' || (github.event.inputs.quick_mode == 'false' && 'false' || 'true') }}
       MAX_SYMBOLS: ${{ github.event.inputs.max_symbols || '30' }}
+      ENABLE_INTRADAY_MAIL: "false"
 
     steps:
       - name: Checkout

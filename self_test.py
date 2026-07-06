@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -567,7 +568,7 @@ def _test_duke_old_high_support() -> None:
 def _test_intraday_watchlist() -> None:
     """日中監視ウォッチリスト: 選定・優先順・上限クリップ・英数字コード・全銘柄フォールバック。"""
     from build_intraday_watchlist import select_watchlist, build, WATCHLIST_NAME
-    from intraday_high_alert import load_watchlist_codes
+    from intraday_high_alert import build_alert, build_body, build_subject, intraday_mail_enabled, load_watchlist_codes
 
     df = pd.DataFrame([
         {"code": "7203", "name": "トヨタ", "market": "東証プライム", "rank": "S", "score": 90,
@@ -609,6 +610,45 @@ def _test_intraday_watchlist() -> None:
         assert load_watchlist_codes(out / "does_not_exist.csv") is None
         # screening が無ければ build は None（フォールバック）
         assert build(Path(tmp) / "empty_sub") is None
+
+    indicators = {
+        "current_price": 1000.0,
+        "high_52w": 1000.0,
+        "dist_52w_high_pct": 0.0,
+        "turnover_20d": 300_000_000.0,
+        "volume_ratio_5d_20d": 1.3,
+    }
+    alert = build_alert("7011", "三菱重工", indicators, {
+        "high_type": "SWING_HIGH_BREAK",
+        "high_price": 990.0,
+        "dist_to_high_pct": 0.0,
+    })
+    assert alert is not None
+    subject = build_subject([alert])
+    assert subject.startswith("[GitHub][Intraday][v2026-07-06]"), subject
+
+    old_env = {key: os.environ.get(key) for key in ("GITHUB_SHA", "GITHUB_RUN_ID", "ENABLE_INTRADAY_MAIL")}
+    try:
+        os.environ["GITHUB_SHA"] = "abc123"
+        os.environ["GITHUB_RUN_ID"] = "98765"
+        body = build_body([alert])
+        assert body.splitlines()[:5] == [
+            "workflow: Intraday High Alert",
+            "source: GitHub Actions",
+            "commit: abc123",
+            "run_id: 98765",
+            "version: 2026-07-06",
+        ], body
+        os.environ["ENABLE_INTRADAY_MAIL"] = "false"
+        assert intraday_mail_enabled() is False
+        os.environ["ENABLE_INTRADAY_MAIL"] = "true"
+        assert intraday_mail_enabled() is True
+    finally:
+        for key, value in old_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
 
 def _test_learning_log() -> None:

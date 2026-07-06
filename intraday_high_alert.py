@@ -44,6 +44,8 @@ from scanner.universe import UniverseConfig, load_jpx_listed
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "outputs"
+ALERT_MAIL_VERSION = "2026-07-06"
+SUBJECT_PREFIX = f"[GitHub][Intraday][v{ALERT_MAIL_VERSION}]"
 
 # 日中監視の軽量ウォッチリスト（前日EODから build_intraday_watchlist.py が生成）。
 # これがあれば全銘柄ではなく200〜500銘柄だけを監視する。無ければ全銘柄にフォールバック。
@@ -55,6 +57,11 @@ DISCLAIMER = "※これは投資助言ではなく、スクリーニング通知
 def _watchlist_enabled() -> bool:
     """INTRADAY_USE_WATCHLIST（既定 1=有効）。0/false でウォッチリストを無視し全銘柄に戻す。"""
     return os.environ.get("INTRADAY_USE_WATCHLIST", "1").strip().lower() not in ("0", "false", "no", "off")
+
+
+def intraday_mail_enabled() -> bool:
+    """ENABLE_INTRADAY_MAIL=false ならメール送信しない。既定は送信可。"""
+    return os.environ.get("ENABLE_INTRADAY_MAIL", "true").strip().lower() not in ("0", "false", "no", "off")
 
 
 def load_watchlist_codes(path: Path) -> set[str] | None:
@@ -258,7 +265,7 @@ def _to_float(value: object) -> float:
 # --------------------------------------------------------------------------
 def build_subject(new_alerts: list[Alert]) -> str:
     if not new_alerts:
-        return "【高値アラート】新規なし"
+        return f"{SUBJECT_PREFIX} 【高値アラート】新規なし"
     head = new_alerts[0]
     if head.is_break:
         detail = f"{head.line_label}更新"
@@ -267,11 +274,17 @@ def build_subject(new_alerts: list[Alert]) -> str:
     base = f"【高値接近アラート】{head.code} {head.name}｜{detail}"
     if len(new_alerts) > 1:
         base += f"｜ほか{len(new_alerts) - 1}件"
-    return base
+    return f"{SUBJECT_PREFIX} {base}"
 
 
 def build_body(new_alerts: list[Alert]) -> str:
     lines: list[str] = [
+        "workflow: Intraday High Alert",
+        "source: GitHub Actions",
+        f"commit: {os.environ.get('GITHUB_SHA', 'local')}",
+        f"run_id: {os.environ.get('GITHUB_RUN_ID', 'local')}",
+        f"version: {ALERT_MAIL_VERSION}",
+        "",
         "ザラ場リアルタイム高値アラート",
         f"検知時刻: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
         f"新規アラート: {len(new_alerts)}件",
@@ -421,6 +434,10 @@ def scan(
 # --------------------------------------------------------------------------
 def send_alert_mail(new_alerts: list[Alert]) -> bool:
     from gmail_notify import load_gmail_config, send_gmail
+
+    if not intraday_mail_enabled():
+        print("intraday_alert_mail=skipped reason=disabled env=ENABLE_INTRADAY_MAIL")
+        return False
 
     config = load_gmail_config()
     if config is None:
@@ -581,11 +598,33 @@ def _self_test() -> int:
         build_alert("8524", "北洋銀行", ind(), {"high_type": "RECENT_NEAR_HIGH", "high_price": 1010.0, "dist_to_high_pct": 0.8}),
     ]
     body = build_body(multi)
+    old_env = {key: os.environ.get(key) for key in ("GITHUB_SHA", "GITHUB_RUN_ID", "ENABLE_INTRADAY_MAIL")}
+    try:
+        os.environ["GITHUB_SHA"] = "abc123"
+        os.environ["GITHUB_RUN_ID"] = "98765"
+        meta_body = build_body(multi)
+        assert meta_body.splitlines()[:5] == [
+            "workflow: Intraday High Alert",
+            "source: GitHub Actions",
+            "commit: abc123",
+            "run_id: 98765",
+            "version: 2026-07-06",
+        ], meta_body
+        os.environ["ENABLE_INTRADAY_MAIL"] = "false"
+        assert intraday_mail_enabled() is False
+    finally:
+        for key, value in old_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
     assert "直近高値ブレイク（1件）" in body and "直近高値接近（1件）" in body, body
     assert "52週高値" not in body, body
     assert "決算予定日" in body and "OpenWork評価" in body, body
     assert DISCLAIMER in body
-    assert "ほか1件" in build_subject(multi)
+    subject = build_subject(multi)
+    assert subject.startswith("[GitHub][Intraday][v2026-07-06]"), subject
+    assert "ほか1件" in subject
 
     print("SELF_TEST_PASS")
     return 0
