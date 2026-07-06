@@ -21,10 +21,13 @@ TIMEOUT_BUSINESS_DAYS = 10
 
 def build_discipline_portfolio(screening: pd.DataFrame, regime: Regime | str) -> pd.DataFrame:
     regime_value = regime.value if isinstance(regime, Regime) else str(regime).upper()
+    max_positions = _max_positions_for_regime(regime_value)
     rows: list[dict[str, object]] = []
 
     if regime_value == "STOP":
         return _cash_rows(regime_value, "地合いSTOPのため新規買い停止", MAX_POSITIONS)
+    if regime_value == "RISK":
+        return _cash_rows(regime_value, "地合いRISKのため新規買い停止", MAX_POSITIONS)
     if screening.empty or "rank" not in screening.columns:
         return _cash_rows(regime_value, "Sランク不足のため現金保有", MAX_POSITIONS)
 
@@ -33,7 +36,7 @@ def build_discipline_portfolio(screening: pd.DataFrame, regime: Regime | str) ->
         candidates = candidates.sort_values(["score", "dist_52w_high_pct"], ascending=[False, True])
 
     for _, item in candidates.iterrows():
-        if len(rows) >= MAX_POSITIONS:
+        if len(rows) >= max_positions:
             break
         price = float(item["current_price"])
         shares = _round_lot(SLOT_CAPITAL // price) if price > 0 else 0
@@ -58,15 +61,26 @@ def build_discipline_portfolio(screening: pd.DataFrame, regime: Regime | str) ->
                 "stop_loss": round(price * (1 - STOP_LOSS_PCT), 1),
                 "take_profit": round(price * (1 + TAKE_PROFIT_PCT), 1),
                 "timeout_date": timeout_date.isoformat(),
-                "rule": "Sランクのみ / 1枠100万円 / 損切7% / 利確15% / 10営業日タイムアウト",
+                "rule": f"Sランクのみ / 地合い{regime_value}は最大{max_positions}銘柄 / 1枠100万円 / 損切7% / 利確15% / 10営業日タイムアウト",
                 "cash_reason": "",
             }
         )
 
     if len(rows) < MAX_POSITIONS:
-        rows.extend(_cash_rows(regime_value, "Sランク不足のため現金保有", MAX_POSITIONS - len(rows), start_slot=len(rows) + 1).to_dict("records"))
+        reason = "Sランク不足のため現金保有"
+        if len(rows) >= max_positions:
+            reason = f"地合い{regime_value}のためBUY枠を{max_positions}銘柄に制限"
+        rows.extend(_cash_rows(regime_value, reason, MAX_POSITIONS - len(rows), start_slot=len(rows) + 1).to_dict("records"))
 
     return pd.DataFrame(rows)
+
+
+def _max_positions_for_regime(regime_value: str) -> int:
+    if regime_value in {"STOP", "RISK"}:
+        return 0
+    if regime_value == "CAUTION":
+        return 1
+    return MAX_POSITIONS
 
 
 def _cash_rows(regime: str, reason: str, count: int, start_slot: int = 1) -> pd.DataFrame:

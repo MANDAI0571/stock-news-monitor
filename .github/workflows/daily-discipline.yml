@@ -13,15 +13,15 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
       - name: Restore price/universe cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: cache
           key: stock-cache-${{ runner.os }}-${{ github.run_id }}
@@ -41,19 +41,34 @@ jobs:
           python daily_discipline_run.py
           end=$(date +%s); echo "[TIMER] daily_discipline_run elapsed=$((end-start))s"
 
+      - name: Run decision engine
+        run: |
+          start=$(date +%s)
+          python3 decision_engine.py
+          end=$(date +%s); echo "[TIMER] decision_engine elapsed=$((end-start))s"
+
       - name: Build note draft
         run: |
           start=$(date +%s)
           python3 note_draft.py
           end=$(date +%s); echo "[TIMER] note_draft elapsed=$((end-start))s"
 
+      - name: Show screening summary
+        if: always()
+        run: |
+          python3 screening_summary.py || true
+          echo "=== decision_result.csv ==="
+          head -n 10 outputs/decision_result.csv || true
+
       - name: Upload CSV outputs
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: stock-news-monitor-outputs
           path: |
             outputs/*.csv
             outputs/screening_result.csv
+            outputs/decision_result.csv
+            outputs/decision_report.md
             outputs/note_daily.md
             outputs/note_title.txt
             outputs/note_daily.html

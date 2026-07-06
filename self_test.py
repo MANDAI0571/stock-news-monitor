@@ -39,6 +39,7 @@ def main() -> None:
     _test_journal_and_pattern_learning()
     _test_intraday_watchlist()
     _test_learning_log()
+    _test_csv_schema_contract()
     _test_decision_engine()
     _test_trade_verification()
     print("self-test: OK")
@@ -355,6 +356,9 @@ def _test_production_paths_do_not_use_limit() -> None:
         # 本番ワークフローに QUICK_MODE / MAX_SYMBOLS が固定されていないこと（全銘柄で実行される）。
         assert "QUICK_MODE" not in text, f"{workflow.name} に QUICK_MODE が残っています"
         assert "MAX_SYMBOLS" not in text, f"{workflow.name} に MAX_SYMBOLS が残っています"
+        assert "actions/checkout@v7" in text
+        assert "actions/setup-python@v6" in text
+        assert "actions/upload-artifact@v7" in text
     run_screening_text = (root / "run_screening.py").read_text(encoding="utf-8")
     assert 'parser.add_argument("--limit"' in run_screening_text
     assert "WARNING: run_screening limit=" in run_screening_text
@@ -421,10 +425,12 @@ def _test_price_cache_and_prefetch() -> None:
 
     original_root = prices.PRICE_CACHE_ROOT
     original_download = prices.yf.download
+    original_wall_timeout = prices.YFINANCE_WALL_TIMEOUT
     try:
         with TemporaryDirectory() as tmp:
             prices.PRICE_CACHE_ROOT = Path(tmp) / "prices"
             prices.yf.download = fake_download
+            prices.YFINANCE_WALL_TIMEOUT = 0
 
             tickers = ["1001.T", "1002.T", "9998.T"]
             stats = prefetch_stats = prices.prefetch_price_histories(tickers, batch_size=2)
@@ -436,11 +442,14 @@ def _test_price_cache_and_prefetch() -> None:
             hist = prices.fetch_price_history("1001.T")
             assert not hist.empty
             assert list(hist.columns) == ["Open", "High", "Low", "Close", "Volume"]
-            empty_hist = prices.fetch_price_history("9998.T")
-            assert empty_hist.empty
             assert calls["single"] == 0
 
-            # 2回目のプリフェッチは全てキャッシュ扱いで追加ダウンロード無し
+            # プリフェッチの空結果は一時的な通信失敗かもしれないため、空キャッシュ固定しない。
+            empty_hist = prices.fetch_price_history("9998.T")
+            assert not empty_hist.empty
+            assert calls["single"] == 1
+
+            # 2回目のプリフェッチは単発取得済みも含めて全てキャッシュ扱い
             stats2 = prices.prefetch_price_histories(tickers, batch_size=2)
             assert stats2["cached"] == 3, stats2
             assert calls["batch"] == 2
@@ -448,9 +457,9 @@ def _test_price_cache_and_prefetch() -> None:
             # キャッシュ未登録銘柄は従来通り単発取得され、以後はキャッシュされる
             hist_new = prices.fetch_price_history("2002.T")
             assert not hist_new.empty
-            assert calls["single"] == 1
+            assert calls["single"] == 2
             prices.fetch_price_history("2002.T")
-            assert calls["single"] == 1
+            assert calls["single"] == 2
 
             # 古い日付ディレクトリの掃除
             old_dir = prices.PRICE_CACHE_ROOT / "2000-01-01__18mo"
@@ -460,6 +469,7 @@ def _test_price_cache_and_prefetch() -> None:
     finally:
         prices.PRICE_CACHE_ROOT = original_root
         prices.yf.download = original_download
+        prices.YFINANCE_WALL_TIMEOUT = original_wall_timeout
 
 
 def _test_9256_limit50_excluded_but_full_universe_included() -> None:
@@ -698,6 +708,9 @@ def _test_decision_engine() -> None:
     # 地合いSTOPなら BUY はゼロ（新規停止）
     dec_stop = de.build_decisions(df, learning=None, regime="STOP")
     assert int((dec_stop["decision"] == "BUY").sum()) == 0
+    dec_caution = de.build_decisions(pd.concat([df.iloc[[0]], df.iloc[[0]].assign(code="6921", name="テストA2")], ignore_index=True), learning=None, regime="CAUTION")
+    assert int((dec_caution["decision"] == "BUY").sum()) == 1
+    assert int((dec_caution["decision"] == "WATCH").sum()) == 1
 
     # 最大3銘柄の枠上限（BUY適格4件→BUY3＋WATCH1に降格）
     many = pd.DataFrame([
@@ -709,6 +722,7 @@ def _test_decision_engine() -> None:
     dec_many = de.build_decisions(many, learning=None, regime="NORMAL")
     assert int((dec_many["decision"] == "BUY").sum()) == de.MAX_POSITIONS
     assert int((dec_many["decision"] == "WATCH").sum()) == 1
+    assert {"screen_type", "strategy", "high_type", "lot_value_100", "dist_25ma_pct", "dist_200ma_pct", "volume_ratio_5d_20d", "buy_reason"}.issubset(dec_many.columns)
 
     # run(): CSV + MD 出力、集計、入力欠損の安全動作
     with TemporaryDirectory() as tmp:
@@ -725,6 +739,45 @@ def _test_decision_engine() -> None:
         missing = de.run(screening_path=tmp_path / "no_such.csv",
                          learning_path=tmp_path / "none.csv", out_dir=tmp_path)
         assert missing["input_exists"] is False and missing["rows"] == 0
+
+
+def _test_csv_schema_contract() -> None:
+    import run_screening as rs
+    import decision_engine as de
+
+    raw = pd.DataFrame([
+        {
+            "code": "1111", "name": "A", "rank": "S", "score": 90,
+            "current_price": 1000, "high_type": "52W_NEW_HIGH",
+            "dist_52w_high_pct": 0.0, "ma25_gap_pct": 1.2, "ma200_gap_pct": 8.0,
+            "volume_ratio_5d_20d": 1.5, "turnover_20d": 200_000_000,
+            "reason": "52週高値更新",
+        },
+        {
+            "code": "2222", "name": "B", "rank": "見送り", "score": 20,
+            "current_price": 900, "high_type": "OTHER",
+            "dist_52w_high_pct": 9.0, "ma25_gap_pct": 2.5, "ma200_gap_pct": 2.0,
+            "volume_ratio_5d_20d": 0.7, "turnover_20d": 80_000_000,
+            "reason": "流動性不足",
+        },
+    ])
+    normalized = rs._normalize_screening_schema(raw)
+    assert set(normalized["rank"]) == {"S", "SKIP"}
+    assert normalized.loc[0, "screen_type"] == "MULTI"
+    assert normalized.loc[1, "screen_type"] == "MULTI"
+    assert normalized.loc[0, "dist_25ma_pct"] == 1.2
+    assert normalized.loc[1, "dist_200ma_pct"] == 2.0
+    assert normalized.loc[0, "buy_reason"] == "52週高値更新"
+    assert normalized.loc[1, "buy_reason"] == ""
+
+    decisions = de.build_decisions(normalized, regime="NORMAL")
+    de.validate_decision_consistency(normalized, decisions)
+    shared = {"screen_type", "dist_25ma_pct", "dist_200ma_pct", "buy_reason"}
+    assert shared.issubset(decisions.columns)
+    by_code = {r["code"]: r for _, r in decisions.iterrows()}
+    assert by_code["1111"]["screen_type"] == "MULTI"
+    assert by_code["1111"]["buy_reason"] == "52週高値更新"
+    assert by_code["2222"]["rank"] == "SKIP"
 
 
 def _test_trade_verification() -> None:
@@ -805,6 +858,7 @@ def _test_trade_verification() -> None:
 
         hist = tv.load_history(hist_path)
         assert set(hist["decision"]) == {"BUY", "WATCH"}
+        assert {"strategy", "high_type", "lot_value_100", "volume_ratio_5d_20d", "turnover_20d"}.issubset(hist.columns)
         assert (hist["status"] == "PENDING").all()
         buy_row = hist[hist["code"] == "6920"].iloc[0]
         assert str(buy_row["near_high"]).lower() == "true"

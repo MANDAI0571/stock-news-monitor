@@ -43,11 +43,15 @@ DISPLAY_COLUMNS = [
     "code",
     "name",
     "market",
+    "screen_type",
     "current_price",
     "score",
     "rank",
+    "buy_reason",
     "volume_ratio_5d_20d",
     "dist_52w_high_pct",
+    "dist_25ma_pct",
+    "dist_200ma_pct",
     "swing_high_price",
     "swing_high_date",
     "swing_high_break_pct",
@@ -255,6 +259,7 @@ def run_screening(
     _write_aux_csv(highs_rows, output_dir, "screening_highs")
     _write_aux_csv(retest_rows, output_dir, "screening_52w_retest")
     if result.empty:
+        _print_screening_summary(total, result, highs_rows, pullback_rows, retest_rows)
         _log_step("run_screening_total", time.perf_counter() - run_started, "candidates=0")
         return result
 
@@ -294,7 +299,9 @@ def run_screening(
         if column not in result.columns:
             result[column] = default
 
-    rank_order = {"S": 0, "A": 1, "B": 2, "見送り": 3}
+    result = _normalize_screening_schema(result)
+
+    rank_order = {"S": 0, "A": 1, "B": 2, "C": 3, "SKIP": 4}
     result["_rank_order"] = result["rank"].map(rank_order).fillna(9)
     result["_high_priority"] = result.apply(_high_priority, axis=1)
     result = result.sort_values(["_high_priority", "_rank_order", "score", "dist_52w_high_pct"], ascending=[True, True, False, True])
@@ -308,8 +315,106 @@ def run_screening(
     rejected = result[~is_candidate]
     _log_step("run_screening_total", time.perf_counter() - run_started, f"candidates={len(candidates)}")
     if include_rejected:
-        return add_openwork_scores(pd.concat([candidates, rejected], ignore_index=True))
-    return add_openwork_scores(candidates.reset_index(drop=True))
+        final = add_openwork_scores(pd.concat([candidates, rejected], ignore_index=True))
+    else:
+        final = add_openwork_scores(candidates.reset_index(drop=True))
+    _print_screening_summary(total, final, highs_rows, pullback_rows, retest_rows)
+    return final
+
+
+RANK_MAP = {
+    "S": "S",
+    "A": "A",
+    "B": "B",
+    "C": "C",
+    "SKIP": "SKIP",
+    "見送り": "SKIP",
+    "": "SKIP",
+    "NAN": "SKIP",
+    "NONE": "SKIP",
+    "<NA>": "SKIP",
+}
+
+
+def _normalize_rank(value: object) -> str:
+    text = str(value).strip().upper()
+    return RANK_MAP.get(text, "SKIP")
+
+
+def _numeric_series(df: pd.DataFrame, column: str, default: float = 999.0) -> pd.Series:
+    if column not in df.columns:
+        return pd.Series(default, index=df.index, dtype="float64")
+    return pd.to_numeric(df[column], errors="coerce").fillna(default)
+
+
+def _screen_type_for_row(row: pd.Series) -> str:
+    matched: list[str] = []
+    high_type = str(row.get("high_type", "")).upper()
+    if high_type in {"52W_NEW_HIGH", "52W_NEAR_HIGH"}:
+        matched.append("52W")
+    try:
+        dist_25ma = abs(float(row.get("dist_25ma_pct", 999) or 999))
+    except (TypeError, ValueError):
+        dist_25ma = 999.0
+    try:
+        dist_200ma = abs(float(row.get("dist_200ma_pct", 999) or 999))
+    except (TypeError, ValueError):
+        dist_200ma = 999.0
+    if str(row.get("ma25_touch", "")).strip().lower() in {"1", "1.0", "true", "yes", "y"} or dist_25ma <= 3:
+        matched.append("25MA")
+    if str(row.get("ma200_touch", "")).strip().lower() in {"1", "1.0", "true", "yes", "y"} or dist_200ma <= 3:
+        matched.append("200MA")
+    matched = list(dict.fromkeys(matched))
+    if len(matched) >= 2:
+        return "MULTI"
+    return matched[0] if matched else "OTHER"
+
+
+def _normalize_screening_schema(result: pd.DataFrame) -> pd.DataFrame:
+    """screening_result.csv の中核列を毎回同じ名前・値域で出す。"""
+    out = result.copy()
+    if "rank" not in out.columns:
+        out["rank"] = "SKIP"
+    out["rank"] = out["rank"].map(_normalize_rank)
+
+    out["dist_25ma_pct"] = _numeric_series(out, "ma25_gap_pct").round(2)
+    out["dist_200ma_pct"] = _numeric_series(out, "ma200_gap_pct").round(2)
+    if "ma25_touch" not in out.columns:
+        out["ma25_touch"] = out["dist_25ma_pct"].abs().le(3)
+    if "ma200_touch" not in out.columns:
+        out["ma200_touch"] = out["dist_200ma_pct"].abs().le(3)
+
+    reason = out.get("reason", pd.Series("", index=out.index)).fillna("").astype(str)
+    out["buy_reason"] = reason.where(out["rank"].isin(["S", "A", "B", "C"]), "")
+    out["screen_type"] = out.apply(_screen_type_for_row, axis=1)
+    return out
+
+
+def _print_screening_summary(
+    symbols: int,
+    result: pd.DataFrame,
+    highs_rows: list[dict[str, object]],
+    pullback_rows: list[dict[str, object]],
+    retest_rows: list[dict[str, object]],
+) -> None:
+    rank = result.get("rank", pd.Series(dtype=object)).astype(str).str.upper() if not result.empty else pd.Series(dtype=object)
+    reason = result.get("reason", pd.Series(dtype=object)).astype(str) if not result.empty else pd.Series(dtype=object)
+    high_new = sum(1 for row in highs_rows if str(row.get("high_type", "")) == "52W_NEW_HIGH")
+    ma25 = sum(1 for row in pullback_rows if bool(row.get("ma25_touch")))
+    ma200 = sum(1 for row in pullback_rows if bool(row.get("ma200_touch")))
+    retest_buy = sum(1 for row in retest_rows if str(row.get("candidate_action", "")) == "BUY")
+    error_rows = int(reason.str.contains("エラー|ERROR|Traceback|Exception", case=False, regex=True, na=False).sum())
+    missing_price = int(reason.str.contains("価格データ不足", regex=False, na=False).sum())
+    print(
+        "screening_summary "
+        f"symbols={symbols} result_rows={len(result)} "
+        f"S={int(rank.eq('S').sum())} A={int(rank.eq('A').sum())} B={int(rank.eq('B').sum())} "
+        f"C={int(rank.eq('C').sum())} SKIP={int(rank.eq('SKIP').sum())} "
+        f"buy_candidates={int(rank.isin(['S', 'A', 'B']).sum())} "
+        f"new_52w={high_new} ma25_pullback={ma25} ma200_touch={ma200} "
+        f"retest_52w_buy={retest_buy} error_rows={error_rows} missing_price_rows={missing_price}",
+        flush=True,
+    )
 
 
 def _collect_pullback_row(
@@ -333,8 +438,18 @@ def _collect_pullback_row(
     if touches.get("ma_touch_labels"):
         labels.append(str(touches["ma_touch_labels"]))
 
+    touch_types = []
+    if retest.get("retest_52w"):
+        touch_types.append("52W")
+    if touches.get("ma25_touch"):
+        touch_types.append("25MA")
+    if touches.get("ma200_touch"):
+        touch_types.append("200MA")
+    screen_type = "MULTI" if len(touch_types) >= 2 else (touch_types[0] if touch_types else "OTHER")
+
     return {
         **row_base,
+        "screen_type": screen_type,
         "current_price": round(float(indicators["current_price"]), 1),
         "high_52w": round(float(indicators["high_52w"]), 1),
         "dist_52w_high_pct": round(float(indicators["dist_52w_high_pct"]), 2),
@@ -351,6 +466,8 @@ def _collect_pullback_row(
         "ma25_touch_pct": round(float(indicators["ma25_touch_pct"]), 2),
         "ma200_touch_pct": round(float(indicators["ma200_touch_pct"]), 2),
         "ma240_touch_pct": round(float(indicators["ma240_touch_pct"]), 2),
+        "dist_25ma_pct": round(float(indicators["ma25_gap_pct"]), 2),
+        "dist_200ma_pct": round(float(indicators["ma200_gap_pct"]), 2),
         "retest_52w": bool(retest.get("retest_52w")),
         "retest_line_price": retest.get("retest_line_price", ""),
         "retest_breakout_date": retest.get("retest_breakout_date", ""),
@@ -373,6 +490,7 @@ def _collect_previous_52w_retest_row(
 
     return {
         **row_base,
+        "screen_type": "52W",
         "current_price": round(float(indicators["current_price"]), 1),
         "recent_52w_high": retest.get("recent_52w_high", ""),
         "recent_52w_high_date": retest.get("recent_52w_high_date", ""),
@@ -381,6 +499,8 @@ def _collect_previous_52w_retest_row(
         "breakout_52w_date": retest.get("breakout_52w_date", ""),
         "line_deviation_pct": retest.get("line_deviation_pct", ""),
         "drawdown_from_recent_high_pct": retest.get("drawdown_from_recent_high_pct", ""),
+        "dist_25ma_pct": round(float(indicators["ma25_gap_pct"]), 2),
+        "dist_200ma_pct": round(float(indicators["ma200_gap_pct"]), 2),
         "ma25": round(float(indicators["ma25"]), 1),
         "ma50": round(float(indicators["ma50"]), 1),
         "ma75": round(float(indicators["ma75"]), 1),
@@ -411,6 +531,7 @@ def _collect_highs_row(
         return None
     return {
         **row_base,
+        "screen_type": "52W",
         "high_type": high_type,
         "high_label": high_info.get("high_label", ""),
         "high_price": high_info.get("high_price", ""),
@@ -423,16 +544,35 @@ def _collect_highs_row(
         "ma25": round(float(indicators["ma25"]), 1),
         "ma50": round(float(indicators["ma50"]), 1),
         "ma200": round(float(indicators["ma200"]), 1),
+        "dist_25ma_pct": round(float(indicators["ma25_gap_pct"]), 2),
+        "dist_200ma_pct": round(float(indicators["ma200_gap_pct"]), 2),
         "turnover_20d": int(indicators["turnover_20d"]),
         "volume_ratio_5d_20d": round(float(indicators["volume_ratio_5d_20d"]), 2),
     }
 
 
+AUX_COLUMNS = {
+    "screening_pullback": [
+        "code", "ticker", "name", "market", "sector", "screen_type",
+        "ma25_touch", "ma200_touch", "retest_52w",
+    ],
+    "screening_highs": [
+        "code", "ticker", "name", "market", "sector", "screen_type",
+        "high_type", "high_label",
+    ],
+    "screening_52w_retest": [
+        "code", "ticker", "name", "market", "sector", "screen_type",
+        "rank", "score", "candidate_action", "reason",
+    ],
+}
+
+
 def _write_aux_csv(rows: list[dict[str, object]], output_dir: str, prefix: str) -> None:
-    if not rows:
-        return
     path = timestamped_csv_path(output_dir, prefix=prefix)
-    pd.DataFrame(rows).to_csv(path, index=False, encoding="utf-8-sig")
+    df = pd.DataFrame(rows)
+    if df.empty:
+        df = pd.DataFrame(columns=AUX_COLUMNS.get(prefix, []))
+    df.to_csv(path, index=False, encoding="utf-8-sig")
     print(f"保存しました: {path}", flush=True)
 
 
@@ -501,6 +641,8 @@ def format_indicators(indicators: dict[str, float]) -> dict[str, object]:
         "ma75_gap_pct": round(indicators["ma75_gap_pct"], 2),
         "ma200_gap_pct": round(indicators["ma200_gap_pct"], 2),
         "ma240_gap_pct": round(indicators["ma240_gap_pct"], 2),
+        "dist_25ma_pct": round(indicators["ma25_gap_pct"], 2),
+        "dist_200ma_pct": round(indicators["ma200_gap_pct"], 2),
         "ma25_touch_pct": round(indicators["ma25_touch_pct"], 2),
         "ma200_touch_pct": round(indicators["ma200_touch_pct"], 2),
         "ma240_touch_pct": round(indicators["ma240_touch_pct"], 2),

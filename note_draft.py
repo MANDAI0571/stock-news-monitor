@@ -221,8 +221,8 @@ def build_note_body(screening: pd.DataFrame, discipline: pd.DataFrame, backtest:
     if top10.empty:
         lines.append("- 該当なし")
     else:
-        lines.append("| コード | 銘柄名 | ランク | スコア | 現在値 | 理由 |")
-        lines.append("|---|---:|---:|---:|---:|---|")
+        lines.append("| コード | 銘柄名 | ランク | スコア | 現在値 | OpenWork | 理由 |")
+        lines.append("|---|---|---:|---:|---:|---:|---|")
         for _, row in top10.iterrows():
             lines.append(
                 "| {code} | {name} | {rank} | {score} | {price} | {openwork} | {reason} |".format(

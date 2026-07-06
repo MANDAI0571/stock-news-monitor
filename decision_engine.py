@@ -58,9 +58,17 @@ LOT = 100                                     # 売買単位
 
 OUTPUT_COLUMNS: List[str] = [
     "code", "name", "decision", "confidence", "score", "rank",
+    "screen_type", "strategy", "high_type", "high_label",
+    "current_price", "lot_value_100", "dist_52w_high_pct",
+    "dist_25ma_pct", "dist_200ma_pct",
+    "volume_ratio_5d_20d", "turnover_20d", "buy_reason",
     "entry_reason", "skip_reason",
     "stop_loss_price", "take_profit_price",
     "position_size", "estimated_holding_days",
+]
+
+SHARED_SCHEMA_COLUMNS = [
+    "screen_type", "dist_25ma_pct", "dist_200ma_pct", "buy_reason",
 ]
 
 # 入力列名のゆらぎ吸収（run_screening.py の新旧スキーマ両対応）
@@ -71,7 +79,7 @@ ALIASES: Dict[str, List[str]] = {
     "rank":        ["rank", "judge", "grade", "ランク", "判定"],
     "price":       ["current_price", "current", "close", "today_close", "現在値", "終値"],
     "vol_ratio":   ["volume_ratio_5d_20d", "volume_ratio", "vol_ratio", "出来高倍率"],
-    "dist_high":   ["dist_to_high_pct", "dist_52w_high_pct", "dist_to_52w_high_pct",
+    "dist_high":   ["dist_52w_high_pct", "dist_to_52w_high_pct", "dist_to_high_pct",
                     "52週高値差"],
     "lot_value":   ["lot_value_100", "lot_value", "100株購入額"],
     "ma25":        ["ma25", "MA25"],
@@ -79,11 +87,20 @@ ALIASES: Dict[str, List[str]] = {
     "ma200":       ["ma200", "MA200"],
     "ma75_gap":    ["ma75_gap_pct"],
     "ma200_gap":   ["ma200_gap_pct"],
+    "dist_25ma":   ["dist_25ma_pct", "ma25_gap_pct", "ma25_distance_pct"],
+    "dist_200ma":  ["dist_200ma_pct", "ma200_gap_pct", "ma200_distance_pct"],
     "reason":      ["reason", "買い候補理由", "理由"],
+    "buy_reason":  ["buy_reason", "買い理由", "買い候補理由", "reason"],
     "earn_bdays":  ["days_to_earnings", "earnings_within_bdays", "days_until_earnings",
                     "決算まで営業日"],
     "earn_date":   ["earnings_date", "next_earnings_date", "決算予定日"],
     "theme":       ["theme", "themes", "テーマ", "theme_top3"],
+    "screen_type": ["screen_type"],
+    "high_type":   ["high_type"],
+    "high_label":  ["high_label"],
+    "turnover":    ["turnover_20d", "turnover_20d_avg"],
+    "duke_support":["duke_old_high_support", "duke_support_signal"],
+    "cwh_signal":  ["cwh_signal"],
 }
 
 
@@ -102,6 +119,32 @@ def _pick(nrow: Dict[str, str], key: str) -> str:
     return ""
 
 
+def _normalize_rank(value: str) -> str:
+    rank = str(value or "").strip().upper()
+    mapping = {"S": "S", "A": "A", "B": "B", "C": "C", "SKIP": "SKIP", "見送り": "SKIP"}
+    return mapping.get(rank, "SKIP")
+
+
+def _infer_screen_type(nrow: Dict[str, str]) -> str:
+    explicit = _pick(nrow, "screen_type").upper()
+    if explicit:
+        return explicit
+    matched: List[str] = []
+    high_type = _pick(nrow, "high_type").upper()
+    if high_type in {"52W_NEW_HIGH", "52W_NEAR_HIGH"}:
+        matched.append("52W")
+    dist_25ma = _to_float(_pick(nrow, "dist_25ma"))
+    dist_200ma = _to_float(_pick(nrow, "dist_200ma"))
+    if dist_25ma is not None and abs(dist_25ma) <= 3:
+        matched.append("25MA")
+    if dist_200ma is not None and abs(dist_200ma) <= 3:
+        matched.append("200MA")
+    matched = list(dict.fromkeys(matched))
+    if len(matched) >= 2:
+        return "MULTI"
+    return matched[0] if matched else "OTHER"
+
+
 def _to_float(s: str) -> Optional[float]:
     if s is None:
         return None
@@ -116,6 +159,45 @@ def _to_float(s: str) -> Optional[float]:
 
 def _round1(x: Optional[float]) -> object:
     return round(float(x), 1) if isinstance(x, (int, float)) else ""
+
+
+def _infer_strategy(nrow: Dict[str, str], rank_u: str) -> str:
+    high_type = _pick(nrow, "high_type")
+    if _any_truthy(nrow, "duke_support"):
+        return "duke_old_high_support"
+    if high_type == "SWING_HIGH_BREAK":
+        return "swing_high_break"
+    if high_type == "52W_NEW_HIGH":
+        return "52w_new_high"
+    if high_type == "52W_NEAR_HIGH":
+        return "52w_near_high"
+    if high_type == "RECENT_NEW_HIGH":
+        return "recent_new_high"
+    if high_type == "RECENT_NEAR_HIGH":
+        return "recent_near_high"
+    if _pick(nrow, "cwh_signal").lower() in {"1", "1.0", "true", "yes"}:
+        return "cup_with_handle"
+    if rank_u in {"S", "A", "B"}:
+        return "rank_candidate"
+    return "other"
+
+
+def _any_truthy(nrow: Dict[str, str], key: str) -> bool:
+    for alias in ALIASES.get(key, []):
+        value = nrow.get(alias.strip().lower(), "")
+        if str(value).strip().lower() in {"1", "1.0", "true", "yes", "y"}:
+            return True
+    return False
+
+
+def _max_buys_for_regime(regime: str) -> int:
+    """地合い別の新規BUY枠。悪い日は買わない/少なくする。"""
+    regime = (regime or "NORMAL").upper()
+    if regime in {"STOP", "RISK"}:
+        return 0
+    if regime == "CAUTION":
+        return 1
+    return MAX_POSITIONS
 
 
 def _bdays_until(date_str: str, today: Optional[date] = None) -> Optional[int]:
@@ -212,13 +294,21 @@ def decide_one(row: Dict[str, object], learning: Optional[pd.DataFrame] = None,
 
     code = _pick(nrow, "code")
     name = _pick(nrow, "name")
-    rank = _pick(nrow, "rank")
-    rank_u = rank.upper()
+    rank = _normalize_rank(_pick(nrow, "rank"))
+    rank_u = rank
+    screen_type = _infer_screen_type(nrow)
+    strategy = _infer_strategy(nrow, rank_u)
     score = _to_float(_pick(nrow, "score"))
     price = _to_float(_pick(nrow, "price"))
     vol_ratio = _to_float(_pick(nrow, "vol_ratio"))
     dist_high = _to_float(_pick(nrow, "dist_high"))
     lot_value = _to_float(_pick(nrow, "lot_value"))
+    turnover = _to_float(_pick(nrow, "turnover"))
+    dist_25ma = _to_float(_pick(nrow, "dist_25ma"))
+    dist_200ma = _to_float(_pick(nrow, "dist_200ma"))
+    buy_reason = _pick(nrow, "buy_reason")
+    high_type = _pick(nrow, "high_type")
+    high_label = _pick(nrow, "high_label")
     if lot_value is None and price is not None:
         lot_value = price * LOT
 
@@ -278,6 +368,8 @@ def decide_one(row: Dict[str, object], learning: Optional[pd.DataFrame] = None,
         skip.append("地合いSTOP（新規買い停止）")
     elif regime == "RISK":
         skip.append("地合いRISK（新規は見送り）")
+    elif regime == "CAUTION":
+        entry.append("地合いCAUTION（BUY枠を1銘柄に縮小）")
 
     # ── 分類 ───────────────────────────────
     buy_ready = (
@@ -321,6 +413,18 @@ def decide_one(row: Dict[str, object], learning: Optional[pd.DataFrame] = None,
         "confidence": confidence,
         "score": (f"{score:g}" if score is not None else ""),
         "rank": rank,
+        "screen_type": screen_type,
+        "strategy": strategy,
+        "high_type": high_type,
+        "high_label": high_label,
+        "current_price": _round1(price),
+        "lot_value_100": int(lot_value) if lot_value is not None else "",
+        "dist_52w_high_pct": (round(float(dist_high), 2) if dist_high is not None else ""),
+        "dist_25ma_pct": (round(float(dist_25ma), 2) if dist_25ma is not None else ""),
+        "dist_200ma_pct": (round(float(dist_200ma), 2) if dist_200ma is not None else ""),
+        "volume_ratio_5d_20d": (round(float(vol_ratio), 2) if vol_ratio is not None else ""),
+        "turnover_20d": int(turnover) if turnover is not None else "",
+        "buy_reason": buy_reason,
         "entry_reason": " / ".join(entry) if decision in ("BUY", "WATCH") else "",
         "skip_reason": " / ".join(skip) if decision in ("WATCH", "SKIP") else "",
         "stop_loss_price": stop_px,
@@ -346,14 +450,15 @@ def build_decisions(screening: pd.DataFrame,
     results = [decide_one(rec, learning=learning, regime=regime, today=today)
                for rec in screening.to_dict("records")]
 
-    # BUY を score降順・高値まで近い順で並べ、最大3銘柄。超過分は WATCH に降格。
+    # BUY を score降順・高値まで近い順で並べ、地合い別の枠上限を適用。
     buys = [r for r in results if r["decision"] == "BUY"]
     buys.sort(key=lambda r: (-r["_score_sort"], r["_dist_sort"]))
+    max_buys = _max_buys_for_regime(regime)
     for i, r in enumerate(buys):
-        if i >= MAX_POSITIONS:
+        if i >= max_buys:
             r["decision"] = "WATCH"
             r["position_size"] = 0
-            extra = "枠上限（最大3銘柄）で見送り"
+            extra = f"地合い{regime}の枠上限（最大{max_buys}銘柄）で見送り"
             r["skip_reason"] = (r["skip_reason"] + " / " + extra).strip(" /") if r["skip_reason"] else extra
 
     df = pd.DataFrame(results, columns=OUTPUT_COLUMNS + ["_score_sort", "_dist_sort"])
@@ -362,6 +467,27 @@ def build_decisions(screening: pd.DataFrame,
     df["_ord"] = df["decision"].map(order).fillna(3)
     df = df.sort_values(["_ord", "confidence"], ascending=[True, False])
     return df[OUTPUT_COLUMNS].reset_index(drop=True)
+
+
+def validate_decision_consistency(screening: pd.DataFrame, decisions: pd.DataFrame) -> None:
+    """screening_result.csv と decision_result.csv の行・中核列の対応を保証する。"""
+    missing = [col for col in SHARED_SCHEMA_COLUMNS if col not in decisions.columns]
+    if missing:
+        raise ValueError(f"decision_result.csv missing required columns: {', '.join(missing)}")
+    if screening is None:
+        screening = pd.DataFrame()
+    if len(screening) != len(decisions):
+        raise ValueError(f"decision_result row mismatch: screening={len(screening)} decision={len(decisions)}")
+    if "code" in screening.columns and "code" in decisions.columns:
+        left = set(screening["code"].astype(str))
+        right = set(decisions["code"].astype(str))
+        if left != right:
+            missing_decisions = sorted(left - right)[:10]
+            extra_decisions = sorted(right - left)[:10]
+            raise ValueError(
+                "decision_result code mismatch: "
+                f"missing={missing_decisions} extra={extra_decisions}"
+            )
 
 
 # ─────────────────────────────────────────
@@ -455,6 +581,7 @@ def run(screening_path: Path = DEFAULT_SCREENING,
     screening = pd.read_csv(screening_path, dtype=str).fillna("")
     learning = load_learning(learning_path)
     decisions = build_decisions(screening, learning=learning, regime=regime, today=today)
+    validate_decision_consistency(screening, decisions)
     csv_path, md_path = write_outputs(decisions, out_dir, regime=regime, today=today)
     return {
         "input_exists": True,

@@ -60,58 +60,7 @@ jobs:
           ls -la outputs/ || true
           echo "=== head of screening_result.csv ==="
           head -n 5 outputs/screening_result.csv || echo "screening_result.csv not found"
-          python3 - <<'PY'
-          from pathlib import Path
-          import pandas as pd
-
-          def latest(pattern: str) -> Path | None:
-              files = sorted(Path("outputs").glob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
-              return files[0] if files else None
-
-          def read_csv(path: Path | None) -> pd.DataFrame:
-              if path is None or not path.exists() or path.stat().st_size == 0:
-                  return pd.DataFrame()
-              return pd.read_csv(path, encoding="utf-8-sig")
-
-          result = read_csv(Path("outputs/screening_result.csv"))
-          highs = read_csv(latest("screening_highs_*.csv"))
-          pullback = read_csv(latest("screening_pullback_*.csv"))
-          retest = read_csv(latest("screening_52w_retest_*.csv"))
-
-          buy_count = int(result.get("rank", pd.Series(dtype=object)).astype(str).str.upper().isin(["S", "A", "B"]).sum())
-          high_count = int((highs.get("high_type", pd.Series(dtype=object)).astype(str) == "52W_NEW_HIGH").sum())
-          ma25_count = int(pullback.get("ma25_touch", pd.Series(dtype=bool)).fillna(False).astype(bool).sum())
-          ma200_count = int(pullback.get("ma200_touch", pd.Series(dtype=bool)).fillna(False).astype(bool).sum())
-          retest_buy_count = int((retest.get("candidate_action", pd.Series(dtype=object)).astype(str) == "BUY").sum())
-          missing_files = [
-              name for name, df in {
-                  "screening_result.csv": result,
-                  "screening_highs_*.csv": highs,
-                  "screening_pullback_*.csv": pullback,
-                  "screening_52w_retest_*.csv": retest,
-              }.items()
-              if df.empty
-          ]
-
-          lines = [
-              "## JP Screening Summary",
-              "",
-              f"- QUICK_MODE: `{__import__('os').environ.get('QUICK_MODE', '')}`",
-              f"- MAX_SYMBOLS: `{__import__('os').environ.get('MAX_SYMBOLS', '')}`",
-              f"- screening_result rows: `{len(result)}`",
-              f"- BUY candidates(S/A/B): `{buy_count}`",
-              f"- 52w new-high candidates: `{high_count}`",
-              f"- 25MA pullback candidates: `{ma25_count}`",
-              f"- 200MA touch candidates: `{ma200_count}`",
-              f"- 52w retest BUY candidates: `{retest_buy_count}`",
-          ]
-          if missing_files:
-              lines.append(f"- Missing/empty result files: `{', '.join(missing_files)}`")
-
-          print("\n".join(lines))
-          with open(__import__("os").environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as fh:
-              fh.write("\n".join(lines) + "\n")
-          PY
+          python3 screening_summary.py
 
       - name: Upload screening result CSV
         if: always()

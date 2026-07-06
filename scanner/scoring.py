@@ -161,7 +161,7 @@ def rejection_row(
     lot_value = current * 100
     return {
         "score": 0,
-        "rank": "見送り",
+        "rank": "SKIP",
         "lot_value_100": lot_value,
         "max_positions_3m": int(capital // lot_value) if lot_value > 0 else 0,
         "reason": reason,
@@ -175,7 +175,9 @@ def _rank(score: int) -> str:
         return "A"
     if score >= 55:
         return "B"
-    return "見送り"
+    if score >= 40:
+        return "C"
+    return "SKIP"
 
 
 def meets_s_technical_gate(indicators: dict[str, float]) -> tuple[bool, list[str]]:
