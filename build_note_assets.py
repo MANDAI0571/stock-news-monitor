@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
-import shutil
+from html import escape
 import struct
 import json
 import zlib
@@ -25,6 +25,7 @@ REQUIRED_FILES = [
     "eyecatch.png",
     "market_status.png",
     "funnel.png",
+    "watch.png",
     "note_drafts_manifest.json",
 ]
 
@@ -51,6 +52,7 @@ ARTIFACT_FILES = [
     "eyecatch.png",
     "market_status.png",
     "funnel.png",
+    "watch.png",
 ]
 
 
@@ -114,17 +116,59 @@ def _count(rows: list[dict[str, str]], column: str, value: str) -> int:
     return sum(1 for row in rows if str(row.get(column, "")).upper() == value)
 
 
-def _copy_required_aliases(output_dir: Path) -> None:
-    aliases = {
-        "note_daily.md": "note_body.md",
-        "note_daily.html": "note_preview.html",
-    }
-    for src_name, dst_name in aliases.items():
-        src = output_dir / src_name
-        if not src.exists() or src.stat().st_size == 0:
-            raise FileNotFoundError(f"note draft source missing: {src_name}")
-        shutil.copyfile(src, output_dir / dst_name)
-        print(f"note_alias={dst_name} source={src_name}")
+def _first_text(row: dict[str, str], *names: str) -> str:
+    for name in names:
+        value = str(row.get(name, "")).strip()
+        if value and value.lower() not in {"nan", "none", "<na>"}:
+            return value
+    return ""
+
+
+def _short(value: str, limit: int = 90) -> str:
+    text = " ".join(str(value or "").split())
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _top_rows(rows: list[dict[str, str]], decision: str, limit: int = 5) -> list[dict[str, str]]:
+    selected = [row for row in rows if str(row.get("decision", "")).upper() == decision]
+
+    def key(row: dict[str, str]) -> tuple[float, float]:
+        try:
+            confidence = float(str(row.get("confidence", "0")).replace(",", ""))
+        except ValueError:
+            confidence = 0.0
+        try:
+            score = float(str(row.get("score", "0")).replace(",", ""))
+        except ValueError:
+            score = 0.0
+        return (-confidence, -score)
+
+    return sorted(selected, key=key)[:limit]
+
+
+def _buy0_reasons(decisions: list[dict[str, str]], market: dict[str, str]) -> list[str]:
+    regime = str(market.get("regime", "UNKNOWN")).upper()
+    if regime in {"STOP", "RISK"}:
+        return [f"地合いが{regime}のため、新規BUYを出さず現金待機にしています。"]
+    skip_text = " / ".join(
+        _first_text(row, "skip_reason")
+        for row in decisions
+        if str(row.get("decision", "")).upper() == "SKIP"
+    )
+    reasons: list[str] = []
+    if "ランクがSでない" in skip_text:
+        reasons.append("Sランク条件に届かない銘柄が多く、BUY条件を満たしませんでした。")
+    if "52週高値から" in skip_text or "52週高値まで" in skip_text:
+        reasons.append("52週高値からの距離が遠い銘柄があり、短期の勢い条件を満たしませんでした。")
+    if "出来高" in skip_text:
+        reasons.append("出来高の増加が弱い銘柄があり、買いの根拠を強められませんでした。")
+    if "MA" in skip_text or "移動平均" in skip_text:
+        reasons.append("移動平均線の上昇トレンド条件がそろわない銘柄がありました。")
+    if "高すぎ" in skip_text or "資金20%" in skip_text:
+        reasons.append("300万円運用の100株単位ルールで、1銘柄の金額が大きすぎる銘柄がありました。")
+    if not reasons:
+        reasons.append("Sランク・52週高値距離・出来高・移動平均・資金管理の条件が同時にそろう銘柄がありませんでした。")
+    return reasons[:4]
 
 
 def _canvas(width: int, height: int, color: tuple[int, int, int]) -> bytearray:
@@ -268,7 +312,178 @@ def _build_cloud_images(output_dir: Path) -> list[Path]:
             _text(img, width, height, 90, 310, f"RANK {row.get('rank', '')}  SCORE {row.get('score', '')}", (31, 116, 95), 5)
             _text(img, width, height, 90, 390, f"CONF {row.get('confidence', '')}  PRICE {row.get('current_price', '')}", (72, 84, 97), 4)
             images.append(_save_png(output_dir / f"buy_{code}.png", width, height, img))
+    watch_rows = _top_rows(decisions, "WATCH", 3)
+    img = _canvas(width, height, (250, 251, 253))
+    _draw_header(img, width, height, "WATCH LIST", "NEXT CANDIDATES")
+    _text(img, width, height, 90, 190, f"WATCH {watch_count}", (48, 105, 152), 8)
+    if watch_rows:
+        for idx, row in enumerate(watch_rows, start=1):
+            code = "".join(ch for ch in str(row.get("code", "")) if ch.isalnum()) or "-"
+            rank = _first_text(row, "rank") or "-"
+            conf = _first_text(row, "confidence") or "-"
+            _text(img, width, height, 95, 270 + (idx - 1) * 72, f"{idx} CODE {code} RANK {rank} CONF {conf}", (42, 48, 56), 4)
+    else:
+        _text(img, width, height, 95, 300, "NO WATCH TODAY", (72, 84, 97), 6)
+    images.append(_save_png(output_dir / "watch.png", width, height, img))
     return images
+
+
+def _image_md(filename: str, label: str) -> str:
+    return f"![{label}]({filename})"
+
+
+def _build_note_body(output_dir: Path) -> str:
+    screening = _latest_rows(output_dir, "screening_result.csv", "screening_result_*.csv")
+    decisions = _latest_rows(output_dir, "decision_result.csv", "decision_result.csv")
+    market = _load_market(output_dir)
+    regime = str(market.get("regime", "UNKNOWN")).upper()
+    today = datetime.now().strftime("%Y-%m-%d")
+    buy_rows = _top_rows(decisions, "BUY", 3)
+    watch_rows = _top_rows(decisions, "WATCH", 5)
+    buy_count = _count(decisions, "decision", "BUY")
+    watch_count = _count(decisions, "decision", "WATCH")
+    skip_count = _count(decisions, "decision", "SKIP")
+    candidate_count = sum(1 for row in screening if str(row.get("rank", "")).upper() in {"S", "A", "B"})
+    buy_images = sorted(p.name for p in output_dir.glob("buy_*.png"))
+
+    lines: list[str] = [
+        f"# 本日の日本株短期売買メモ {today}",
+        "",
+        _image_md("eyecatch.png", "アイキャッチ"),
+        "",
+        "## 市場状況",
+        "",
+        _image_md("market_status.png", "市場状況"),
+        "",
+        f"- 地合い: **{regime}**",
+        f"- 対象行数: {len(screening)}件",
+        f"- 判定: BUY {buy_count}件 / WATCH {watch_count}件 / SKIP {skip_count}件",
+        "",
+        "## ファネル図",
+        "",
+        _image_md("funnel.png", "ファネル図"),
+        "",
+        f"- S/A/B候補: {candidate_count}件",
+        "",
+    ]
+
+    if buy_rows:
+        lines.extend(["## BUYカード", ""])
+        for image in buy_images:
+            lines.extend([_image_md(image, "BUYカード"), ""])
+        for row in buy_rows:
+            code = _first_text(row, "code")
+            name = _first_text(row, "name")
+            reason = _first_text(row, "entry_reason", "buy_reason")
+            lines.append(f"- {code} {name}: {_short(reason)}")
+    else:
+        lines.extend([
+            "## BUYカード または CASHカード",
+            "",
+            _image_md("buy_cash.png", "CASHカード"),
+            "",
+            "本日はBUY候補を出さず、現金待機とします。",
+            "",
+            "### なぜBUY0件なのか",
+            "",
+        ])
+        for reason in _buy0_reasons(decisions, market):
+            lines.append(f"- {reason}")
+    lines.append("")
+
+    lines.extend(["## WATCHカード", "", _image_md("watch.png", "WATCHカード"), ""])
+    if watch_rows:
+        lines.append("次に監視したい候補です。BUY条件には届いていないため、出来高・地合い・高値距離の改善待ちです。")
+        lines.append("")
+        for row in watch_rows:
+            code = _first_text(row, "code")
+            name = _first_text(row, "name")
+            reason = _first_text(row, "skip_reason", "entry_reason")
+            lines.append(f"- {code} {name}: {_short(reason)}")
+    else:
+        lines.append("本日はWATCH候補もありません。無理に候補を作らず、次のスクリーニングを待ちます。")
+    lines.append("")
+
+    lines.extend([
+        "## まとめ",
+        "",
+        f"- 地合いは{regime}です。",
+        f"- BUYは{buy_count}件、WATCHは{watch_count}件です。",
+        "- 条件がそろわない日は現金を守ることも、300万円運用のルールの一部です。",
+        "",
+        "## 免責文",
+        "",
+        "この下書きは投資助言ではありません。売買判断は、最新の株価、出来高、決算予定、地合いを確認したうえで自己責任で行ってください。",
+        "",
+    ])
+    return "\n".join(lines)
+
+
+def _render_preview_html(markdown: str) -> str:
+    body: list[str] = []
+    in_list = False
+    for raw in markdown.splitlines():
+        line = raw.rstrip()
+        if in_list and not line.startswith("- "):
+            body.append("</ul>")
+            in_list = False
+        if not line:
+            continue
+        if line.startswith("# "):
+            body.append(f"<h1>{escape(line[2:])}</h1>")
+        elif line.startswith("## "):
+            body.append(f"<h2>{escape(line[3:])}</h2>")
+        elif line.startswith("### "):
+            body.append(f"<h3>{escape(line[4:])}</h3>")
+        elif line.startswith("![") and "](" in line and line.endswith(")"):
+            alt = line[2:].split("](", 1)[0]
+            src = line.split("](", 1)[1][:-1]
+            body.append(f'<figure><img src="{escape(src)}" alt="{escape(alt)}"><figcaption>{escape(alt)}</figcaption></figure>')
+        elif line.startswith("- "):
+            if not in_list:
+                body.append("<ul>")
+                in_list = True
+            body.append(f"<li>{escape(line[2:])}</li>")
+        else:
+            body.append(f"<p>{escape(line)}</p>")
+    if in_list:
+        body.append("</ul>")
+    return """<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Note下書きプレビュー</title>
+  <style>
+    body { margin: 0; background: #f4f6f8; color: #202833; font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Yu Gothic", sans-serif; line-height: 1.75; }
+    main { max-width: 860px; margin: 0 auto; padding: 22px 16px 56px; background: #fff; }
+    h1 { font-size: 26px; line-height: 1.35; margin: 10px 0 18px; }
+    h2 { font-size: 21px; border-left: 5px solid #1f745f; padding-left: 10px; margin-top: 34px; }
+    h3 { font-size: 17px; margin-top: 20px; }
+    p, li { font-size: 15px; }
+    figure { margin: 18px 0; }
+    img { display: block; width: 100%; height: auto; border: 1px solid #d9e0e7; }
+    figcaption { font-size: 12px; color: #697586; margin-top: 6px; }
+    ul { padding-left: 22px; }
+  </style>
+</head>
+<body>
+<main>
+""" + "\n".join(body) + """
+</main>
+</body>
+</html>
+"""
+
+
+def _write_cloud_article(output_dir: Path) -> None:
+    note_body = _build_note_body(output_dir)
+    body_path = output_dir / "note_body.md"
+    preview_path = output_dir / "note_preview.html"
+    body_path.write_text(note_body, encoding="utf-8")
+    preview_path.write_text(_render_preview_html(note_body), encoding="utf-8")
+    print(f"note_body={body_path}")
+    print(f"note_preview={preview_path}")
 
 
 def _file_entry(path: Path) -> dict[str, object]:
@@ -288,8 +503,8 @@ def build_note_assets(output_dir: str | Path = OUTPUT_DIR) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     note_draft.main()
-    _copy_required_aliases(output_dir)
     image_paths = _build_cloud_images(output_dir)
+    _write_cloud_article(output_dir)
 
     missing = [name for name in REQUIRED_FILES if not (output_dir / name).exists()]
     if missing:
