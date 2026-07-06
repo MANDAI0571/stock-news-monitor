@@ -58,7 +58,7 @@ LOT = 100                                     # 売買単位
 
 OUTPUT_COLUMNS: List[str] = [
     "code", "name", "decision", "confidence", "score", "rank",
-    "screen_type", "strategy", "high_type", "high_label",
+    "screen_type", "screen_tags", "strategy", "high_type", "high_label",
     "current_price", "lot_value_100", "dist_52w_high_pct",
     "dist_25ma_pct", "dist_200ma_pct",
     "volume_ratio_5d_20d", "turnover_20d", "buy_reason",
@@ -68,8 +68,31 @@ OUTPUT_COLUMNS: List[str] = [
 ]
 
 SHARED_SCHEMA_COLUMNS = [
-    "screen_type", "dist_25ma_pct", "dist_200ma_pct", "buy_reason",
+    "screen_type", "screen_tags", "dist_25ma_pct", "dist_200ma_pct", "buy_reason",
 ]
+
+SCREEN_TYPE_VALUES = {
+    "MULTI",
+    "52W_BREAKOUT",
+    "52W_MOMENTUM",
+    "52W_PULLBACK",
+    "25MA_PULLBACK",
+    "200MA_TOUCH",
+    "WATCH",
+    "SKIP",
+}
+SCREEN_TAG_VALUES = {
+    "52W_BREAKOUT",
+    "52W_MOMENTUM",
+    "52W_PULLBACK",
+    "25MA_PULLBACK",
+    "200MA_TOUCH",
+}
+LEGACY_SCREEN_TYPE_TAGS = {
+    "52W": ["52W_MOMENTUM"],
+    "25MA": ["25MA_PULLBACK"],
+    "200MA": ["200MA_TOUCH"],
+}
 
 # 入力列名のゆらぎ吸収（run_screening.py の新旧スキーマ両対応）
 ALIASES: Dict[str, List[str]] = {
@@ -96,10 +119,16 @@ ALIASES: Dict[str, List[str]] = {
     "earn_date":   ["earnings_date", "next_earnings_date", "決算予定日"],
     "theme":       ["theme", "themes", "テーマ", "theme_top3"],
     "screen_type": ["screen_type"],
+    "screen_tags": ["screen_tags"],
     "high_type":   ["high_type"],
     "high_label":  ["high_label"],
     "turnover":    ["turnover_20d", "turnover_20d_avg"],
     "duke_support":["duke_old_high_support", "duke_support_signal"],
+    "days_since_52w": ["days_since_52w_high"],
+    "retest_52w":  ["retest_52w", "prev_52w_retest"],
+    "ma25_touch":  ["ma25_touch"],
+    "ma200_touch": ["ma200_touch"],
+    "prev_52w_line": ["previous_52w_high_line", "line_deviation_pct", "old_52w_high", "dist_to_old_52w_high_pct"],
     "cwh_signal":  ["cwh_signal"],
 }
 
@@ -119,30 +148,98 @@ def _pick(nrow: Dict[str, str], key: str) -> str:
     return ""
 
 
+def _pick_buy_reason(nrow: Dict[str, str]) -> str:
+    if "buy_reason" in nrow:
+        value = nrow.get("buy_reason", "")
+        text = str(value).strip()
+        return "" if text.lower() in {"nan", "none", "<na>", "nat"} else text
+    return _pick(nrow, "buy_reason")
+
+
 def _normalize_rank(value: str) -> str:
     rank = str(value or "").strip().upper()
     mapping = {"S": "S", "A": "A", "B": "B", "C": "C", "SKIP": "SKIP", "見送り": "SKIP"}
     return mapping.get(rank, "SKIP")
 
 
-def _infer_screen_type(nrow: Dict[str, str]) -> str:
+def _append_tag(tags: List[str], tag: str) -> None:
+    if tag in SCREEN_TAG_VALUES and tag not in tags:
+        tags.append(tag)
+
+
+def _split_screen_tags(value: str) -> List[str]:
+    tags: List[str] = []
+    for raw in str(value or "").replace("|", ",").replace(";", ",").split(","):
+        tag = raw.strip().upper()
+        if not tag:
+            continue
+        if tag in LEGACY_SCREEN_TYPE_TAGS:
+            for mapped in LEGACY_SCREEN_TYPE_TAGS[tag]:
+                _append_tag(tags, mapped)
+        else:
+            _append_tag(tags, tag)
+    return tags
+
+
+def _infer_screen_tags(nrow: Dict[str, str]) -> List[str]:
+    explicit_tags = _split_screen_tags(_pick(nrow, "screen_tags"))
+    if explicit_tags:
+        return explicit_tags
+
+    tags: List[str] = []
     explicit = _pick(nrow, "screen_type").upper()
-    if explicit:
-        return explicit
-    matched: List[str] = []
+    if explicit in SCREEN_TAG_VALUES:
+        _append_tag(tags, explicit)
+    elif explicit in LEGACY_SCREEN_TYPE_TAGS:
+        for mapped in LEGACY_SCREEN_TYPE_TAGS[explicit]:
+            _append_tag(tags, mapped)
+
     high_type = _pick(nrow, "high_type").upper()
-    if high_type in {"52W_NEW_HIGH", "52W_NEAR_HIGH"}:
-        matched.append("52W")
+    dist_high = _to_float(_pick(nrow, "dist_high"))
+    days_since_52w = _to_float(_pick(nrow, "days_since_52w"))
+    if high_type == "52W_NEW_HIGH" or (days_since_52w is not None and days_since_52w <= 0):
+        _append_tag(tags, "52W_BREAKOUT")
+    elif high_type == "52W_NEAR_HIGH" or (
+        dist_high is not None and dist_high <= 3
+    ) or (
+        days_since_52w is not None and days_since_52w <= 14
+    ):
+        _append_tag(tags, "52W_MOMENTUM")
+
+    if _any_truthy(nrow, "retest_52w") or _any_truthy(nrow, "duke_support") or _pick(nrow, "prev_52w_line"):
+        _append_tag(tags, "52W_PULLBACK")
+
     dist_25ma = _to_float(_pick(nrow, "dist_25ma"))
     dist_200ma = _to_float(_pick(nrow, "dist_200ma"))
-    if dist_25ma is not None and abs(dist_25ma) <= 3:
-        matched.append("25MA")
-    if dist_200ma is not None and abs(dist_200ma) <= 3:
-        matched.append("200MA")
-    matched = list(dict.fromkeys(matched))
-    if len(matched) >= 2:
+    if _any_truthy(nrow, "ma25_touch") or (dist_25ma is not None and abs(dist_25ma) <= 3):
+        _append_tag(tags, "25MA_PULLBACK")
+    if _any_truthy(nrow, "ma200_touch") or (dist_200ma is not None and abs(dist_200ma) <= 3):
+        _append_tag(tags, "200MA_TOUCH")
+    return tags
+
+
+def _screen_type_from_tags(tags: List[str], rank_u: str, explicit: str = "") -> str:
+    tags = [tag for tag in dict.fromkeys(tags) if tag in SCREEN_TAG_VALUES]
+    explicit = str(explicit or "").strip().upper()
+    if rank_u == "SKIP":
+        return "SKIP"
+    if len(tags) >= 2:
         return "MULTI"
-    return matched[0] if matched else "OTHER"
+    if tags:
+        return tags[0]
+    if explicit in SCREEN_TYPE_VALUES and explicit not in {"MULTI", "SKIP"}:
+        return explicit
+    return "WATCH"
+
+
+def _screen_tags_text(tags: List[str], screen_type: str) -> str:
+    tags = [tag for tag in dict.fromkeys(tags) if tag in SCREEN_TAG_VALUES]
+    return ",".join(tags) if tags else screen_type
+
+
+def _infer_screen_type(nrow: Dict[str, str], rank_u: str = "") -> str:
+    tags = _infer_screen_tags(nrow)
+    return _screen_type_from_tags(tags, rank_u, _pick(nrow, "screen_type"))
 
 
 def _to_float(s: str) -> Optional[float]:
@@ -296,7 +393,8 @@ def decide_one(row: Dict[str, object], learning: Optional[pd.DataFrame] = None,
     name = _pick(nrow, "name")
     rank = _normalize_rank(_pick(nrow, "rank"))
     rank_u = rank
-    screen_type = _infer_screen_type(nrow)
+    screen_tags = _infer_screen_tags(nrow)
+    screen_type = _screen_type_from_tags(screen_tags, rank_u, _pick(nrow, "screen_type"))
     strategy = _infer_strategy(nrow, rank_u)
     score = _to_float(_pick(nrow, "score"))
     price = _to_float(_pick(nrow, "price"))
@@ -306,7 +404,7 @@ def decide_one(row: Dict[str, object], learning: Optional[pd.DataFrame] = None,
     turnover = _to_float(_pick(nrow, "turnover"))
     dist_25ma = _to_float(_pick(nrow, "dist_25ma"))
     dist_200ma = _to_float(_pick(nrow, "dist_200ma"))
-    buy_reason = _pick(nrow, "buy_reason")
+    buy_reason = _pick_buy_reason(nrow)
     high_type = _pick(nrow, "high_type")
     high_label = _pick(nrow, "high_label")
     if lot_value is None and price is not None:
@@ -414,6 +512,7 @@ def decide_one(row: Dict[str, object], learning: Optional[pd.DataFrame] = None,
         "score": (f"{score:g}" if score is not None else ""),
         "rank": rank,
         "screen_type": screen_type,
+        "screen_tags": _screen_tags_text(screen_tags, screen_type),
         "strategy": strategy,
         "high_type": high_type,
         "high_label": high_label,
@@ -469,6 +568,16 @@ def build_decisions(screening: pd.DataFrame,
     return df[OUTPUT_COLUMNS].reset_index(drop=True)
 
 
+def _consistency_value(value: object) -> str:
+    text = str(value if value is not None else "").strip()
+    if text.lower() in {"nan", "none", "<na>", "nat"}:
+        return ""
+    number = _to_float(text)
+    if number is not None:
+        return f"{number:.2f}"
+    return text
+
+
 def validate_decision_consistency(screening: pd.DataFrame, decisions: pd.DataFrame) -> None:
     """screening_result.csv と decision_result.csv の行・中核列の対応を保証する。"""
     missing = [col for col in SHARED_SCHEMA_COLUMNS if col not in decisions.columns]
@@ -488,6 +597,27 @@ def validate_decision_consistency(screening: pd.DataFrame, decisions: pd.DataFra
                 "decision_result code mismatch: "
                 f"missing={missing_decisions} extra={extra_decisions}"
             )
+        for col in SHARED_SCHEMA_COLUMNS:
+            if col not in screening.columns:
+                continue
+            if col == "screen_type":
+                source_types = screening[col].astype(str).str.upper()
+                known = source_types.isin(SCREEN_TYPE_VALUES) | source_types.str.strip().eq("")
+                if not bool(known.all()):
+                    continue
+            left_df = screening[["code", col]].copy()
+            right_df = decisions[["code", col]].copy()
+            left_df["code"] = left_df["code"].astype(str)
+            right_df["code"] = right_df["code"].astype(str)
+            left_map = left_df.drop_duplicates("code", keep="last").set_index("code")[col].to_dict()
+            right_map = right_df.drop_duplicates("code", keep="last").set_index("code")[col].to_dict()
+            mismatches = [
+                code for code in sorted(left & right)
+                if _consistency_value(left_map.get(code)) != _consistency_value(right_map.get(code))
+            ]
+            if mismatches:
+                sample = mismatches[:5]
+                raise ValueError(f"decision_result shared column mismatch: {col} codes={sample}")
 
 
 # ─────────────────────────────────────────

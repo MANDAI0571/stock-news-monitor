@@ -34,7 +34,13 @@ def summarize_outputs(output_dir: str | Path = "outputs") -> dict[str, object]:
 
     rank = result.get("rank", pd.Series(dtype=object)).astype(str).str.upper()
     reason = result.get("reason", pd.Series(dtype=object)).astype(str)
+    screen_type = result.get("screen_type", pd.Series(dtype=object)).astype(str).str.upper()
     high_type = highs.get("high_type", pd.Series(dtype=object)).astype(str)
+    screen_type_values = [
+        "MULTI", "52W_BREAKOUT", "52W_MOMENTUM", "52W_PULLBACK",
+        "25MA_PULLBACK", "200MA_TOUCH", "WATCH", "SKIP",
+    ]
+    screen_type_counts = {value: int(screen_type.eq(value).sum()) for value in screen_type_values}
 
     if not decision.empty and "decision" in decision.columns:
         buy_count = int(decision["decision"].astype(str).eq("BUY").sum())
@@ -44,16 +50,23 @@ def summarize_outputs(output_dir: str | Path = "outputs") -> dict[str, object]:
         buy_count = int(rank.isin(["S", "A", "B"]).sum())
         watch_count = 0
         skip_count = 0
+    code_set_match = ""
+    if not result.empty and not decision.empty and "code" in result.columns and "code" in decision.columns:
+        code_set_match = str(set(result["code"].astype(str)) == set(decision["code"].astype(str))).lower()
 
     return {
         "quick_mode": os.environ.get("QUICK_MODE", ""),
         "max_symbols": os.environ.get("MAX_SYMBOLS", ""),
         "screening_result_rows": int(len(result)),
+        "decision_result_rows": int(len(decision)),
         "rank_s": int(rank.eq("S").sum()),
         "rank_a": int(rank.eq("A").sum()),
         "rank_b": int(rank.eq("B").sum()),
         "rank_c": int(rank.eq("C").sum()),
         "rank_skip": int(rank.eq("SKIP").sum()),
+        "screen_type_counts": screen_type_counts,
+        "screen_type_other_rows": int(screen_type.eq("OTHER").sum()),
+        "code_set_match": code_set_match,
         "buy_candidates": buy_count,
         "watch_candidates": watch_count,
         "skip_candidates": skip_count,
@@ -88,7 +101,12 @@ def build_markdown(summary: dict[str, object]) -> str:
         f"- QUICK_MODE: `{summary['quick_mode']}`",
         f"- MAX_SYMBOLS: `{summary['max_symbols']}`",
         f"- screening_result rows: `{summary['screening_result_rows']}`",
+        f"- decision_result rows: `{summary['decision_result_rows']}`",
+        f"- code set match: `{summary['code_set_match'] or 'not_checked'}`",
         f"- S/A/B/C/SKIP ranks: `S={summary['rank_s']} A={summary['rank_a']} B={summary['rank_b']} C={summary['rank_c']} SKIP={summary['rank_skip']}`",
+        "- screen_type counts: `"
+        + " ".join(f"{key}={value}" for key, value in summary["screen_type_counts"].items())
+        + f" OTHER={summary['screen_type_other_rows']}`",
         f"- BUY candidates: `{summary['buy_candidates']}`",
         f"- WATCH/SKIP: `WATCH={summary['watch_candidates']} SKIP={summary['skip_candidates']}`",
         f"- 52w new-high candidates: `{summary['new_52w_high_candidates']}`",

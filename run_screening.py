@@ -44,6 +44,7 @@ DISPLAY_COLUMNS = [
     "name",
     "market",
     "screen_type",
+    "screen_tags",
     "current_price",
     "score",
     "rank",
@@ -347,27 +348,109 @@ def _numeric_series(df: pd.DataFrame, column: str, default: float = 999.0) -> pd
     return pd.to_numeric(df[column], errors="coerce").fillna(default)
 
 
-def _screen_type_for_row(row: pd.Series) -> str:
-    matched: list[str] = []
+SCREEN_TYPE_VALUES = [
+    "MULTI",
+    "52W_BREAKOUT",
+    "52W_MOMENTUM",
+    "52W_PULLBACK",
+    "25MA_PULLBACK",
+    "200MA_TOUCH",
+    "WATCH",
+    "SKIP",
+]
+SCREEN_TAG_VALUES = [
+    "52W_BREAKOUT",
+    "52W_MOMENTUM",
+    "52W_PULLBACK",
+    "25MA_PULLBACK",
+    "200MA_TOUCH",
+]
+TRUE_VALUES = {"1", "1.0", "true", "yes", "y", "on"}
+
+
+def _is_blank(value: object) -> bool:
+    try:
+        if pd.isna(value):
+            return True
+    except (TypeError, ValueError):
+        pass
+    text = str(value).strip()
+    return text == "" or text.lower() in {"nan", "none", "<na>", "nat"}
+
+
+def _as_float(value: object, default: float | None = None) -> float | None:
+    if _is_blank(value):
+        return default
+    text = str(value).replace(",", "").replace("%", "").strip()
+    try:
+        return float(text)
+    except (TypeError, ValueError):
+        return default
+
+
+def _truthy(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in TRUE_VALUES
+
+
+def _append_tag(tags: list[str], tag: str) -> None:
+    if tag not in tags:
+        tags.append(tag)
+
+
+def _screen_tags_for_row(row: pd.Series) -> list[str]:
+    tags: list[str] = []
     high_type = str(row.get("high_type", "")).upper()
-    if high_type in {"52W_NEW_HIGH", "52W_NEAR_HIGH"}:
-        matched.append("52W")
-    try:
-        dist_25ma = abs(float(row.get("dist_25ma_pct", 999) or 999))
-    except (TypeError, ValueError):
-        dist_25ma = 999.0
-    try:
-        dist_200ma = abs(float(row.get("dist_200ma_pct", 999) or 999))
-    except (TypeError, ValueError):
-        dist_200ma = 999.0
-    if str(row.get("ma25_touch", "")).strip().lower() in {"1", "1.0", "true", "yes", "y"} or dist_25ma <= 3:
-        matched.append("25MA")
-    if str(row.get("ma200_touch", "")).strip().lower() in {"1", "1.0", "true", "yes", "y"} or dist_200ma <= 3:
-        matched.append("200MA")
-    matched = list(dict.fromkeys(matched))
-    if len(matched) >= 2:
+    dist_52w = _as_float(row.get("dist_52w_high_pct"), 999.0)
+    days_since_52w = _as_float(row.get("days_since_52w_high"), 999.0)
+    if high_type == "52W_NEW_HIGH" or (days_since_52w is not None and days_since_52w <= 0):
+        _append_tag(tags, "52W_BREAKOUT")
+    elif high_type == "52W_NEAR_HIGH" or (
+        dist_52w is not None and dist_52w <= 3
+    ) or (
+        days_since_52w is not None and days_since_52w <= 14
+    ):
+        _append_tag(tags, "52W_MOMENTUM")
+
+    has_52w_pullback = (
+        _truthy(row.get("retest_52w"))
+        or _truthy(row.get("prev_52w_retest"))
+        or _truthy(row.get("duke_old_high_support"))
+        or _truthy(row.get("duke_support_signal"))
+        or not _is_blank(row.get("previous_52w_high_line"))
+        or not _is_blank(row.get("line_deviation_pct"))
+        or not _is_blank(row.get("old_52w_high"))
+        or not _is_blank(row.get("dist_to_old_52w_high_pct"))
+    )
+    if has_52w_pullback:
+        _append_tag(tags, "52W_PULLBACK")
+
+    dist_25ma = _as_float(row.get("dist_25ma_pct"), 999.0)
+    dist_200ma = _as_float(row.get("dist_200ma_pct"), 999.0)
+    if _truthy(row.get("ma25_touch")) or (dist_25ma is not None and abs(dist_25ma) <= 3):
+        _append_tag(tags, "25MA_PULLBACK")
+    if _truthy(row.get("ma200_touch")) or (dist_200ma is not None and abs(dist_200ma) <= 3):
+        _append_tag(tags, "200MA_TOUCH")
+    return tags
+
+
+def _screen_type_from_tags(tags: list[str], rank: object | None = None) -> str:
+    tags = [tag for tag in dict.fromkeys(tags) if tag in SCREEN_TAG_VALUES]
+    if rank is not None and _normalize_rank(rank) == "SKIP":
+        return "SKIP"
+    if len(tags) >= 2:
         return "MULTI"
-    return matched[0] if matched else "OTHER"
+    return tags[0] if tags else "WATCH"
+
+
+def _screen_tags_text(tags: list[str], screen_type: str) -> str:
+    tags = [tag for tag in dict.fromkeys(tags) if tag in SCREEN_TAG_VALUES]
+    return ",".join(tags) if tags else screen_type
+
+
+def _screen_type_for_row(row: pd.Series) -> str:
+    return _screen_type_from_tags(_screen_tags_for_row(row), row.get("rank"))
 
 
 def _normalize_screening_schema(result: pd.DataFrame) -> pd.DataFrame:
@@ -386,7 +469,15 @@ def _normalize_screening_schema(result: pd.DataFrame) -> pd.DataFrame:
 
     reason = out.get("reason", pd.Series("", index=out.index)).fillna("").astype(str)
     out["buy_reason"] = reason.where(out["rank"].isin(["S", "A", "B", "C"]), "")
-    out["screen_type"] = out.apply(_screen_type_for_row, axis=1)
+    tags = out.apply(_screen_tags_for_row, axis=1)
+    out["screen_type"] = [
+        _screen_type_from_tags(row_tags, rank)
+        for row_tags, rank in zip(tags, out["rank"])
+    ]
+    out["screen_tags"] = [
+        _screen_tags_text(row_tags, screen_type)
+        for row_tags, screen_type in zip(tags, out["screen_type"])
+    ]
     return out
 
 
@@ -405,11 +496,14 @@ def _print_screening_summary(
     retest_buy = sum(1 for row in retest_rows if str(row.get("candidate_action", "")) == "BUY")
     error_rows = int(reason.str.contains("エラー|ERROR|Traceback|Exception", case=False, regex=True, na=False).sum())
     missing_price = int(reason.str.contains("価格データ不足", regex=False, na=False).sum())
+    screen_type = result.get("screen_type", pd.Series(dtype=object)).astype(str) if not result.empty else pd.Series(dtype=object)
+    screen_type_counts = " ".join(f"{value}={int(screen_type.eq(value).sum())}" for value in SCREEN_TYPE_VALUES)
     print(
         "screening_summary "
         f"symbols={symbols} result_rows={len(result)} "
         f"S={int(rank.eq('S').sum())} A={int(rank.eq('A').sum())} B={int(rank.eq('B').sum())} "
         f"C={int(rank.eq('C').sum())} SKIP={int(rank.eq('SKIP').sum())} "
+        f"screen_types=[{screen_type_counts}] "
         f"buy_candidates={int(rank.isin(['S', 'A', 'B']).sum())} "
         f"new_52w={high_new} ma25_pullback={ma25} ma200_touch={ma200} "
         f"retest_52w_buy={retest_buy} error_rows={error_rows} missing_price_rows={missing_price}",
@@ -440,16 +534,17 @@ def _collect_pullback_row(
 
     touch_types = []
     if retest.get("retest_52w"):
-        touch_types.append("52W")
+        touch_types.append("52W_PULLBACK")
     if touches.get("ma25_touch"):
-        touch_types.append("25MA")
+        touch_types.append("25MA_PULLBACK")
     if touches.get("ma200_touch"):
-        touch_types.append("200MA")
-    screen_type = "MULTI" if len(touch_types) >= 2 else (touch_types[0] if touch_types else "OTHER")
+        touch_types.append("200MA_TOUCH")
+    screen_type = _screen_type_from_tags(touch_types)
 
     return {
         **row_base,
         "screen_type": screen_type,
+        "screen_tags": _screen_tags_text(touch_types, screen_type),
         "current_price": round(float(indicators["current_price"]), 1),
         "high_52w": round(float(indicators["high_52w"]), 1),
         "dist_52w_high_pct": round(float(indicators["dist_52w_high_pct"]), 2),
@@ -490,7 +585,8 @@ def _collect_previous_52w_retest_row(
 
     return {
         **row_base,
-        "screen_type": "52W",
+        "screen_type": "52W_PULLBACK",
+        "screen_tags": "52W_PULLBACK",
         "current_price": round(float(indicators["current_price"]), 1),
         "recent_52w_high": retest.get("recent_52w_high", ""),
         "recent_52w_high_date": retest.get("recent_52w_high_date", ""),
@@ -529,9 +625,11 @@ def _collect_highs_row(
         return None
     if float(indicators.get("turnover_20d", 0)) < 100_000_000:
         return None
+    screen_tag = "52W_BREAKOUT" if high_type == "52W_NEW_HIGH" else "52W_MOMENTUM"
     return {
         **row_base,
-        "screen_type": "52W",
+        "screen_type": screen_tag,
+        "screen_tags": screen_tag,
         "high_type": high_type,
         "high_label": high_info.get("high_label", ""),
         "high_price": high_info.get("high_price", ""),
@@ -553,15 +651,15 @@ def _collect_highs_row(
 
 AUX_COLUMNS = {
     "screening_pullback": [
-        "code", "ticker", "name", "market", "sector", "screen_type",
+        "code", "ticker", "name", "market", "sector", "screen_type", "screen_tags",
         "ma25_touch", "ma200_touch", "retest_52w",
     ],
     "screening_highs": [
-        "code", "ticker", "name", "market", "sector", "screen_type",
+        "code", "ticker", "name", "market", "sector", "screen_type", "screen_tags",
         "high_type", "high_label",
     ],
     "screening_52w_retest": [
-        "code", "ticker", "name", "market", "sector", "screen_type",
+        "code", "ticker", "name", "market", "sector", "screen_type", "screen_tags",
         "rank", "score", "candidate_action", "reason",
     ],
 }

@@ -762,7 +762,7 @@ def _test_decision_engine() -> None:
     dec_many = de.build_decisions(many, learning=None, regime="NORMAL")
     assert int((dec_many["decision"] == "BUY").sum()) == de.MAX_POSITIONS
     assert int((dec_many["decision"] == "WATCH").sum()) == 1
-    assert {"screen_type", "strategy", "high_type", "lot_value_100", "dist_25ma_pct", "dist_200ma_pct", "volume_ratio_5d_20d", "buy_reason"}.issubset(dec_many.columns)
+    assert {"screen_type", "screen_tags", "strategy", "high_type", "lot_value_100", "dist_25ma_pct", "dist_200ma_pct", "volume_ratio_5d_20d", "buy_reason"}.issubset(dec_many.columns)
 
     # run(): CSV + MD 出力、集計、入力欠損の安全動作
     with TemporaryDirectory() as tmp:
@@ -800,24 +800,51 @@ def _test_csv_schema_contract() -> None:
             "volume_ratio_5d_20d": 0.7, "turnover_20d": 80_000_000,
             "reason": "流動性不足",
         },
+        {
+            "code": "3333", "name": "C", "rank": "見送り", "score": 0,
+            "current_price": 900, "high_type": "52W_NEW_HIGH",
+            "dist_52w_high_pct": 0.4, "ma25_gap_pct": 8.0, "ma200_gap_pct": 12.0,
+            "volume_ratio_5d_20d": 0.7, "turnover_20d": 80_000_000,
+            "reason": "流動性不足",
+        },
+        {
+            "code": "4444", "name": "D", "rank": "C", "score": 45,
+            "current_price": 900, "high_type": "OTHER",
+            "dist_52w_high_pct": 18.0, "ma25_gap_pct": 8.0, "ma200_gap_pct": 12.0,
+            "volume_ratio_5d_20d": 1.2, "turnover_20d": 200_000_000,
+            "reason": "様子見",
+        },
     ])
     normalized = rs._normalize_screening_schema(raw)
-    assert set(normalized["rank"]) == {"S", "SKIP"}
+    assert set(normalized["rank"]) == {"S", "SKIP", "C"}
+    assert set(normalized["screen_type"]).issubset(set(rs.SCREEN_TYPE_VALUES))
+    assert "OTHER" not in set(normalized["screen_type"])
     assert normalized.loc[0, "screen_type"] == "MULTI"
-    assert normalized.loc[1, "screen_type"] == "MULTI"
+    assert normalized.loc[0, "screen_tags"] == "52W_BREAKOUT,25MA_PULLBACK"
+    assert normalized.loc[1, "screen_type"] == "SKIP"
+    assert normalized.loc[1, "screen_tags"] == "25MA_PULLBACK,200MA_TOUCH"
+    assert normalized.loc[2, "screen_type"] == "SKIP"
+    assert normalized.loc[2, "screen_tags"] == "52W_BREAKOUT"
+    assert normalized.loc[3, "screen_type"] == "WATCH"
+    assert normalized.loc[3, "screen_tags"] == "WATCH"
     assert normalized.loc[0, "dist_25ma_pct"] == 1.2
     assert normalized.loc[1, "dist_200ma_pct"] == 2.0
     assert normalized.loc[0, "buy_reason"] == "52週高値更新"
     assert normalized.loc[1, "buy_reason"] == ""
+    assert normalized.loc[3, "buy_reason"] == "様子見"
 
     decisions = de.build_decisions(normalized, regime="NORMAL")
     de.validate_decision_consistency(normalized, decisions)
-    shared = {"screen_type", "dist_25ma_pct", "dist_200ma_pct", "buy_reason"}
+    shared = {"screen_type", "screen_tags", "dist_25ma_pct", "dist_200ma_pct", "buy_reason"}
     assert shared.issubset(decisions.columns)
     by_code = {r["code"]: r for _, r in decisions.iterrows()}
     assert by_code["1111"]["screen_type"] == "MULTI"
+    assert by_code["1111"]["screen_tags"] == "52W_BREAKOUT,25MA_PULLBACK"
     assert by_code["1111"]["buy_reason"] == "52週高値更新"
     assert by_code["2222"]["rank"] == "SKIP"
+    assert by_code["3333"]["screen_type"] == "SKIP"
+    assert by_code["3333"]["screen_tags"] == "52W_BREAKOUT"
+    assert by_code["4444"]["screen_type"] == "WATCH"
 
 
 def _test_trade_verification() -> None:
@@ -898,7 +925,7 @@ def _test_trade_verification() -> None:
 
         hist = tv.load_history(hist_path)
         assert set(hist["decision"]) == {"BUY", "WATCH"}
-        assert {"strategy", "high_type", "lot_value_100", "volume_ratio_5d_20d", "turnover_20d"}.issubset(hist.columns)
+        assert {"screen_tags", "strategy", "high_type", "lot_value_100", "volume_ratio_5d_20d", "turnover_20d"}.issubset(hist.columns)
         assert (hist["status"] == "PENDING").all()
         buy_row = hist[hist["code"] == "6920"].iloc[0]
         assert str(buy_row["near_high"]).lower() == "true"
