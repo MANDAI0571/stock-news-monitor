@@ -80,6 +80,8 @@ jobs:
           python3 screening_summary.py || true
           echo "=== note draft files ==="
           ls -lh outputs/note_*.md outputs/note_*.html outputs/note_*.txt outputs/*manifest*.json outputs/market_snapshot.json 2>/dev/null || true
+          echo "=== cloud note artifact files ==="
+          ls -lh outputs/note_body.md outputs/note_preview.html outputs/eyecatch.png outputs/market_status.png outputs/funnel.png outputs/buy_*.png 2>/dev/null || true
 
       - name: Upload Note draft artifact
         if: always()
@@ -87,6 +89,8 @@ jobs:
         with:
           name: note-draft-cloud
           path: |
+            outputs/note_body.md
+            outputs/note_preview.html
             outputs/note_daily.md
             outputs/note_title.txt
             outputs/note_daily.html
@@ -105,4 +109,8 @@ jobs:
             outputs/note_drafts_manifest.json
             outputs/note_cloud_artifact_manifest.json
             outputs/market_snapshot.json
+            outputs/eyecatch.png
+            outputs/market_status.png
+            outputs/funnel.png
+            outputs/buy_*.png
           if-no-files-found: error
