@@ -6,7 +6,7 @@ import json
 import os
 import re
 from dataclasses import dataclass
-from html import unescape
+from html import escape, unescape
 from pathlib import Path
 
 
@@ -15,6 +15,10 @@ DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "outputs"
 NOTE_TITLE_FILE = "note_title.txt"
 NOTE_HTML_FILE = "note_daily.html"
 NOTE_URL_FILE = "note_draft_url.txt"
+NOTE_CLOUD_BODY_FILE = "note_body.md"
+NOTE_CLOUD_PREVIEW_FILE = "note_preview.html"
+NOTE_CLOUD_URL_FILE = "note_draft_url_cloud.txt"
+NOTE_CLOUD_VERIFY_FILE = "note_autosave_verify_cloud.json"
 # T-E: 4本Note分割。note_draft.build_note4 が書く manifest を読み、1ログインで
 # 4下書きをまとめて保存する（公開は一切しない）。manifest が無ければ従来の単一Note動作。
 NOTE4_MANIFEST_FILE = "note_drafts_manifest.json"
@@ -31,6 +35,9 @@ class NoteDraftPayload:
     title: str
     body_html: str
     chart_path: str | None = None  # 本文冒頭に挿入する画像(PNG)の絶対パス。無ければNone。
+    image_paths: tuple[str, ...] = ()
+    verify_texts: tuple[str, ...] = ()
+    min_image_count: int = 0
 
 
 def parse_args() -> argparse.Namespace:
@@ -41,6 +48,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-headless", action="store_false", dest="headless")
     # --single = manifest があっても従来の単一Note(note_daily)だけ保存する保険スイッチ
     parser.add_argument("--single", action="store_true", default=False)
+    parser.add_argument(
+        "--cloud-article",
+        action="store_true",
+        default=False,
+        help="outputs/note_body.md と画像一式をnote.com下書きへ保存し、保存後に再確認する",
+    )
     return parser.parse_args()
 
 
@@ -55,6 +68,98 @@ def load_note_payload(output_dir: Path) -> NoteDraftPayload:
     html = html_path.read_text(encoding="utf-8")
     body_html = extract_body_fragment(html)
     return NoteDraftPayload(title=title, body_html=body_html)
+
+
+def load_cloud_note_payload(output_dir: Path) -> NoteDraftPayload:
+    body_path = output_dir / NOTE_CLOUD_BODY_FILE
+    preview_path = output_dir / NOTE_CLOUD_PREVIEW_FILE
+    if not body_path.exists():
+        raise FileNotFoundError(f"{body_path} が見つかりません")
+    if not preview_path.exists():
+        raise FileNotFoundError(f"{preview_path} が見つかりません")
+    markdown = body_path.read_text(encoding="utf-8")
+    title = _title_from_markdown(markdown)
+    image_paths = tuple(_image_paths_from_markdown(output_dir, markdown))
+    verify_texts = (
+        "本日の300万円運用判断",
+        "ウォーレン判断",
+        "市場状況",
+        "WATCH",
+        "免責文",
+    )
+    if "BUY 0件" in markdown:
+        verify_texts = (*verify_texts, "CASH", "なぜBUY0件なのか")
+    return NoteDraftPayload(
+        title=title,
+        body_html=_markdown_to_note_html(markdown),
+        image_paths=image_paths,
+        verify_texts=verify_texts,
+        min_image_count=max(1, len(image_paths)),
+    )
+
+
+def _title_from_markdown(markdown: str) -> str:
+    for line in markdown.splitlines():
+        if line.startswith("# "):
+            title = line[2:].strip()
+            if title:
+                return title
+    raise RuntimeError("note_body.md にタイトル行（# ...）がありません")
+
+
+def _image_paths_from_markdown(output_dir: Path, markdown: str) -> list[str]:
+    paths: list[str] = []
+    seen: set[Path] = set()
+    for match in re.finditer(r"!\[[^\]]*\]\(([^)]+)\)", markdown):
+        raw = match.group(1).strip()
+        if raw.startswith(("http://", "https://", "data:")):
+            continue
+        path = Path(raw)
+        if not path.is_absolute():
+            path = output_dir / path
+        path = path.resolve()
+        if path.exists() and path not in seen:
+            paths.append(str(path))
+            seen.add(path)
+    if not paths:
+        raise RuntimeError("note_body.md から挿入対象画像を特定できません")
+    return paths
+
+
+def _markdown_to_note_html(markdown: str) -> str:
+    """note本文へ貼り付けるHTML。画像は別途アップロードするため本文からは除く。"""
+    parts: list[str] = []
+    in_list = False
+    for raw in markdown.splitlines():
+        line = raw.rstrip()
+        if line.startswith("![") and "](" in line:
+            continue
+        if in_list and not line.startswith("- "):
+            parts.append("</ul>")
+            in_list = False
+        if not line:
+            continue
+        if line.startswith("# "):
+            parts.append(f"<h1>{_inline_markdown(line[2:])}</h1>")
+        elif line.startswith("## "):
+            parts.append(f"<h2>{_inline_markdown(line[3:])}</h2>")
+        elif line.startswith("### "):
+            parts.append(f"<h3>{_inline_markdown(line[4:])}</h3>")
+        elif line.startswith("- "):
+            if not in_list:
+                parts.append("<ul>")
+                in_list = True
+            parts.append(f"<li>{_inline_markdown(line[2:])}</li>")
+        else:
+            parts.append(f"<p>{_inline_markdown(line)}</p>")
+    if in_list:
+        parts.append("</ul>")
+    return "\n".join(parts)
+
+
+def _inline_markdown(text: str) -> str:
+    escaped = escape(text.strip())
+    return re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", escaped)
 
 
 def extract_body_fragment(html: str) -> str:
@@ -127,8 +232,22 @@ def _save_one(context, payload: NoteDraftPayload, error_key: str | None = None) 
             _fill_body(page, payload.body_html)
             # 本文を入れた後で、本文の冒頭(タイトル直下)に画像を挿入する。
             # set_all+paste が画像も消すため、必ず本文確定の「後」に行う。失敗は致命にしない。
+            image_paths = list(payload.image_paths)
             if payload.chart_path:
-                image_status = _insert_image_top(page, payload.chart_path, error_key)
+                image_paths.append(payload.chart_path)
+            if image_paths:
+                image_ok = 0
+                for idx, image_path in enumerate(reversed(image_paths), start=1):
+                    key = f"{error_key or 'note'}_{idx}"
+                    if _insert_image_top(page, image_path, key) == "ok":
+                        image_ok += 1
+                if image_ok == len(image_paths):
+                    image_status = "ok"
+                elif image_ok > 0:
+                    image_status = "partial"
+                else:
+                    image_status = "failed"
+                print(f"note_draft_image_uploaded_detail[{error_key}]={image_ok}/{len(image_paths)}")
             _try_save(page)
             try:
                 page.wait_for_url(
@@ -429,6 +548,133 @@ def save_note_drafts(
             context.close()
             browser.close()
     return results
+
+
+def save_cloud_note_draft(
+    output_dir: Path,
+    note_url_file: str = NOTE_CLOUD_URL_FILE,
+    headless: bool = True,
+) -> tuple[str, dict]:
+    from playwright.sync_api import sync_playwright
+
+    payload = load_cloud_note_payload(output_dir)
+    _require_auth()
+    with sync_playwright() as playwright:
+        browser, context = _open_context(playwright, headless)
+        try:
+            draft_url, image_status = _save_one(context, payload, error_key="cloud")
+            verification = _verify_saved_draft(context, draft_url, payload, image_status, key="cloud")
+            verification["draft_list"] = _verify_draft_list(context, payload.title, key="cloud")
+            if not verification["draft_list"].get("title_found"):
+                verification["ok"] = False
+            write_note_url(output_dir, draft_url, note_url_file)
+            verify_path = output_dir / NOTE_CLOUD_VERIFY_FILE
+            verify_path.write_text(json.dumps(verification, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            print(f"note_cloud_draft_url={draft_url}")
+            print(f"note_cloud_verify_file={verify_path}")
+            print(f"note_cloud_verify_ok={verification.get('ok')}")
+            print(f"note_cloud_draft_list_found={verification.get('draft_list', {}).get('title_found')}")
+            if not verification.get("ok"):
+                raise RuntimeError(f"note下書きの保存後確認に失敗しました: {verification}")
+            return draft_url, verification
+        finally:
+            context.close()
+            browser.close()
+
+
+def _verify_saved_draft(
+    context,
+    draft_url: str,
+    payload: NoteDraftPayload,
+    image_status: str,
+    key: str | None = None,
+) -> dict:
+    page = context.new_page()
+    try:
+        page.goto(draft_url, wait_until="domcontentloaded", timeout=60_000)
+        _wait_for_editor_ready(page)
+        page.wait_for_timeout(1500)
+        page_text = _page_visible_text(page)
+        title_text = _read_title_text(page)
+        image_count = _count_editor_images(page)
+        missing_texts = [text for text in payload.verify_texts if text and text not in page_text]
+        result = {
+            "ok": False,
+            "url": page.url,
+            "title_expected": payload.title,
+            "title_found": payload.title in title_text or payload.title in page_text,
+            "image_status": image_status,
+            "image_count": image_count,
+            "min_image_count": payload.min_image_count,
+            "missing_texts": missing_texts,
+            "public_state": "draft_unpublished_assumed",
+        }
+        result["ok"] = (
+            bool(result["title_found"])
+            and image_count >= payload.min_image_count
+            and not missing_texts
+            and is_saved_draft_url(page.url)
+        )
+        print(f"note_cloud_verify_title[{key}]={result['title_found']}")
+        print(f"note_cloud_verify_images[{key}]={image_count}/{payload.min_image_count}")
+        print(f"note_cloud_verify_missing_texts[{key}]={missing_texts}")
+        if not result["ok"]:
+            _save_error_debug(page, f"verify_{key}" if key else "verify")
+        return result
+    finally:
+        page.close()
+
+
+def _verify_draft_list(context, title: str, key: str | None = None) -> dict:
+    page = context.new_page()
+    try:
+        page.goto("https://note.com/notes", wait_until="domcontentloaded", timeout=60_000)
+        page.wait_for_timeout(3000)
+        text = _page_visible_text(page)
+        result = {"checked": True, "url": page.url, "title_found": title in text}
+        print(f"note_cloud_draft_list_title[{key}]={result['title_found']}")
+        if not result["title_found"]:
+            _save_error_debug(page, f"draft_list_{key}" if key else "draft_list")
+        return result
+    except Exception as exc:  # noqa: BLE001 - URL変更に備え、保存後検証とは分けて記録
+        print(f"note_cloud_draft_list_error[{key}]={exc}")
+        return {"checked": False, "url": page.url, "title_found": False, "error": str(exc)}
+    finally:
+        page.close()
+
+
+def _page_visible_text(page) -> str:
+    try:
+        return page.locator("body").inner_text(timeout=10_000)
+    except Exception:
+        return ""
+
+
+def _read_title_text(page) -> str:
+    selectors = [
+        'textarea[placeholder*="タイトル"]',
+        'textarea[aria-label*="タイトル"]',
+        '[data-testid*="title"] textarea',
+        'textarea',
+    ]
+    for selector in selectors:
+        locator = page.locator(selector)
+        try:
+            if locator.count() == 0:
+                continue
+            value = locator.first.input_value(timeout=3000)
+            if value:
+                return value
+        except Exception:
+            continue
+    return ""
+
+
+def _count_editor_images(page) -> int:
+    try:
+        return int(page.locator('.ProseMirror img, [contenteditable="true"] img, figure img').count())
+    except Exception:
+        return 0
 
 
 def is_saved_draft_url(url: str) -> bool:
@@ -763,17 +1009,20 @@ def _run_multi(output_dir: Path, entries: list[dict], headless: bool) -> int:
 def main() -> None:
     args = parse_args()
     output_dir = Path(args.output_dir)
-    entries = [] if args.single else load_manifest_entries(output_dir)
-    if entries:
-        # T-E: 4本Note分割モード（manifest駆動・1ログインで連続保存・公開しない）
-        _run_multi(output_dir, entries, headless=args.headless)
+    if args.cloud_article:
+        save_cloud_note_draft(output_dir, note_url_file=args.note_url_file, headless=args.headless)
     else:
-        # 従来の単一Note（note_daily）。manifest が無い／--single 指定時の後方互換。
-        payload = load_note_payload(output_dir)
-        draft_url = save_note_draft(payload, headless=args.headless)
-        note_url_path = write_note_url(output_dir, draft_url, args.note_url_file)
-        print(f"note_draft_url={draft_url}")
-        print(f"note_draft_url_file={note_url_path}")
+        entries = [] if args.single else load_manifest_entries(output_dir)
+        if entries:
+            # T-E: 4本Note分割モード（manifest駆動・1ログインで連続保存・公開しない）
+            _run_multi(output_dir, entries, headless=args.headless)
+        else:
+            # 従来の単一Note（note_daily）。manifest が無い／--single 指定時の後方互換。
+            payload = load_note_payload(output_dir)
+            draft_url = save_note_draft(payload, headless=args.headless)
+            note_url_path = write_note_url(output_dir, draft_url, args.note_url_file)
+            print(f"note_draft_url={draft_url}")
+            print(f"note_draft_url_file={note_url_path}")
     if os.environ.get("NOTE_STORAGE_STATE", "").strip():
         print("note_auth=storage_state")
     else:

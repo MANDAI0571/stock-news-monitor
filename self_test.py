@@ -13,7 +13,7 @@ from market_regime import Regime, fetch_regime
 from paper_portfolio_discipline import build_discipline_portfolio
 from pattern_learn import build_pattern_summary
 from daily_note_mail import build_mail_body
-from note_autosave import extract_body_fragment, is_saved_draft_url, load_storage_state
+from note_autosave import extract_body_fragment, is_saved_draft_url, load_cloud_note_payload, load_storage_state
 from scanner.highs import build_high_sections_markdown, classify_high_profile, detect_duke_old_high_support, detect_previous_52w_high_line_retest, detect_swing_high_break
 from scanner.indicators import calculate_indicators
 from scanner.openwork import add_openwork_scores, format_openwork_score
@@ -484,6 +484,45 @@ def _test_note_autosave_and_mail_body() -> None:
     assert extract_body_fragment(html) == "<h1>タイトル</h1><p>本文</p>"
     assert is_saved_draft_url("https://note.com/notes/abc123")
     assert not is_saved_draft_url("https://note.com/notes/new")
+    with TemporaryDirectory() as tmp:
+        out_dir = Path(tmp)
+        for name in ["eyecatch.png", "market_status.png", "funnel.png", "buy_cash.png", "watch.png"]:
+            (out_dir / name).write_bytes(b"png")
+        (out_dir / "note_preview.html").write_text("<html><body>preview</body></html>", encoding="utf-8")
+        (out_dir / "note_body.md").write_text(
+            """# 本日の日本株短期売買メモ 2026-07-07
+
+![アイキャッチ](eyecatch.png)
+
+## 市場状況
+
+![市場状況](market_status.png)
+
+- 判定: BUY 0件 / WATCH 2件 / SKIP 5件
+
+## 本日の300万円運用判断
+
+- ウォーレン判断: **CASH**
+
+### なぜBUY0件なのか
+
+- Sランク不足のため現金保有
+
+## WATCHカード
+
+![WATCHカード](watch.png)
+
+## 免責文
+
+この下書きは投資助言ではありません。
+""",
+            encoding="utf-8",
+        )
+        cloud_payload = load_cloud_note_payload(out_dir)
+        assert cloud_payload.title == "本日の日本株短期売買メモ 2026-07-07"
+        assert len(cloud_payload.image_paths) == 3
+        assert "本日の300万円運用判断" in cloud_payload.body_html
+        assert "CASH" in cloud_payload.verify_texts
 
     encoded = base64.b64encode(json.dumps({"cookies": [], "origins": []}).encode("utf-8")).decode("ascii")
     old = os.environ.get("NOTE_STORAGE_STATE")
