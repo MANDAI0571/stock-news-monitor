@@ -7,6 +7,7 @@ from tempfile import TemporaryDirectory
 import pandas as pd
 
 from gmail_notify import DISCLAIMER, build_candidate_body, build_subject
+from fetch_market import build_market_snapshot
 from market_regime import Regime, fetch_regime
 from paper_portfolio_discipline import build_discipline_portfolio
 from pattern_learn import build_pattern_summary
@@ -25,6 +26,7 @@ def main() -> None:
     _test_indicators_and_scoring()
     _test_discipline_normal_and_stop()
     _test_market_regime_local_fallback()
+    _test_market_snapshot_artifact_schema()
     _test_jpx_universe_cache()
     _test_gmail_body()
     _test_openwork_display_only()
@@ -107,6 +109,62 @@ def _test_market_regime_local_fallback() -> None:
         regime = fetch_regime(url="", fallback_path=path)
         assert regime.value == "NORMAL"
         assert regime.source == str(path)
+
+
+def _test_market_snapshot_artifact_schema() -> None:
+    import json
+    from build_note_assets import _build_note_body
+
+    def fake_fetch(meta, timeout):
+        if meta["key"] == "sox":
+            return {
+                "key": meta["key"],
+                "label": meta["label"],
+                "short_label": meta["short_label"],
+                "symbol": meta["symbol"],
+                "status": "unavailable",
+                "value": None,
+                "change": None,
+                "change_pct": None,
+                "as_of": None,
+                "display_value": "未取得",
+                "display_change_pct": "未取得",
+                "error": "test missing",
+            }
+        return {
+            "key": meta["key"],
+            "label": meta["label"],
+            "short_label": meta["short_label"],
+            "symbol": meta["symbol"],
+            "status": "ok",
+            "value": 100.0,
+            "change": 1.0,
+            "change_pct": 1.0,
+            "as_of": "2026-07-06",
+            "display_value": "100.00",
+            "display_change_pct": "+1.00%",
+            "error": "",
+        }
+
+    with TemporaryDirectory() as tmp:
+        out_dir = Path(tmp)
+        path = build_market_snapshot(
+            out_dir / "market_snapshot.json",
+            fetcher=fake_fetch,
+            regime_fetcher=lambda: Regime("NORMAL", "test"),
+        )
+        data = json.loads(path.read_text(encoding="utf-8"))
+        assert data["regime"] == "NORMAL"
+        assert data["indicator_regime"] in {"NORMAL", "CAUTION", "RISK", "STOP"}
+        assert data["indicators"]["nikkei"]["display_value"] == "100.00"
+        assert data["indicators"]["sox"]["display_value"] == "未取得"
+
+        (out_dir / "screening_result.csv").write_text("code,name,rank,score\n", encoding="utf-8")
+        (out_dir / "decision_result.csv").write_text("code,name,decision,rank,confidence,skip_reason\n", encoding="utf-8")
+        body = _build_note_body(out_dir)
+        assert "フクロウ補助判定" in body
+        assert "日経平均" in body
+        assert "SOX: **未取得**" in body
 
 
 def _test_jpx_universe_cache() -> None:

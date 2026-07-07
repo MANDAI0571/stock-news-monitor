@@ -78,6 +78,22 @@ jobs:
         if: always()
         run: |
           python3 screening_summary.py || true
+          echo "=== market snapshot ==="
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          path = Path("outputs/market_snapshot.json")
+          if not path.exists():
+              print("market_snapshot.json missing")
+          else:
+              data = json.loads(path.read_text(encoding="utf-8"))
+              print(f"regime={data.get('regime', '未取得')} indicator_regime={data.get('indicator_regime', '未取得')}")
+              for item in (data.get("indicators") or {}).values():
+                  print(
+                      f"{item.get('label', '')}: {item.get('display_value', '未取得')} "
+                      f"({item.get('display_change_pct', '未取得')}) status={item.get('status', 'unavailable')}"
+                  )
+          PY
           echo "=== note draft files ==="
           ls -lh outputs/note_*.md outputs/note_*.html outputs/note_*.txt outputs/*manifest*.json outputs/market_snapshot.json 2>/dev/null || true
           echo "=== cloud note artifact files ==="

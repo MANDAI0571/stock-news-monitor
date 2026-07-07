@@ -229,11 +229,67 @@ def _save_png(path: Path, width: int, height: int, img: bytearray) -> Path:
 def _load_market(output_dir: Path) -> dict[str, str]:
     path = output_dir / "market_snapshot.json"
     if not path.exists():
-        return {"regime": "UNKNOWN", "source": "missing", "note": ""}
+        return {"regime": "UNKNOWN", "source": "missing", "note": "", "indicators": {}}
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
-        return {"regime": "UNKNOWN", "source": "invalid", "note": ""}
+        return {"regime": "UNKNOWN", "source": "invalid", "note": "", "indicators": {}}
+
+
+def _market_indicator_items(market: dict[str, object]) -> list[dict[str, object]]:
+    indicators = market.get("indicators", {})
+    if not isinstance(indicators, dict):
+        indicators = {}
+    order = [
+        ("nikkei", "日経平均", "NIKKEI"),
+        ("topix", "TOPIX", "TOPIX"),
+        ("vix", "VIX", "VIX"),
+        ("sox", "SOX", "SOX"),
+        ("usdjpy", "ドル円", "USDJPY"),
+    ]
+    rows: list[dict[str, object]] = []
+    for key, label, short_label in order:
+        raw = indicators.get(key, {})
+        item = raw if isinstance(raw, dict) else {}
+        rows.append(
+            {
+                "key": key,
+                "label": str(item.get("label") or label),
+                "short_label": str(item.get("short_label") or short_label),
+                "status": str(item.get("status") or "unavailable"),
+                "display_value": str(item.get("display_value") or "未取得"),
+                "display_change_pct": str(item.get("display_change_pct") or "未取得"),
+                "as_of": str(item.get("as_of") or "未取得"),
+                "source_note": str(item.get("source_note") or ""),
+            }
+        )
+    return rows
+
+
+def _market_body_lines(market: dict[str, object]) -> list[str]:
+    lines: list[str] = []
+    indicator_regime = str(market.get("indicator_regime") or "").upper()
+    indicator_note = str(market.get("indicator_regime_note") or "").strip()
+    if indicator_regime:
+        note = f"（{indicator_note}）" if indicator_note else ""
+        lines.append(f"- フクロウ補助判定: **{indicator_regime}**{note}")
+    for item in _market_indicator_items(market):
+        source_note = f" / {item['source_note']}" if item["source_note"] else ""
+        lines.append(
+            f"- {item['label']}: **{item['display_value']}**"
+            f"（前日比 {item['display_change_pct']} / {item['as_of']}{source_note}）"
+        )
+    return lines
+
+
+def _png_market_value(value: object) -> str:
+    text = str(value or "").replace(",", "").replace("未取得", "N/A")
+    return text if len(text) <= 12 else text[:12]
+
+
+def _png_market_change(value: object) -> str:
+    text = str(value or "").replace("未取得", "N/A")
+    return text if len(text) <= 8 else text[:8]
 
 
 def _latest_rows(output_dir: Path, fixed_name: str, pattern: str) -> list[dict[str, str]]:
@@ -283,9 +339,15 @@ def _build_cloud_images(output_dir: Path) -> list[Path]:
     color = {"NORMAL": (31, 116, 95), "CAUTION": (201, 139, 33), "RISK": (188, 78, 42), "STOP": (166, 46, 46)}.get(regime, (86, 99, 115))
     img = _canvas(width, height, (250, 251, 253))
     _draw_header(img, width, height, "MARKET STATUS", "REGIME SNAPSHOT")
-    _rect(img, width, height, 80, 220, 1040, 220, color)
-    _text(img, width, height, 140, 292, regime, (255, 255, 255), 12)
-    _text(img, width, height, 90, 500, "SOURCE MARKET REGIME", (72, 84, 97), 4)
+    _rect(img, width, height, 80, 185, 1040, 150, color)
+    _text(img, width, height, 125, 235, f"REGIME {regime}", (255, 255, 255), 8)
+    indicator_regime = str(market.get("indicator_regime", "UNKNOWN")).upper()
+    _text(img, width, height, 95, 365, f"FUKUROU {indicator_regime}", (72, 84, 97), 4)
+    for idx, item in enumerate(_market_indicator_items(market)):
+        label = str(item["short_label"])
+        value = _png_market_value(item["display_value"])
+        change = _png_market_change(item["display_change_pct"])
+        _text(img, width, height, 95, 430 + idx * 34, f"{label} {value} {change}", (42, 48, 56), 3)
     images.append(_save_png(output_dir / "market_status.png", width, height, img))
 
     img = _canvas(width, height, (247, 249, 252))
@@ -356,6 +418,7 @@ def _build_note_body(output_dir: Path) -> str:
         _image_md("market_status.png", "市場状況"),
         "",
         f"- 地合い: **{regime}**",
+        *_market_body_lines(market),
         f"- 対象行数: {len(screening)}件",
         f"- 判定: BUY {buy_count}件 / WATCH {watch_count}件 / SKIP {skip_count}件",
         "",
