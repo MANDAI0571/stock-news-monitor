@@ -200,6 +200,22 @@ def _test_note_artifact_validator_contract() -> None:
 - ドル円: **160.00**
 - 判定: BUY 0件 / WATCH 1件 / SKIP 29件
 
+## 本日の300万円運用判断
+
+- 資金: **3,000,000円**
+- ウォーレン判断: **CASH**
+- 地合い: **NORMAL**
+- BUY件数: 0件
+- WATCH件数: 1件
+- SKIP件数: 29件
+- CASH枠: 3枠
+- 地合いによる制御理由: 条件がそろうまで現金待機します。
+- CASH理由: 条件が同時にそろう銘柄がありませんでした。
+
+### 今日は無理に買わない
+
+BUY条件を満たす銘柄がないため、現金を守ります。
+
 ## BUYカード または CASHカード
 
 ![CASHカード](buy_cash.png)
@@ -221,6 +237,8 @@ def _test_note_artifact_validator_contract() -> None:
     preview_html = """<!doctype html>
 <html lang="ja"><body>
 <h1>本日の日本株短期売買メモ</h1>
+<h2>本日の300万円運用判断</h2>
+<p>ウォーレン判断: CASH / BUY件数: 0件 / WATCH件数: 1件</p>
 <img src="eyecatch.png">
 <img src="market_status.png">
 <img src="funnel.png">
@@ -230,15 +248,37 @@ def _test_note_artifact_validator_contract() -> None:
 """
     with TemporaryDirectory() as tmp:
         out_dir = Path(tmp)
+        warren = {
+            "date": "2026-07-07",
+            "capital": 3_000_000,
+            "regime": "NORMAL",
+            "buy_count": 0,
+            "watch_count": 1,
+            "skip_count": 29,
+            "cash_count": 3,
+            "selected_symbols": [],
+            "cash_reason": "条件が同時にそろう銘柄がありませんでした。",
+            "risk_control_reason": "条件がそろうまで現金待機します。",
+            "source_files": {
+                "decision_result": "outputs/decision_result.csv",
+                "discipline_result": "outputs/discipline_result.csv",
+            },
+            "generated_at": "2026-07-07T00:00:00+00:00",
+        }
         (out_dir / "note_body.md").write_text(note_body, encoding="utf-8")
         (out_dir / "note_preview.html").write_text(preview_html, encoding="utf-8")
         (out_dir / "market_snapshot.json").write_text(json.dumps(market, ensure_ascii=False), encoding="utf-8")
+        (out_dir / "warren_summary.json").write_text(json.dumps(warren, ensure_ascii=False), encoding="utf-8")
+        (out_dir / "decision_result.csv").write_text("code,name,decision\n1111,A,SKIP\n", encoding="utf-8")
+        (out_dir / "discipline_result.csv").write_text("slot,action,cash_reason\n1,CASH,条件不足\n", encoding="utf-8")
+        (out_dir / "paper_portfolio_decision.csv").write_text("slot,action,cash_reason\n1,CASH,条件不足\n", encoding="utf-8")
         (out_dir / "note_cloud_artifact_manifest.json").write_text("{}", encoding="utf-8")
         for name in ["eyecatch.png", "market_status.png", "funnel.png", "buy_cash.png", "watch.png"]:
             _write_fake_png(out_dir / name)
 
         valid = validate_artifact(out_dir)
         assert valid.valid is True
+        assert valid.warren_valid is True
         assert valid.buy_cash_judgement == "CASH"
         assert valid.watch_count == 1
 

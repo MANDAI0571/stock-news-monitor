@@ -26,6 +26,9 @@ REQUIRED_FILES = [
     "market_status.png",
     "funnel.png",
     "watch.png",
+    "warren_summary.json",
+    "decision_result.csv",
+    "discipline_result.csv",
     "note_drafts_manifest.json",
 ]
 
@@ -49,6 +52,11 @@ ARTIFACT_FILES = [
     "note_highs_title.txt",
     "note_drafts_manifest.json",
     "market_snapshot.json",
+    "warren_summary.json",
+    "decision_result.csv",
+    "decision_report.md",
+    "discipline_result.csv",
+    "paper_portfolio_decision.csv",
     "eyecatch.png",
     "market_status.png",
     "funnel.png",
@@ -300,6 +308,248 @@ def _latest_rows(output_dir: Path, fixed_name: str, pattern: str) -> list[dict[s
     return _read_rows(paths[0]) if paths else []
 
 
+def _latest_path(output_dir: Path, fixed_name: str, pattern: str) -> Path | None:
+    fixed = output_dir / fixed_name
+    paths = [p for p in output_dir.glob(pattern) if p.exists() and p.stat().st_size > 0]
+    if fixed.exists() and fixed.stat().st_size > 0:
+        paths.append(fixed)
+    paths = sorted(paths, key=lambda p: p.stat().st_mtime, reverse=True)
+    return paths[0] if paths else None
+
+
+def _copy_file(src: Path, dst: Path) -> Path:
+    if src.resolve() == dst.resolve():
+        return dst
+    dst.write_bytes(src.read_bytes())
+    return dst
+
+
+def _ensure_warren_csvs(output_dir: Path) -> dict[str, str]:
+    source_files: dict[str, str] = {}
+    decision = output_dir / "decision_result.csv"
+    if decision.exists() and decision.stat().st_size > 0:
+        source_files["decision_result"] = str(decision.relative_to(PROJECT_ROOT))
+
+    report = output_dir / "decision_report.md"
+    if report.exists() and report.stat().st_size > 0:
+        source_files["decision_report"] = str(report.relative_to(PROJECT_ROOT))
+
+    discipline_src = _latest_path(output_dir, "discipline_result.csv", "discipline_portfolio_*.csv")
+    if discipline_src and discipline_src.exists():
+        discipline_fixed = _copy_file(discipline_src, output_dir / "discipline_result.csv")
+        portfolio_fixed = _copy_file(discipline_fixed, output_dir / "paper_portfolio_decision.csv")
+        source_files["discipline_result"] = str(discipline_fixed.relative_to(PROJECT_ROOT))
+        source_files["paper_portfolio_decision"] = str(portfolio_fixed.relative_to(PROJECT_ROOT))
+
+    screening = output_dir / "screening_result.csv"
+    if screening.exists() and screening.stat().st_size > 0:
+        source_files["screening_result"] = str(screening.relative_to(PROJECT_ROOT))
+
+    market = output_dir / "market_snapshot.json"
+    if market.exists() and market.stat().st_size > 0:
+        source_files["market_snapshot"] = str(market.relative_to(PROJECT_ROOT))
+    return source_files
+
+
+def _safe_float(value: object) -> float | None:
+    text = str(value or "").replace(",", "").replace("円", "").strip()
+    if not text or text.lower() in {"nan", "none", "<na>"}:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def _safe_int(value: object, default: int = 0) -> int:
+    number = _safe_float(value)
+    return int(number) if number is not None else default
+
+
+def _format_yen(value: object) -> str:
+    number = _safe_float(value)
+    return "未取得" if number is None else f"{int(round(number)):,}円"
+
+
+def _first_nonempty(rows: list[dict[str, str]], column: str) -> str:
+    for row in rows:
+        value = _first_text(row, column)
+        if value:
+            return value
+    return ""
+
+
+def _warren_selected_symbols(buy_rows: list[dict[str, str]]) -> list[dict[str, object]]:
+    selected: list[dict[str, object]] = []
+    for row in buy_rows[:3]:
+        lot_value = _safe_int(_first_text(row, "lot_value_100"))
+        position_size = _safe_int(_first_text(row, "position_size"), 100)
+        if position_size <= 0:
+            position_size = 100
+        current_price = _safe_float(_first_text(row, "current_price"))
+        position_value = int(round(current_price * position_size)) if current_price is not None else lot_value
+        if position_value <= 0:
+            position_value = lot_value
+        selected.append(
+            {
+                "code": _first_text(row, "code"),
+                "name": _first_text(row, "name"),
+                "rank": _first_text(row, "rank"),
+                "score": _first_text(row, "score"),
+                "screen_type": _first_text(row, "screen_type"),
+                "screen_tags": _first_text(row, "screen_tags"),
+                "buy_reason": _first_text(row, "buy_reason", "entry_reason"),
+                "shares": position_size,
+                "lot_value_100": lot_value,
+                "position_value": position_value,
+                "allocation_pct": round(position_value / 3_000_000 * 100, 2) if position_value else 0.0,
+            }
+        )
+    return selected
+
+
+def _risk_control_reason(regime: str, cash_reason: str, buy_count: int) -> str:
+    if regime in {"STOP", "RISK"}:
+        return f"地合い{regime}のため新規BUYを止め、現金を優先します。"
+    if regime == "CAUTION":
+        return "地合いCAUTIONのためBUY枠を最大1銘柄に絞ります。"
+    if buy_count == 0:
+        return cash_reason or "300万円運用ルールで、条件がそろうまで現金待機します。"
+    return "300万円・100株単位・最大3銘柄・1銘柄60万円目安で過大集中を避けます。"
+
+
+def _build_warren_summary(output_dir: Path) -> dict[str, object]:
+    source_files = _ensure_warren_csvs(output_dir)
+    decisions = _latest_rows(output_dir, "decision_result.csv", "decision_result.csv")
+    discipline = _latest_rows(output_dir, "discipline_result.csv", "discipline_portfolio_*.csv")
+    market = _load_market(output_dir)
+    regime = str(market.get("regime", "UNKNOWN")).upper()
+    buy_rows = _top_rows(decisions, "BUY", 3)
+    watch_rows = _top_rows(decisions, "WATCH", 5)
+    buy_count = _count(decisions, "decision", "BUY")
+    watch_count = _count(decisions, "decision", "WATCH")
+    skip_count = _count(decisions, "decision", "SKIP")
+    cash_count = sum(1 for row in discipline if str(row.get("action", "")).upper() == "CASH")
+    if not discipline:
+        cash_count = max(0, 3 - min(buy_count, 3))
+
+    discipline_cash_reason = _first_nonempty(
+        [row for row in discipline if str(row.get("action", "")).upper() == "CASH"],
+        "cash_reason",
+    )
+    cash_reasons = _buy0_reasons(decisions, market) if buy_count == 0 else []
+    cash_reason = discipline_cash_reason or " / ".join(cash_reasons)
+    if buy_count == 0 and not cash_reason:
+        cash_reason = "BUY条件を満たす銘柄がないため、無理に買わず現金待機します。"
+
+    selected_symbols = _warren_selected_symbols(buy_rows)
+    summary: dict[str, object] = {
+        "date": datetime.now().strftime("%Y-%m-%d"),
+        "capital": 3_000_000,
+        "regime": regime,
+        "buy_count": buy_count,
+        "watch_count": watch_count,
+        "skip_count": skip_count,
+        "cash_count": cash_count,
+        "selected_symbols": selected_symbols,
+        "cash_reason": cash_reason,
+        "risk_control_reason": _risk_control_reason(regime, cash_reason, buy_count),
+        "source_files": source_files,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "watch_symbols": [
+            {
+                "code": _first_text(row, "code"),
+                "name": _first_text(row, "name"),
+                "rank": _first_text(row, "rank"),
+                "score": _first_text(row, "score"),
+                "screen_type": _first_text(row, "screen_type"),
+                "skip_reason": _first_text(row, "skip_reason", "entry_reason"),
+            }
+            for row in watch_rows
+        ],
+    }
+    path = output_dir / "warren_summary.json"
+    path.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    print(f"warren_summary={path}")
+    print(
+        f"warren_decision buy={buy_count} watch={watch_count} skip={skip_count} "
+        f"cash={cash_count} regime={regime}"
+    )
+    return summary
+
+
+def _load_warren_summary(output_dir: Path) -> dict[str, object]:
+    path = output_dir / "warren_summary.json"
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _warren_note_lines(summary: dict[str, object]) -> list[str]:
+    if not summary:
+        return [
+            "## 本日の300万円運用判断",
+            "",
+            "- ウォーレン判断: 未取得",
+            "- 300万円運用判断ファイルが見つからないため、買い判断は保留します。",
+            "",
+        ]
+    buy_count = _safe_int(summary.get("buy_count"))
+    watch_count = _safe_int(summary.get("watch_count"))
+    skip_count = _safe_int(summary.get("skip_count"))
+    cash_count = _safe_int(summary.get("cash_count"))
+    selected = summary.get("selected_symbols")
+    selected_symbols = selected if isinstance(selected, list) else []
+    decision_label = "BUY" if buy_count > 0 else "CASH"
+    lines = [
+        "## 本日の300万円運用判断",
+        "",
+        f"- 資金: **{_format_yen(summary.get('capital'))}**",
+        f"- ウォーレン判断: **{decision_label}**",
+        f"- 地合い: **{summary.get('regime', 'UNKNOWN')}**",
+        f"- BUY件数: {buy_count}件",
+        f"- WATCH件数: {watch_count}件",
+        f"- SKIP件数: {skip_count}件",
+        f"- CASH枠: {cash_count}枠",
+        f"- 地合いによる制御理由: {summary.get('risk_control_reason', '未取得')}",
+    ]
+    cash_reason = str(summary.get("cash_reason") or "").strip()
+    if cash_reason:
+        lines.append(f"- CASH理由: {cash_reason}")
+    lines.append("")
+    if selected_symbols:
+        lines.append("### BUY採用候補")
+        lines.append("")
+        for item in selected_symbols:
+            if not isinstance(item, dict):
+                continue
+            lines.append(
+                f"- {item.get('code', '')} {item.get('name', '')}: "
+                f"rank {item.get('rank', '')} / score {item.get('score', '')} / "
+                f"screen_type {item.get('screen_type', '')} / tags {item.get('screen_tags', '')}"
+            )
+            lines.append(f"  採用理由: {_short(str(item.get('buy_reason', '') or '未取得'))}")
+            lines.append(
+                f"  100株想定: {_format_yen(item.get('lot_value_100'))} / "
+                f"想定株数: {item.get('shares', 100)}株 / "
+                f"300万円内配分: {item.get('allocation_pct', 0)}%"
+            )
+    else:
+        lines.extend(
+            [
+                "### 今日は無理に買わない",
+                "",
+                "BUY条件を満たす銘柄がないため、現金を守ります。",
+                "WATCH候補があれば、出来高・地合い・高値距離の改善を待ちます。",
+            ]
+        )
+    lines.append("")
+    return lines
+
+
 def _draw_header(img: bytearray, width: int, height: int, title: str, subtitle: str) -> None:
     _rect(img, width, height, 0, 0, width, 96, (22, 28, 36))
     _rect(img, width, height, 0, 96, width, 8, (31, 116, 95))
@@ -398,6 +648,7 @@ def _build_note_body(output_dir: Path) -> str:
     screening = _latest_rows(output_dir, "screening_result.csv", "screening_result_*.csv")
     decisions = _latest_rows(output_dir, "decision_result.csv", "decision_result.csv")
     market = _load_market(output_dir)
+    warren_summary = _load_warren_summary(output_dir)
     regime = str(market.get("regime", "UNKNOWN")).upper()
     today = datetime.now().strftime("%Y-%m-%d")
     buy_rows = _top_rows(decisions, "BUY", 3)
@@ -428,6 +679,7 @@ def _build_note_body(output_dir: Path) -> str:
         "",
         f"- S/A/B候補: {candidate_count}件",
         "",
+        *_warren_note_lines(warren_summary),
     ]
 
     if buy_rows:
@@ -567,6 +819,7 @@ def build_note_assets(output_dir: str | Path = OUTPUT_DIR) -> Path:
 
     note_draft.main()
     image_paths = _build_cloud_images(output_dir)
+    _build_warren_summary(output_dir)
     _write_cloud_article(output_dir)
 
     missing = [name for name in REQUIRED_FILES if not (output_dir / name).exists()]

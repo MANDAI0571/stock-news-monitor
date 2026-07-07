@@ -100,7 +100,7 @@ jobs:
           echo "=== note draft files ==="
           ls -lh outputs/note_*.md outputs/note_*.html outputs/note_*.txt outputs/*manifest*.json outputs/market_snapshot.json 2>/dev/null || true
           echo "=== cloud note artifact files ==="
-          ls -lh outputs/note_body.md outputs/note_preview.html outputs/eyecatch.png outputs/market_status.png outputs/funnel.png outputs/buy_*.png outputs/watch.png 2>/dev/null || true
+          ls -lh outputs/note_body.md outputs/note_preview.html outputs/warren_summary.json outputs/decision_result.csv outputs/discipline_result.csv outputs/paper_portfolio_decision.csv outputs/eyecatch.png outputs/market_status.png outputs/funnel.png outputs/buy_*.png outputs/watch.png 2>/dev/null || true
 
       - name: Upload Note draft artifact
         if: always()
@@ -128,6 +128,11 @@ jobs:
             outputs/note_drafts_manifest.json
             outputs/note_cloud_artifact_manifest.json
             outputs/market_snapshot.json
+            outputs/warren_summary.json
+            outputs/decision_result.csv
+            outputs/decision_report.md
+            outputs/discipline_result.csv
+            outputs/paper_portfolio_decision.csv
             outputs/eyecatch.png
             outputs/market_status.png
             outputs/funnel.png

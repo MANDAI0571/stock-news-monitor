@@ -18,6 +18,10 @@ REQUIRED_FILES = [
     "market_status.png",
     "funnel.png",
     "watch.png",
+    "warren_summary.json",
+    "decision_result.csv",
+    "discipline_result.csv",
+    "paper_portfolio_decision.csv",
     "note_cloud_artifact_manifest.json",
 ]
 
@@ -28,6 +32,13 @@ MARKET_INDICATORS = [
     ("sox", "SOX"),
     ("usdjpy", "ドル円"),
 ]
+
+WARREN_FILES = {
+    "warren_summary.json",
+    "decision_result.csv",
+    "discipline_result.csv",
+    "paper_portfolio_decision.csv",
+}
 
 
 class PreviewParser(HTMLParser):
@@ -57,12 +68,23 @@ class ArtifactValidation:
     missing_items: list[str] = field(default_factory=list)
     buy_cash_judgement: str = "不明"
     watch_count: int | None = None
+    warren_valid: bool = True
+    warren_missing_items: list[str] = field(default_factory=list)
+    capital: int | None = None
+    regime: str = "未取得"
+    cash_reason: str = ""
+    selected_symbols: list[str] = field(default_factory=list)
     market_status: dict[str, str] = field(default_factory=dict)
     preview_images: list[str] = field(default_factory=list)
 
     def fail(self, item: str) -> None:
         self.valid = False
         self.missing_items.append(item)
+
+    def fail_warren(self, item: str) -> None:
+        self.valid = False
+        self.warren_valid = False
+        self.warren_missing_items.append(item)
 
 
 def _read_text(path: Path) -> str:
@@ -97,6 +119,8 @@ def _validate_files(result: ArtifactValidation) -> None:
         if not path.exists() or path.stat().st_size == 0:
             result.valid = False
             result.missing_files.append(name)
+            if name in WARREN_FILES:
+                result.fail_warren(f"{name} がありません")
 
     buy_images = sorted(
         path.name
@@ -124,6 +148,10 @@ def _validate_note_body(result: ArtifactValidation, note_body: str) -> None:
         ("SOX", "SOX"),
         ("ドル円", "ドル円"),
         ("WATCH", "WATCH"),
+        ("本日の300万円運用判断", "## 本日の300万円運用判断"),
+        ("300万円", "300万円"),
+        ("BUY件数", "BUY件数"),
+        ("WATCH件数", "WATCH件数"),
         ("免責文", "## 免責文"),
         ("投資助言ではありません", "投資助言ではありません"),
     ]
@@ -153,6 +181,7 @@ def _validate_preview(result: ArtifactValidation, preview_html: str) -> None:
 
     parser = PreviewParser()
     parser.feed(preview_html)
+    visible_text = "\n".join(parser.text_chunks)
     result.preview_images = parser.image_sources
     if not parser.image_sources:
         result.fail("note_preview.html: 画像参照がありません")
@@ -165,6 +194,10 @@ def _validate_preview(result: ArtifactValidation, preview_html: str) -> None:
     buy_refs = [src for src in parser.image_sources if Path(src).name.startswith("buy_")]
     if not buy_refs:
         result.fail("note_preview.html: buy_cash.png または buy_*.png 参照がありません")
+    if "本日の300万円運用判断" not in visible_text:
+        result.fail("note_preview.html: 本日の300万円運用判断 がありません")
+    if "300万円" not in visible_text:
+        result.fail("note_preview.html: 300万円運用の表示がありません")
     for src in parser.image_sources:
         local_path = result.artifact_dir / Path(src).name
         if not local_path.exists() or local_path.stat().st_size == 0:
@@ -194,6 +227,84 @@ def _validate_market_snapshot(result: ArtifactValidation, market: dict[str, Any]
         result.market_status[label] = f"{display_value} / {change} / {status}"
 
 
+def _validate_warren_summary(result: ArtifactValidation, summary: dict[str, Any]) -> None:
+    required = [
+        "date",
+        "capital",
+        "regime",
+        "buy_count",
+        "watch_count",
+        "skip_count",
+        "cash_count",
+        "selected_symbols",
+        "cash_reason",
+        "risk_control_reason",
+        "source_files",
+        "generated_at",
+    ]
+    for key in required:
+        if key not in summary:
+            result.fail_warren(f"warren_summary.json: {key} がありません")
+
+    try:
+        result.capital = int(summary.get("capital", 0))
+    except (TypeError, ValueError):
+        result.capital = None
+    if result.capital != 3_000_000:
+        result.fail_warren("warren_summary.json: capital が3000000ではありません")
+
+    result.regime = str(summary.get("regime") or "未取得")
+    if result.regime == "未取得":
+        result.fail_warren("warren_summary.json: regime がありません")
+
+    buy_count = _int_value(summary.get("buy_count"))
+    watch_count = _int_value(summary.get("watch_count"))
+    cash_count = _int_value(summary.get("cash_count"))
+    if buy_count is None:
+        result.fail_warren("warren_summary.json: buy_count が読めません")
+        buy_count = 0
+    if watch_count is None:
+        result.fail_warren("warren_summary.json: watch_count が読めません")
+    if cash_count is None:
+        result.fail_warren("warren_summary.json: cash_count が読めません")
+        cash_count = 0
+
+    result.cash_reason = str(summary.get("cash_reason") or "").strip()
+    selected = summary.get("selected_symbols")
+    if not isinstance(selected, list):
+        result.fail_warren("warren_summary.json: selected_symbols が配列ではありません")
+        selected = []
+    result.selected_symbols = [
+        str(item.get("code") or item.get("symbol") or "")
+        for item in selected
+        if isinstance(item, dict) and str(item.get("code") or item.get("symbol") or "").strip()
+    ]
+
+    if buy_count > 0 and not result.selected_symbols:
+        result.fail_warren("warren_summary.json: BUYがあるのにselected_symbolsが空です")
+    if (buy_count == 0 or cash_count > 0) and not result.cash_reason:
+        result.fail_warren("warren_summary.json: CASH判断なのにcash_reasonがありません")
+    if not str(summary.get("risk_control_reason") or "").strip():
+        result.fail_warren("warren_summary.json: risk_control_reason がありません")
+
+    source_files = summary.get("source_files")
+    if not isinstance(source_files, dict):
+        result.fail_warren("warren_summary.json: source_files がありません")
+        source_files = {}
+    if "decision_result" not in source_files and not (result.artifact_dir / "decision_result.csv").exists():
+        result.fail_warren("warren_summary.json: decision_result系CSVが参照されていません")
+    for name in ["decision_result.csv", "discipline_result.csv"]:
+        if not (result.artifact_dir / name).exists():
+            result.fail_warren(f"{name} がArtifactにありません")
+
+
+def _int_value(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def validate_artifact(artifact_dir: str | Path) -> ArtifactValidation:
     result = ArtifactValidation(Path(artifact_dir))
     _validate_files(result)
@@ -213,6 +324,13 @@ def validate_artifact(artifact_dir: str | Path) -> ArtifactValidation:
         except json.JSONDecodeError as exc:
             result.fail(f"market_snapshot.json: JSONとして読めません: {exc}")
 
+    warren_path = result.artifact_dir / "warren_summary.json"
+    if warren_path.exists():
+        try:
+            _validate_warren_summary(result, _load_json(warren_path))
+        except json.JSONDecodeError as exc:
+            result.fail_warren(f"warren_summary.json: JSONとして読めません: {exc}")
+
     return result
 
 
@@ -221,11 +339,17 @@ def _summary_lines(result: ArtifactValidation) -> list[str]:
         "## Note Artifact Quality Gate",
         "",
         f"- NOTE_ARTIFACT_VALID={'true' if result.valid else 'false'}",
+        f"- WARREN_VALID={'true' if result.warren_valid else 'false'}",
         f"- Artifact dir: `{result.artifact_dir}`",
+        f"- capital: {result.capital if result.capital is not None else '未取得'}",
+        f"- regime: {result.regime}",
         f"- BUY/CASH判定: {result.buy_cash_judgement}",
         f"- WATCH件数: {result.watch_count if result.watch_count is not None else '未取得'}",
+        f"- CASH理由: {result.cash_reason or 'なし'}",
+        f"- selected_symbols: {', '.join(result.selected_symbols) if result.selected_symbols else 'なし'}",
         f"- 欠けているファイル: {', '.join(result.missing_files) if result.missing_files else 'なし'}",
         f"- 欠けている項目: {', '.join(result.missing_items) if result.missing_items else 'なし'}",
+        f"- ウォーレン欠け項目: {', '.join(result.warren_missing_items) if result.warren_missing_items else 'なし'}",
         "",
         "### 市場指標の取得状況",
     ]
