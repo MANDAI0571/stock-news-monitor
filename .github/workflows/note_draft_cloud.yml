@@ -74,6 +74,9 @@ jobs:
           python3 build_note_assets.py
           end=$(date +%s); echo "[TIMER] build_note_assets elapsed=$((end-start))s"
 
+      - name: Validate Note artifact quality gate
+        run: python3 validate_note_artifact.py --artifact-dir outputs
+
       - name: Show summary
         if: always()
         run: |

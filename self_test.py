@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -19,6 +20,7 @@ from scanner.openwork import add_openwork_scores, format_openwork_score
 from scanner.scoring import meets_s_technical_gate, meets_strict_s_gate, score_stock
 from scanner.universe import JPX_CACHE_PATH, UniverseConfig, load_jpx_listed, normalize_jpx_listed
 from trade_journal import load_journal, log_entry, log_exit
+from validate_note_artifact import validate_artifact
 import trade_verification as tv
 
 
@@ -27,6 +29,7 @@ def main() -> None:
     _test_discipline_normal_and_stop()
     _test_market_regime_local_fallback()
     _test_market_snapshot_artifact_schema()
+    _test_note_artifact_validator_contract()
     _test_jpx_universe_cache()
     _test_gmail_body()
     _test_openwork_display_only()
@@ -165,6 +168,84 @@ def _test_market_snapshot_artifact_schema() -> None:
         assert "フクロウ補助判定" in body
         assert "日経平均" in body
         assert "SOX: **未取得**" in body
+
+
+def _write_fake_png(path: Path) -> None:
+    path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 1400)
+
+
+def _test_note_artifact_validator_contract() -> None:
+    market = {
+        "regime": "NORMAL",
+        "indicator_regime": "CAUTION",
+        "indicators": {
+            "nikkei": {"label": "日経平均", "display_value": "40,000.00", "display_change_pct": "+0.10%", "status": "ok"},
+            "topix": {"label": "TOPIX", "display_value": "2,900.00", "display_change_pct": "+0.20%", "status": "ok"},
+            "vix": {"label": "VIX", "display_value": "15.00", "display_change_pct": "-1.00%", "status": "ok"},
+            "sox": {"label": "SOX", "display_value": "5,000.00", "display_change_pct": "+1.00%", "status": "ok"},
+            "usdjpy": {"label": "ドル円", "display_value": "160.00", "display_change_pct": "+0.30%", "status": "ok"},
+        },
+    }
+    note_body = """# 本日の日本株短期売買メモ 2026-07-07
+
+## 市場状況
+
+![市場状況](market_status.png)
+
+- 地合い: **NORMAL**
+- 日経平均: **40,000.00**
+- TOPIX: **2,900.00**
+- VIX: **15.00**
+- SOX: **5,000.00**
+- ドル円: **160.00**
+- 判定: BUY 0件 / WATCH 1件 / SKIP 29件
+
+## BUYカード または CASHカード
+
+![CASHカード](buy_cash.png)
+
+本日はBUY候補を出さず、現金待機とします。
+
+### なぜBUY0件なのか
+
+- 条件が同時にそろう銘柄がありませんでした。
+
+## WATCHカード
+
+![WATCHカード](watch.png)
+
+## 免責文
+
+この下書きは投資助言ではありません。
+"""
+    preview_html = """<!doctype html>
+<html lang="ja"><body>
+<h1>本日の日本株短期売買メモ</h1>
+<img src="eyecatch.png">
+<img src="market_status.png">
+<img src="funnel.png">
+<img src="buy_cash.png">
+<img src="watch.png">
+</body></html>
+"""
+    with TemporaryDirectory() as tmp:
+        out_dir = Path(tmp)
+        (out_dir / "note_body.md").write_text(note_body, encoding="utf-8")
+        (out_dir / "note_preview.html").write_text(preview_html, encoding="utf-8")
+        (out_dir / "market_snapshot.json").write_text(json.dumps(market, ensure_ascii=False), encoding="utf-8")
+        (out_dir / "note_cloud_artifact_manifest.json").write_text("{}", encoding="utf-8")
+        for name in ["eyecatch.png", "market_status.png", "funnel.png", "buy_cash.png", "watch.png"]:
+            _write_fake_png(out_dir / name)
+
+        valid = validate_artifact(out_dir)
+        assert valid.valid is True
+        assert valid.buy_cash_judgement == "CASH"
+        assert valid.watch_count == 1
+
+        (out_dir / "watch.png").unlink()
+        invalid = validate_artifact(out_dir)
+        assert invalid.valid is False
+        assert "watch.png" in invalid.missing_files
 
 
 def _test_jpx_universe_cache() -> None:
