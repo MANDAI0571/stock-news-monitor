@@ -83,7 +83,12 @@ jobs:
           NOTE_STORAGE_STATE: ${{ secrets.NOTE_STORAGE_STATE }}
           NOTE_EMAIL: ${{ secrets.NOTE_EMAIL }}
           NOTE_PASSWORD: ${{ secrets.NOTE_PASSWORD }}
-        run: python3 note_autosave.py --cloud-article --note-url-file note_draft_url_cloud.txt
+        run: |
+          if command -v xvfb-run >/dev/null 2>&1; then
+            xvfb-run -a python3 note_autosave.py --cloud-article --no-headless --note-url-file note_draft_url_cloud.txt
+          else
+            python3 note_autosave.py --cloud-article --note-url-file note_draft_url_cloud.txt
+          fi
 
       - name: Show summary
         if: always()

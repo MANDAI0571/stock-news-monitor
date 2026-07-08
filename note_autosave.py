@@ -202,11 +202,24 @@ def _open_context(playwright, headless: bool):
     """1ログイン分のブラウザ/コンテキストを用意する。複数下書きで使い回して
     ログインを1回に抑える（storage_state があれば自動ログイン）。"""
     storage_state = load_storage_state()
-    browser = playwright.chromium.launch(headless=headless)
-    context_kwargs = {"viewport": {"width": 1440, "height": 1800}}
+    browser = playwright.chromium.launch(
+        headless=headless,
+        args=["--disable-blink-features=AutomationControlled"],
+    )
+    context_kwargs = {
+        "viewport": {"width": 1440, "height": 1800},
+        "locale": "ja-JP",
+        "timezone_id": "Asia/Tokyo",
+        "user_agent": (
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+        ),
+        "extra_http_headers": {"Accept-Language": "ja-JP,ja;q=0.9,en-US;q=0.8,en;q=0.7"},
+    }
     if storage_state is not None:
         context_kwargs["storage_state"] = storage_state
     context = browser.new_context(**context_kwargs)
+    context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
     context.grant_permissions(["clipboard-read", "clipboard-write"], origin="https://note.com")
     return browser, context
 
@@ -704,7 +717,7 @@ def _login(page, email: str, password: str) -> None:
     page.wait_for_timeout(2000)
 
 
-def _wait_for_editor_ready(page, timeout_ms: int = 60_000) -> None:
+def _wait_for_editor_ready(page, timeout_ms: int = 180_000) -> None:
     """note.com はSPA。goto直後はローディング表示だけで、タイトル/本文の編集欄は
     まだDOMに無い（失敗時スクショが3点ローディングだけだったのが証拠）。
     編集欄が実際に描画されるまで待ってから入力する＝『欄が見つかりません』を防ぐ。"""
@@ -727,8 +740,12 @@ def _wait_for_editor_ready(page, timeout_ms: int = 60_000) -> None:
     ])
     try:
         page.wait_for_selector(editor_selectors, state="visible", timeout=timeout_ms)
-    except PlaywrightTimeoutError as exc:
-        raise RuntimeError("noteエディタの読み込みが完了しませんでした（描画待ちタイムアウト）") from exc
+    except PlaywrightTimeoutError:
+        page.reload(wait_until="domcontentloaded", timeout=60_000)
+        try:
+            page.wait_for_selector(editor_selectors, state="visible", timeout=timeout_ms)
+        except PlaywrightTimeoutError as exc:
+            raise RuntimeError("noteエディタの読み込みが完了しませんでした（描画待ちタイムアウト）") from exc
 
     # 描画直後はまだ入力を受け付けない事があるので少し待つ
     page.wait_for_timeout(1500)
