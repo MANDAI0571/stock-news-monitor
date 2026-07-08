@@ -221,6 +221,7 @@ def _open_context(playwright, headless: bool):
     context = browser.new_context(**context_kwargs)
     context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
     context.grant_permissions(["clipboard-read", "clipboard-write"], origin="https://note.com")
+    context.grant_permissions(["clipboard-read", "clipboard-write"], origin="https://editor.note.com")
     return browser, context
 
 
@@ -778,6 +779,9 @@ def _fill_body(page, body_html: str) -> None:
         raise RuntimeError("本文入力欄が見つかりません")
 
     plain_text = _html_to_plain_text(body_html)
+    if _fill_body_plain_text(page, editor, plain_text):
+        return
+
     # page.evaluate は引数を1つしか取らない。htmlとtextはdictにまとめて渡す
     # （旧コードは2つ渡して TypeError: evaluate() takes ... but 4 were given になっていた）。
     page.evaluate(
@@ -799,8 +803,34 @@ def _fill_body(page, body_html: str) -> None:
     _select_all(page)
     _paste(page)
     page.wait_for_timeout(1500)
-    if _editor_text_length(editor) < 80:
-        raise RuntimeError("本文入力後の長さが不足しています")
+    if _editor_text_length(editor) >= 80:
+        return
+
+    if _fill_body_plain_text(page, editor, plain_text):
+        return
+
+    raise RuntimeError("本文入力後の長さが不足しています")
+
+
+def _fill_body_plain_text(page, editor, plain_text: str) -> bool:
+    try:
+        editor.click()
+        _select_all(page)
+        editor.fill(plain_text, timeout=10_000)
+        page.wait_for_timeout(1000)
+        if _editor_text_length(editor) >= 80:
+            return True
+    except Exception:
+        pass
+
+    try:
+        editor.click()
+        _select_all(page)
+        page.keyboard.insert_text(plain_text[:20_000])
+        page.wait_for_timeout(1000)
+        return _editor_text_length(editor) >= 80
+    except Exception:
+        return False
 
 
 def _try_save(page) -> None:
