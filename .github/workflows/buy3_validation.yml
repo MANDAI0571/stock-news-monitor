@@ -1,0 +1,90 @@
+name: BUY3精度検証
+
+on:
+  workflow_dispatch:
+    inputs:
+      validation_days:
+        description: "検証営業日数"
+        type: string
+        default: "80"
+      max_symbols:
+        description: "検証銘柄数（0=全銘柄、通常は120程度から確認）"
+        type: string
+        default: "120"
+
+permissions:
+  contents: read
+
+jobs:
+  validate-buy3:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      BUY3_VALIDATION_DAYS: ${{ github.event.inputs.validation_days || '80' }}
+      BUY3_VALIDATION_MAX_SYMBOLS: ${{ github.event.inputs.max_symbols || '120' }}
+      YFINANCE_TIMEOUT: "20"
+      YFINANCE_WALL_TIMEOUT: "35"
+      YFINANCE_THREADS: "false"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Restore price/universe cache
+        uses: actions/cache@v6
+        with:
+          path: cache
+          key: buy3-validation-cache-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            buy3-validation-cache-${{ runner.os }}-
+            stock-cache-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Python syntax check
+        run: python3 -m py_compile buy3_validation.py decision_engine.py run_screening.py scanner/scoring.py scanner/indicators.py
+
+      - name: Run BUY3 validation
+        run: |
+          python3 buy3_validation.py \
+            --days "$BUY3_VALIDATION_DAYS" \
+            --max-symbols "$BUY3_VALIDATION_MAX_SYMBOLS"
+
+      - name: Show validation summary
+        if: always()
+        run: |
+          echo "=== BUY3 validation files ==="
+          ls -lh outputs/buy3_validation_detail.csv outputs/buy3_validation_summary.csv outputs/buy3_false_positive.csv outputs/buy3_missed_opportunity.csv outputs/buy3_validation_report.md outputs/buy3_validation_manifest.json 2>/dev/null || true
+          echo "=== BUY3 validation manifest ==="
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          path = Path("outputs/buy3_validation_manifest.json")
+          if not path.exists():
+              print("manifest missing")
+          else:
+              data = json.loads(path.read_text(encoding="utf-8"))
+              for key in ("start_date", "end_date", "symbols_loaded", "price_histories_ok", "price_fetch_failures", "detail_rows", "buy_rows", "watch_rows", "skip_rows", "earnings_gate_backtested", "elapsed_seconds"):
+                  print(f"{key}={data.get(key)}")
+          PY
+
+      - name: Upload BUY3 validation artifact
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: buy3-validation
+          path: |
+            outputs/buy3_validation_detail.csv
+            outputs/buy3_validation_summary.csv
+            outputs/buy3_false_positive.csv
+            outputs/buy3_missed_opportunity.csv
+            outputs/buy3_validation_report.md
+            outputs/buy3_validation_manifest.json
