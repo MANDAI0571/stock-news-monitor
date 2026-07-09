@@ -1,0 +1,11 @@
+# pandas 3.x は文字列列への数値代入が TypeError になる仕様変更があり、
+# 本プロジェクトの複数箇所が未対応のため 2 系に固定する（検証済み: 2.3.3）。
+pandas>=2.2,<3.0
+numpy>=1.26,<3
+requests>=2.31,<3
+yfinance>=0.2.40,<2
+streamlit>=1.35,<2
+xlrd>=2.0,<3
+openpyxl>=3.1,<4
+playwright>=1.45,<2
+jpholiday>=1.0,<2

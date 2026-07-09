@@ -1,0 +1,88 @@
+name: Daily Discipline Screening
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 07:30 JST, Monday-Friday. GitHub Actions uses UTC.
+    - cron: "30 22 * * 0-4"
+
+jobs:
+  daily-discipline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Restore price/universe cache
+        uses: actions/cache@v6
+        with:
+          path: cache
+          key: stock-cache-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            stock-cache-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: |
+          start=$(date +%s)
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          end=$(date +%s); echo "[TIMER] install_dependencies elapsed=$((end-start))s"
+
+      - name: Run screening and discipline portfolio
+        run: |
+          start=$(date +%s)
+          python daily_discipline_run.py
+          end=$(date +%s); echo "[TIMER] daily_discipline_run elapsed=$((end-start))s"
+
+      - name: Run decision engine
+        run: |
+          start=$(date +%s)
+          python3 decision_engine.py
+          end=$(date +%s); echo "[TIMER] decision_engine elapsed=$((end-start))s"
+
+      - name: Build note draft
+        run: |
+          start=$(date +%s)
+          python3 note_draft.py
+          end=$(date +%s); echo "[TIMER] note_draft elapsed=$((end-start))s"
+
+      - name: Show screening summary
+        if: always()
+        run: |
+          python3 screening_summary.py || true
+          echo "=== decision_result.csv ==="
+          head -n 10 outputs/decision_result.csv || true
+
+      - name: Upload CSV outputs
+        uses: actions/upload-artifact@v7
+        with:
+          name: stock-news-monitor-outputs
+          path: |
+            outputs/*.csv
+            outputs/screening_result.csv
+            outputs/decision_result.csv
+            outputs/decision_report.md
+            outputs/note_daily.md
+            outputs/note_title.txt
+            outputs/note_daily.html
+            outputs/note_chatgpt.md
+            outputs/note_claude.md
+            outputs/note_pullback.md
+            outputs/note_highs.md
+            outputs/note_chatgpt.html
+            outputs/note_claude.html
+            outputs/note_pullback.html
+            outputs/note_highs.html
+            outputs/note_chatgpt_title.txt
+            outputs/note_claude_title.txt
+            outputs/note_pullback_title.txt
+            outputs/note_highs_title.txt
+            outputs/note_drafts_manifest.json
+          if-no-files-found: warn

@@ -1,0 +1,162 @@
+name: Note下書き（クラウド生成）
+
+on:
+  workflow_dispatch:
+    inputs:
+      quick_mode:
+        description: "QUICK_MODE (true=軽量確認 / false=全銘柄)"
+        type: boolean
+        default: true
+      max_symbols:
+        description: "QUICK_MODE 時に処理する銘柄数"
+        type: string
+        default: "30"
+
+permissions:
+  contents: read
+
+jobs:
+  build-note-draft:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    env:
+      QUICK_MODE: ${{ github.event.inputs.quick_mode == 'false' && 'false' || 'true' }}
+      MAX_SYMBOLS: ${{ github.event.inputs.max_symbols || '30' }}
+      PROGRESS_EVERY: "25"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Restore price/universe cache
+        uses: actions/cache@v6
+        with:
+          path: cache
+          key: stock-cache-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            stock-cache-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: |
+          start=$(date +%s)
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          python -m playwright install --with-deps chromium
+          end=$(date +%s); echo "[TIMER] install_dependencies elapsed=$((end-start))s"
+
+      - name: Self test
+        run: python3 self_test.py
+
+      - name: Market regime (市場監督)
+        run: python3 market_regime.py
+        continue-on-error: true
+
+      - name: Fetch market snapshot
+        run: python3 fetch_market.py
+
+      - name: Run screening and discipline portfolio
+        run: |
+          start=$(date +%s)
+          echo "QUICK_MODE=$QUICK_MODE MAX_SYMBOLS=$MAX_SYMBOLS"
+          python3 daily_discipline_run.py --include-rejected
+          end=$(date +%s); echo "[TIMER] daily_discipline_run elapsed=$((end-start))s"
+
+      - name: Run decision engine
+        run: |
+          start=$(date +%s)
+          python3 decision_engine.py
+          end=$(date +%s); echo "[TIMER] decision_engine elapsed=$((end-start))s"
+
+      - name: Build Note draft assets
+        run: |
+          start=$(date +%s)
+          python3 build_note_assets.py
+          end=$(date +%s); echo "[TIMER] build_note_assets elapsed=$((end-start))s"
+
+      - name: Validate Note artifact quality gate
+        run: python3 validate_note_artifact.py --artifact-dir outputs
+
+      - name: Save cloud Note draft in note.com
+        env:
+          NOTE_STORAGE_STATE: ${{ secrets.NOTE_STORAGE_STATE }}
+          NOTE_EMAIL: ${{ secrets.NOTE_EMAIL }}
+          NOTE_PASSWORD: ${{ secrets.NOTE_PASSWORD }}
+        run: |
+          if command -v xvfb-run >/dev/null 2>&1; then
+            xvfb-run -a python3 note_autosave.py --cloud-article --no-headless --note-url-file note_draft_url_cloud.txt
+          else
+            python3 note_autosave.py --cloud-article --note-url-file note_draft_url_cloud.txt
+          fi
+
+      - name: Show summary
+        if: always()
+        run: |
+          python3 screening_summary.py || true
+          echo "=== market snapshot ==="
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          path = Path("outputs/market_snapshot.json")
+          if not path.exists():
+              print("market_snapshot.json missing")
+          else:
+              data = json.loads(path.read_text(encoding="utf-8"))
+              print(f"regime={data.get('regime', '未取得')} indicator_regime={data.get('indicator_regime', '未取得')}")
+              for item in (data.get("indicators") or {}).values():
+                  print(
+                      f"{item.get('label', '')}: {item.get('display_value', '未取得')} "
+                      f"({item.get('display_change_pct', '未取得')}) status={item.get('status', 'unavailable')}"
+                  )
+          PY
+          echo "=== note draft files ==="
+          ls -lh outputs/note_*.md outputs/note_*.html outputs/note_*.txt outputs/*manifest*.json outputs/market_snapshot.json 2>/dev/null || true
+          echo "=== cloud note artifact files ==="
+          ls -lh outputs/note_body.md outputs/note_preview.html outputs/warren_summary.json outputs/decision_result.csv outputs/discipline_result.csv outputs/paper_portfolio_decision.csv outputs/eyecatch.png outputs/market_status.png outputs/funnel.png outputs/buy_*.png outputs/watch.png 2>/dev/null || true
+
+      - name: Upload Note draft artifact
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: note-draft-cloud
+          path: |
+            outputs/note_body.md
+            outputs/note_preview.html
+            outputs/note_daily.md
+            outputs/note_title.txt
+            outputs/note_daily.html
+            outputs/note_chatgpt.md
+            outputs/note_claude.md
+            outputs/note_pullback.md
+            outputs/note_highs.md
+            outputs/note_chatgpt.html
+            outputs/note_claude.html
+            outputs/note_pullback.html
+            outputs/note_highs.html
+            outputs/note_chatgpt_title.txt
+            outputs/note_claude_title.txt
+            outputs/note_pullback_title.txt
+            outputs/note_highs_title.txt
+            outputs/note_drafts_manifest.json
+            outputs/note_cloud_artifact_manifest.json
+            outputs/note_draft_url_cloud.txt
+            outputs/note_autosave_verify_cloud.json
+            outputs/note_autosave_error*.png
+            outputs/note_image_debug*.png
+            outputs/market_snapshot.json
+            outputs/warren_summary.json
+            outputs/decision_result.csv
+            outputs/decision_report.md
+            outputs/discipline_result.csv
+            outputs/paper_portfolio_decision.csv
+            outputs/eyecatch.png
+            outputs/market_status.png
+            outputs/funnel.png
+            outputs/buy_*.png
+            outputs/watch.png
+          if-no-files-found: error
