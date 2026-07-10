@@ -41,6 +41,7 @@ def main() -> None:
     _test_high_classification()
     _test_kabutan_high_and_quality_flags()
     _test_track_record()
+    _test_kabutan_check()
     _test_previous_52w_high_line_retest()
     _test_duke_old_high_support()
     _test_9256_limit50_excluded_but_full_universe_included()
@@ -1076,6 +1077,61 @@ def _test_track_record() -> None:
         missing_lines = "\n".join(build_track_record_lines(summary_missing))
         assert "データ不足" in missing_lines
     print("self-test: track_record(バックテスト博士) OK")
+
+
+def _test_kabutan_check() -> None:
+    """T-J(2026-07-10): カブタン照合ツールの契約テスト。通信なし（fetchを差し替え）。"""
+    import numpy as np
+    import pandas as pd
+
+    import kabutan_check
+
+    # コード正規化: 区切り文字の混在・.T付き・英字コード・重複
+    codes = kabutan_check.parse_codes("7203, 6758　9984\n130a.t、7203")
+    assert codes == ["7203", "6758", "9984", "130A"], codes
+
+    idx = pd.bdate_range("2025-07-01", periods=300)
+
+    def _hist(closes: list[float]) -> pd.DataFrame:
+        s = pd.Series(closes, index=idx[: len(closes)])
+        return pd.DataFrame({"Close": s, "High": s * 1.005, "Low": s * 0.995, "Volume": 500000})
+
+    rising = list(np.linspace(1000, 2000, 300))  # 高値更新中
+    far = list(np.linspace(1000, 2000, 260)) + [1600.0] * 40  # 高値から2割下
+
+    original = kabutan_check.fetch_price_history
+
+    def fake_fetch(ticker: str) -> pd.DataFrame:
+        if ticker == "1111.T":
+            return _hist(rising)
+        if ticker == "2222.T":
+            return _hist(far)
+        return pd.DataFrame()
+
+    kabutan_check.fetch_price_history = fake_fetch
+    try:
+        highs = pd.DataFrame([{"code": "1111", "high_type": "52W_NEW_HIGH", "note_flags": ""}])
+
+        d1 = kabutan_check.diagnose_code("1111", highs)
+        assert str(d1["verdict"]).startswith("該当"), d1
+        assert "掲載あり" in str(d1["in_our_list"]), d1
+
+        d2 = kabutan_check.diagnose_code("2222", highs)
+        assert "乖離>3%" in str(d2["verdict"]), d2
+        assert "掲載なし" in str(d2["in_our_list"]), d2
+
+        d3 = kabutan_check.diagnose_code("130A", highs)  # 英字コード: fetchせず対象外
+        assert "ユニバース" in str(d3["verdict"]), d3
+
+        d4 = kabutan_check.diagnose_code("3333", highs)  # データ取得不可 → 捏造せず診断不能
+        assert d4["verdict"] == "診断不能", d4
+
+        report = "\n".join(kabutan_check.build_report(["1111", "2222", "130A"], highs))
+        assert "| 1111 |" in report and "| 2222 |" in report and "既知の制限" in report, report
+        assert "接近(3%以内)" in report  # 読み方ガイドが必ず付く
+    finally:
+        kabutan_check.fetch_price_history = original
+    print("self-test: kabutan_check(カブタン照合) OK")
 
 
 def _test_previous_52w_high_line_retest() -> None:

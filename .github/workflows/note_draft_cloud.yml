@@ -11,6 +11,17 @@ on:
         description: "QUICK_MODE 時に処理する銘柄数"
         type: string
         default: "30"
+  schedule:
+    # T-J(2026-07-10): 平日16:30 JST に自動実行（cron は UTC なので 7:30）。
+    # 大引け15:30 → カブタンのリスト確定16:00頃 → 16:10 trade-verification →
+    # 16:30 本ワークフロー（実績記録 → note4本の下書き自動保存）の順。
+    # 注意: 日本の祝日もそのまま走る（データが薄いだけで実害なし）。
+    - cron: "30 7 * * 1-5"
+
+# 手動実行と定時実行が重ならないようにする（data/ への push 競合防止）
+concurrency:
+  group: note-draft-cloud
+  cancel-in-progress: false
 
 permissions:
   # T-I(2026-07-10): 実績トラッキング（バックテスト博士）の記録CSVを
@@ -23,7 +34,8 @@ jobs:
     timeout-minutes: 90
 
     env:
-      QUICK_MODE: ${{ github.event.inputs.quick_mode == 'false' && 'false' || 'true' }}
+      # 定時実行（schedule）は必ず全銘柄（QUICK_MODE=false）。手動実行は入力値を尊重。
+      QUICK_MODE: ${{ github.event_name == 'schedule' && 'false' || (github.event.inputs.quick_mode == 'false' && 'false' || 'true') }}
       MAX_SYMBOLS: ${{ github.event.inputs.max_symbols || '30' }}
       PROGRESS_EVERY: "25"
 

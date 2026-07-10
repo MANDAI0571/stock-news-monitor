@@ -1,0 +1,61 @@
+# T-J(2026-07-10): カブタン照合（スクリーニング検証運用）
+# カブタンの52週高値リストと当システムの結果がズレた銘柄コードを入力すると、
+# 1銘柄ずつロジックに通して原因（乖離>3% / 日数不足 / ユニバース対象外 /
+# 配当調整の影響 など）を診断する。全銘柄スクリーニングはしないので数分で終わる。
+#
+# 使い方:
+#   Actions → 「カブタン照合（検証）」 → Run workflow →
+#   codes に "7203, 6758 9984" のようにコードを貼り付けて実行。
+#   結果はログと Artifacts の kabutan_check.md に出る。
+name: カブタン照合（検証）
+
+on:
+  workflow_dispatch:
+    inputs:
+      codes:
+        description: "ズレた銘柄コード（カンマ/空白区切り。例: 7203, 6758 9984）"
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  kabutan-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Restore price/universe cache
+        uses: actions/cache@v6
+        with:
+          path: cache
+          key: stock-cache-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            stock-cache-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run kabutan check
+        env:
+          CODES: ${{ github.event.inputs.codes }}
+        run: python3 kabutan_check.py --codes "$CODES"
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: kabutan-check
+          path: outputs/kabutan_check.md
+          if-no-files-found: error
