@@ -9,9 +9,9 @@ import pandas as pd
 
 from jptime import jst_today
 
-from scanner.indicators import calculate_indicators, detect_ma_touches, passes_base_filters
+from scanner.indicators import calculate_indicators, calculate_indicators_lenient, detect_ma_touches, passes_base_filters
 from scanner.openwork import add_openwork_scores
-from scanner.highs import classify_high_profile, detect_52w_high_retest, detect_duke_old_high_support, detect_previous_52w_high_line_retest
+from scanner.highs import classify_high_profile, detect_52w_high_retest, detect_duke_old_high_support, detect_previous_52w_high_line_retest, high_quality_flags
 from scanner.patterns import detect_cup_with_handle
 from scanner.prices import fetch_next_earnings_date, fetch_price_history, prefetch_price_histories, timestamped_csv_path
 from scanner.scoring import assess_earnings_window, rejection_row, score_stock
@@ -185,6 +185,13 @@ def run_screening(
             indicators = calculate_indicators(history)
             high_info = classify_high_profile(history)
             if indicators is None:
+                # 上場1年未満などlen<252でも、カブタン同様に52週(上場来)高値リストへは載せる。
+                lenient = calculate_indicators_lenient(history)
+                if lenient is not None:
+                    highs_extra = _collect_highs_row(row_base, lenient, high_info, history)
+                    if highs_extra is not None:
+                        highs_extra["earnings_date"] = _earnings_date_text(stock.ticker)
+                        highs_rows.append(highs_extra)
                 if include_rejected:
                     rows.append(row_base | high_info | rejection_row(None, "価格データ不足"))
                 continue
@@ -198,9 +205,16 @@ def run_screening(
             retest_extra = _collect_previous_52w_retest_row(row_base, indicators, history)
             if retest_extra is not None:
                 retest_rows.append(retest_extra)
-            highs_extra = _collect_highs_row(row_base, indicators, high_info)
+            highs_extra = _collect_highs_row(row_base, indicators, high_info, history)
             if highs_extra is not None:
                 highs_rows.append(highs_extra)
+
+            # 決算日: 専用リストに載った銘柄だけ取得（全銘柄への問い合わせは避ける）。
+            if pullback_extra is not None or retest_extra is not None or highs_extra is not None:
+                earnings_text = _earnings_date_text(stock.ticker)
+                for extra in (pullback_extra, retest_extra, highs_extra):
+                    if extra is not None:
+                        extra["earnings_date"] = earnings_text
 
             passed, reject_reasons = passes_base_filters(indicators)
             if not passed:
@@ -597,18 +611,58 @@ def _collect_previous_52w_retest_row(
     }
 
 
+def _earnings_date_text(ticker: str) -> str:
+    """次回決算日をISO文字列で返す（取得不能は空文字。捏造しない）。"""
+    try:
+        earnings = fetch_next_earnings_date(ticker)
+    except Exception:
+        return ""
+    return earnings.isoformat() if earnings else ""
+
+
+def _round_or_blank(value: object, ndigits: int = 1) -> object:
+    """NaN/None/非数値は空文字にして丸める（上場1年未満のMA欠損に対応）。"""
+    try:
+        number = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return ""
+    if number != number:  # NaN
+        return ""
+    return round(number, ndigits)
+
+
+def _note_flags_text(quality: dict[str, object]) -> str:
+    """noteの従来表に出す注意フラグ文字列を組み立てる（事実のみ）。"""
+    parts: list[str] = []
+    if bool(quality.get("first_break_60d")):
+        parts.append("初回ブレイク")
+    breaks_20d = quality.get("breaks_20d")
+    try:
+        if int(breaks_20d) >= 5:  # type: ignore[arg-type]
+            parts.append(f"連日更新{int(breaks_20d)}回/20日")  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        pass
+    text = str(quality.get("quality_flags", "")).strip()
+    if text:
+        parts.append(text)
+    return " / ".join(parts)
+
+
 def _collect_highs_row(
     row_base: dict[str, object],
     indicators: dict[str, float],
     high_info: dict[str, object],
+    history: pd.DataFrame,
 ) -> dict[str, object] | None:
     """52週新高値(52W_NEW_HIGH) または 52週高値接近(52W_NEAR_HIGH) に該当する銘柄行を返す。
-    流動性ゲート（20日平均売買代金1億円以上）のみ課す。捏造しない。"""
+    流動性ゲート（20日平均売買代金1億円以上）のみ課す。捏造しない。
+    鮮度（初回ブレイク/連日更新）とイナゴ・TOB疑いフラグ、決算日欄を付与する。"""
     high_type = str(high_info.get("high_type", ""))
     if high_type not in ("52W_NEW_HIGH", "52W_NEAR_HIGH"):
         return None
     if float(indicators.get("turnover_20d", 0)) < 100_000_000:
         return None
+    quality = high_quality_flags(history)
     screen_tag = "52W_BREAKOUT" if high_type == "52W_NEW_HIGH" else "52W_MOMENTUM"
     return {
         **row_base,
@@ -619,17 +673,28 @@ def _collect_highs_row(
         "high_price": high_info.get("high_price", ""),
         "high_date": high_info.get("high_date", ""),
         "dist_to_high_pct": high_info.get("dist_to_high_pct", ""),
-        "current_price": round(float(indicators["current_price"]), 1),
-        "high_52w": round(float(indicators["high_52w"]), 1),
-        "dist_52w_high_pct": round(float(indicators["dist_52w_high_pct"]), 2),
-        "days_since_52w_high": int(indicators["days_since_52w_high"]),
-        "ma25": round(float(indicators["ma25"]), 1),
-        "ma50": round(float(indicators["ma50"]), 1),
-        "ma200": round(float(indicators["ma200"]), 1),
-        "dist_25ma_pct": round(float(indicators["ma25_gap_pct"]), 2),
-        "dist_200ma_pct": round(float(indicators["ma200_gap_pct"]), 2),
-        "turnover_20d": int(indicators["turnover_20d"]),
-        "volume_ratio_5d_20d": round(float(indicators["volume_ratio_5d_20d"]), 2),
+        "high_window_days": high_info.get("high_window_days", ""),
+        "current_price": _round_or_blank(indicators.get("current_price"), 1),
+        "high_52w": _round_or_blank(indicators.get("high_52w"), 1),
+        "dist_52w_high_pct": _round_or_blank(indicators.get("dist_52w_high_pct"), 2),
+        "days_since_52w_high": int(indicators.get("days_since_52w_high", 0)),
+        "ma25": _round_or_blank(indicators.get("ma25"), 1),
+        "ma50": _round_or_blank(indicators.get("ma50"), 1),
+        "ma200": _round_or_blank(indicators.get("ma200"), 1),
+        "dist_25ma_pct": _round_or_blank(indicators.get("ma25_gap_pct"), 2),
+        "dist_200ma_pct": _round_or_blank(indicators.get("ma200_gap_pct"), 2),
+        "turnover_20d": int(indicators.get("turnover_20d", 0)),
+        "volume_ratio_5d_20d": _round_or_blank(indicators.get("volume_ratio_5d_20d"), 2),
+        # 鮮度・品質フラグ（scanner.highs.high_quality_flags）
+        "breaks_20d": quality.get("breaks_20d", 0),
+        "first_break_60d": bool(quality.get("first_break_60d", False)),
+        "days_since_prev_break": quality.get("days_since_prev_break", ""),
+        "surge_5d_pct": quality.get("surge_5d_pct", ""),
+        "inago_suspect": bool(quality.get("inago_suspect", False)),
+        "tob_suspect": bool(quality.get("tob_suspect", False)),
+        "note_flags": _note_flags_text(quality),
+        # 決算日（呼び出し側で該当行のみ取得して上書きする）
+        "earnings_date": "",
     }
 
 
@@ -641,6 +706,7 @@ AUX_COLUMNS = {
     "screening_highs": [
         "code", "ticker", "name", "market", "sector", "screen_type", "screen_tags",
         "high_type", "high_label",
+        "breaks_20d", "first_break_60d", "inago_suspect", "tob_suspect", "note_flags", "earnings_date",
     ],
     "screening_52w_retest": [
         "code", "ticker", "name", "market", "sector", "screen_type", "screen_tags",

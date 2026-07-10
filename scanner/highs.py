@@ -48,7 +48,8 @@ def classify_high_profile(history: pd.DataFrame) -> dict[str, object]:
         return base | swing
 
     recent = window_high_profile(history, 60)
-    wide = window_high_profile(history, 252) if len(close) >= 252 else None
+    # 上場1年未満(len<252)でもカブタン同様に「上場来ベース」で52週高値判定する。
+    wide = window_high_profile(history, 252)
 
     chosen = _choose_profile(wide, recent)
     base = _as_dict(chosen or HighProfile())
@@ -77,38 +78,150 @@ def _choose_profile(wide: HighProfile | None, recent: HighProfile | None) -> Hig
 
 
 def window_high_profile(history: pd.DataFrame, window_days: int) -> HighProfile | None:
-    if len(history) < window_days:
-        return None
+    """カブタン準拠の高値判定。
 
-    window = history.tail(window_days)
+    - 新高値: 当日ザラバ高値(High) > 「当日を除く」窓内の最高値(High)。
+      終値ベースだった旧実装は「ザラバで更新して終値が押した銘柄」を取りこぼしていた。
+    - 接近: 現在値(終値)が窓内最高値から3%以内。
+    - window_days=252 のとき、上場1年未満は「上場来（実データ全期間）」で判定する
+      （カブタンの52週高値更新リストも上場1年未満を含むため）。
+    """
+    n = len(history)
+    if n < 60:
+        return None
+    effective_days = min(window_days, n)
+    label_52w = window_days == 252
+
+    window = history.tail(effective_days)
     close = window["Close"].astype(float)
+    high = window["High"].astype(float) if "High" in window.columns else close
     current = float(close.iloc[-1])
-    high_price = float(close.max())
-    if high_price <= 0:
+    today_high = float(high.iloc[-1])
+    prior = high.iloc[:-1]
+    if prior.empty:
+        return None
+    prior_high = float(prior.max())
+    if prior_high <= 0 or current <= 0:
         return None
 
-    matches = close.reset_index(drop=True).eq(high_price)
-    if not matches.any():
-        return None
-    last_pos = int(matches[matches].index[-1])
-    high_dt = window.index[last_pos]
-    dist_to_high_pct = (high_price - current) / high_price * 100
-
-    if last_pos == len(window) - 1 and abs(current - high_price) <= max(1e-8, high_price * 0.000001):
-        high_type = "52W_NEW_HIGH" if window_days == 252 else "RECENT_NEW_HIGH"
-    elif dist_to_high_pct <= 3:
-        high_type = "52W_NEAR_HIGH" if window_days == 252 else "RECENT_NEAR_HIGH"
+    if today_high > prior_high:
+        high_type = "52W_NEW_HIGH" if label_52w else "RECENT_NEW_HIGH"
+        high_price = today_high
+        high_dt = window.index[-1]
+        dist_to_high_pct = (today_high - current) / today_high * 100
     else:
-        return None
+        dist_to_high_pct = (prior_high - current) / prior_high * 100
+        if dist_to_high_pct > 3:
+            return None
+        high_type = "52W_NEAR_HIGH" if label_52w else "RECENT_NEAR_HIGH"
+        high_price = prior_high
+        matches = prior.reset_index(drop=True).eq(prior_high)
+        last_pos = int(matches[matches].index[-1])
+        high_dt = window.index[last_pos]
 
     return HighProfile(
         high_type=high_type,
         high_label=HIGH_LABELS[high_type],
-        high_window_days=window_days,
+        high_window_days=effective_days,
         high_price=round(high_price, 1),
         high_date=pd.Timestamp(high_dt).date().isoformat(),
         dist_to_high_pct=round(dist_to_high_pct, 2),
     )
+
+
+def analyze_high_freshness(
+    history: pd.DataFrame,
+    window_days: int = 252,
+    recent_days: int = 20,
+    fresh_days: int = 60,
+) -> dict[str, object]:
+    """52週高値ブレイクの「鮮度」を判定する（純関数・通信なし）。
+
+    - breaks_20d: 直近20営業日で52週高値を更新した回数（当日含む）。
+      連日更新している銘柄（イナゴタワー化しやすい）を見分ける材料。
+    - first_break_60d: 当日が更新日で、かつ直前60営業日に一度も更新がない＝「初回ブレイク」。
+    - days_since_prev_break: 前回の更新から何営業日経過したか（無ければ空文字）。
+    """
+    out: dict[str, object] = {
+        "breaks_20d": 0,
+        "first_break_60d": False,
+        "days_since_prev_break": "",
+        "is_new_high_today": False,
+    }
+    if history.empty or "Close" not in history.columns or len(history) < 61:
+        return out
+    close = history["Close"].astype(float)
+    high = history["High"].astype(float) if "High" in history.columns else close
+    prior_max = high.rolling(window_days, min_periods=30).max().shift(1)
+    breaks = (high > prior_max).fillna(False).reset_index(drop=True)
+    out["is_new_high_today"] = bool(breaks.iloc[-1])
+    out["breaks_20d"] = int(breaks.iloc[-recent_days:].sum())
+    prev = breaks.iloc[:-1]
+    prev_positions = prev[prev].index
+    if len(prev_positions) > 0:
+        out["days_since_prev_break"] = int(len(prev) - int(prev_positions[-1]))
+    if out["is_new_high_today"]:
+        out["first_break_60d"] = not bool(prev.iloc[-fresh_days:].any())
+    return out
+
+
+def detect_quality_flags(history: pd.DataFrame) -> dict[str, object]:
+    """イナゴタワー疑い・TOB疑いのフラグ（純関数・通信なし）。
+
+    - inago_suspect: 直近5営業日で+25%以上 または 25MA乖離+30%以上（急騰過熱）。
+    - tob_suspect: 直近5営業日の終値がほぼ一定（振れ幅0.4%以内）・日中値幅も極小
+      （平均0.6%以内）・52週高値圏（乖離1%以内）＝TOB価格張り付きの典型形。
+      ※ヒューリスティックであり確定情報ではない（表示は「疑い」に留める）。
+    """
+    out: dict[str, object] = {
+        "inago_suspect": False,
+        "tob_suspect": False,
+        "surge_5d_pct": "",
+        "quality_flags": "",
+    }
+    if history.empty or "Close" not in history.columns or len(history) < 30:
+        return out
+    close = history["Close"].astype(float)
+    high = history["High"].astype(float) if "High" in history.columns else close
+    low = history["Low"].astype(float) if "Low" in history.columns else close
+    current = float(close.iloc[-1])
+    if current <= 0:
+        return out
+
+    surge_5d = 0.0
+    if len(close) >= 6 and float(close.iloc[-6]) > 0:
+        surge_5d = (current / float(close.iloc[-6]) - 1.0) * 100
+    out["surge_5d_pct"] = round(surge_5d, 2)
+    ma25 = float(close.rolling(25).mean().iloc[-1]) if len(close) >= 25 else 0.0
+    ma25_gap = (current / ma25 - 1.0) * 100 if ma25 > 0 else 0.0
+    if surge_5d >= 25.0 or ma25_gap >= 30.0:
+        out["inago_suspect"] = True
+
+    tail_close = close.tail(5)
+    tail_high = high.tail(5)
+    tail_low = low.tail(5)
+    mean_close = float(tail_close.mean())
+    if len(tail_close) == 5 and mean_close > 0:
+        close_span_pct = (float(tail_close.max()) - float(tail_close.min())) / mean_close * 100
+        candle = ((tail_high - tail_low) / tail_close.replace(0.0, pd.NA)).dropna()
+        range_pct = float(candle.mean()) * 100 if not candle.empty else 999.0
+        hi52 = float(high.tail(min(252, len(high))).max())
+        near_high = hi52 > 0 and (hi52 - current) / hi52 * 100 <= 1.0
+        if close_span_pct <= 0.4 and range_pct <= 0.6 and near_high:
+            out["tob_suspect"] = True
+
+    labels: list[str] = []
+    if out["inago_suspect"]:
+        labels.append("イナゴ疑い")
+    if out["tob_suspect"]:
+        labels.append("TOB疑い")
+    out["quality_flags"] = " / ".join(labels)
+    return out
+
+
+def high_quality_flags(history: pd.DataFrame) -> dict[str, object]:
+    """鮮度＋品質フラグをまとめて返す（screening_highs 行に付与する用）。"""
+    return analyze_high_freshness(history) | detect_quality_flags(history)
 
 
 def _as_dict(profile: HighProfile) -> dict[str, object]:

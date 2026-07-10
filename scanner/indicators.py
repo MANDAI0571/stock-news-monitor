@@ -82,6 +82,56 @@ def calculate_indicators(history: pd.DataFrame) -> dict[str, float] | None:
     }
 
 
+def calculate_indicators_lenient(history: pd.DataFrame, min_days: int = 60) -> dict[str, float] | None:
+    """上場1年未満（len<252）向けの簡易指標。52週高値スクリーニング収集専用。
+
+    カブタンの52週高値更新リストは上場1年未満の銘柄も含むため、
+    メイン指標(calculate_indicators, 252日必須)が計算できない銘柄でも
+    「上場来ベース」で高値系スクリーニングに載せられるようにする。
+    データが足りないMAは float('nan') を入れる（捏造しない）。
+    """
+    if history.empty or len(history) < min_days:
+        return None
+
+    close = history["Close"].astype(float)
+    volume = history["Volume"].astype(float)
+    turnover = close * volume
+    nan = float("nan")
+
+    current = float(close.iloc[-1])
+    high_52w = float(close.tail(min(252, len(close))).max())
+    window = close.tail(min(252, len(close)))
+    positions = window.reset_index(drop=True).eq(high_52w)
+    last_pos = int(positions[positions].index[-1]) if positions.any() else len(window) - 1
+    days_since = int(len(window) - 1 - last_pos)
+
+    def _ma(days: int) -> float:
+        return float(close.rolling(days).mean().iloc[-1]) if len(close) >= days else nan
+
+    ma25, ma50, ma200 = _ma(25), _ma(50), _ma(200)
+    volume_5d = float(volume.rolling(5).mean().iloc[-1])
+    volume_20d = float(volume.rolling(20).mean().iloc[-1])
+    turnover_20d = float(turnover.rolling(20).mean().iloc[-1])
+    if min(current, high_52w, volume_20d) <= 0:
+        return None
+
+    return {
+        "current_price": current,
+        "high_52w": high_52w,
+        "dist_52w_high_pct": (high_52w - current) / high_52w * 100,
+        "days_since_52w_high": days_since,
+        "ma25": ma25,
+        "ma50": ma50,
+        "ma200": ma200,
+        "ma25_gap_pct": (current - ma25) / ma25 * 100 if ma25 and ma25 == ma25 else nan,
+        "ma200_gap_pct": (current - ma200) / ma200 * 100 if ma200 and ma200 == ma200 else nan,
+        "volume_5d": volume_5d,
+        "volume_20d": volume_20d,
+        "volume_ratio_5d_20d": volume_5d / volume_20d if volume_20d > 0 else nan,
+        "turnover_20d": turnover_20d,
+    }
+
+
 def detect_ma_touches(indicators: dict[str, float], touch_pct: float = 3.0) -> dict[str, object]:
     """T-B(2026-06-28): 25/200/240MA への『押し目タッチ』判定（純関数・通信なし）。
 

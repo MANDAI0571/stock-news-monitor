@@ -1068,6 +1068,24 @@ def build_pullback_note(pullback: pd.DataFrame, source: Path | None) -> str:
     return "\n".join(lines)
 
 
+def _flag_true(value: object) -> bool:
+    """CSV経由でTrue/Falseが文字列化されても真偽を正しく判定する。"""
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in ("true", "1", "yes", "on")
+
+
+def _split_flagged_highs(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """イナゴ疑い・TOB疑いの銘柄をカード候補から分離する（従来表には全件残す）。"""
+    if df.empty:
+        return df, df.iloc[0:0]
+    flagged_mask = pd.Series(False, index=df.index)
+    for column in ("inago_suspect", "tob_suspect"):
+        if column in df.columns:
+            flagged_mask |= df[column].map(_flag_true)
+    return df[~flagged_mask], df[flagged_mask]
+
+
 def build_highs_note(highs: pd.DataFrame, source: Path | None) -> str:
     """④52週新高値タッチ・接近。2バケット: 52週新高値 / 52週高値接近。空は「該当なし」。"""
     today = datetime.now().strftime("%Y-%m-%d")
@@ -1100,22 +1118,34 @@ def build_highs_note(highs: pd.DataFrame, source: Path | None) -> str:
         if b.empty:
             lines.append("- 該当なし")
         else:
-            if htype == "52W_NEW_HIGH":
-                lines.append("### カード型候補（全件）")
+            clean, flagged = _split_flagged_highs(b)
+            if not clean.empty:
+                if htype == "52W_NEW_HIGH":
+                    lines.append("### カード型候補（全件）")
+                    lines.append("")
+                    lines.extend(build_stock_cards(clean, None))
+                else:
+                    lines.append("### カード型候補（上位20件）")
+                    lines.append("")
+                    lines.extend(build_stock_cards(clean, 20))
+            if not flagged.empty:
+                lines.append(
+                    f"※ イナゴ疑い（急騰過熱）・TOB疑い（高値張り付き）の**{len(flagged)}銘柄**は"
+                    "カード候補から外し、従来表に⚠️付きで参考掲載しています。"
+                )
                 lines.append("")
-                lines.extend(build_stock_cards(b, None))
-            else:
-                lines.append("### カード型候補（上位20件）")
-                lines.append("")
-                lines.extend(build_stock_cards(b, 20))
             lines.append("### 従来表")
             lines.append("")
-            lines.append("| コード | 銘柄 | 現在値 | 52週高値 | 高値乖離% | 高値日 | 売買代金 |")
-            lines.append("|---|---|---:|---:|---:|---|---:|")
+            lines.append("| コード | 銘柄 | 現在値 | 52週高値 | 高値乖離% | 高値日 | 決算日 | 売買代金 | フラグ |")
+            lines.append("|---|---|---:|---:|---:|---|---|---:|---|")
             for _, row in b.iterrows():
+                flags = _val(row, "note_flags")
+                is_flagged = _flag_true(row.get("inago_suspect")) or _flag_true(row.get("tob_suspect"))
+                flag_cell = f"⚠️ {flags}" if (flags and is_flagged) else flags
                 lines.append(
                     f"| {_val(row,'code')} | {_val(row,'name')} | {_val(row,'current_price')} | "
-                    f"{_val(row,'high_52w')} | {_val(row,'dist_to_high_pct')} | {_val(row,'high_date')} | {_val(row,'turnover_20d')} |"
+                    f"{_val(row,'high_52w')} | {_val(row,'dist_to_high_pct')} | {_val(row,'high_date')} | "
+                    f"{_val(row,'earnings_date')} | {_val(row,'turnover_20d')} | {flag_cell} |"
                 )
         lines.append("")
 

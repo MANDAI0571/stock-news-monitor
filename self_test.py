@@ -14,7 +14,7 @@ from paper_portfolio_discipline import build_discipline_portfolio
 from pattern_learn import build_pattern_summary
 from daily_note_mail import build_mail_body
 from note_autosave import extract_body_fragment, is_saved_draft_url, load_cloud_note_payload, load_storage_state
-from scanner.highs import build_high_sections_markdown, classify_high_profile, detect_duke_old_high_support, detect_previous_52w_high_line_retest, detect_swing_high_break
+from scanner.highs import analyze_high_freshness, build_high_sections_markdown, classify_high_profile, detect_duke_old_high_support, detect_previous_52w_high_line_retest, detect_quality_flags, detect_swing_high_break
 from scanner.indicators import calculate_indicators
 from scanner.openwork import add_openwork_scores, format_openwork_score
 from scanner.scoring import meets_s_technical_gate, meets_strict_s_gate, score_stock
@@ -39,6 +39,7 @@ def main() -> None:
     _test_jpx_float_codes_normalized()
     _test_price_cache_and_prefetch()
     _test_high_classification()
+    _test_kabutan_high_and_quality_flags()
     _test_previous_52w_high_line_retest()
     _test_duke_old_high_support()
     _test_9256_limit50_excluded_but_full_universe_included()
@@ -857,6 +858,117 @@ def _test_high_classification() -> None:
     assert any("【52週高値更新】" in line for line in lines)
     assert any("【その他】" in line for line in lines)
     assert any("直近高値接近" in line for line in lines)
+
+
+def _test_kabutan_high_and_quality_flags() -> None:
+    """カブタン準拠の52W高値判定（ザラバ高値ベース）と鮮度・イナゴ・TOBフラグの検証。"""
+    dates = pd.bdate_range("2025-01-01", periods=300)
+
+    def _hist(close: pd.Series, high: pd.Series | None = None, low: pd.Series | None = None) -> pd.DataFrame:
+        high = close * 1.005 if high is None else high
+        low = close * 0.995 if low is None else low
+        return pd.DataFrame({"Open": close, "High": high, "Low": low, "Close": close, "Volume": 1_000_000})
+
+    # 1) ザラバ高値で更新・終値は前日終値高値未満 → 旧実装は接近扱い、新実装は52W_NEW_HIGH。
+    close = pd.Series(range(700, 1000), index=dates, dtype=float)
+    high = close + 3.0
+    close.iloc[-2], high.iloc[-2] = 1002.0, 1004.0
+    close.iloc[-1], high.iloc[-1] = 1000.0, 1010.0  # 当日High 1010 > 前日までの最高High 1004
+    low = close - 3.0
+    low.iloc[-8] = 500.0  # 直近5-30日に明確なスイング高値を作らない（低値のみ変化）
+    profile = classify_high_profile(_hist(close, high, low))
+    assert profile["high_type"] == "52W_NEW_HIGH", profile["high_type"]
+
+    # 2) 高値未更新・終値が52週高値から3%以内 → 52W_NEAR_HIGH。
+    close2 = pd.Series(range(700, 1000), index=dates, dtype=float)
+    high2 = close2 + 2.0
+    high2.iloc[-40] = 1030.0  # 40日前に52週高値
+    close2.iloc[-1], high2.iloc[-1] = 1005.0, 1007.0  # 乖離 (1030-1005)/1030 ≒ 2.4%
+    profile2 = classify_high_profile(_hist(close2, high2))
+    assert profile2["high_type"] == "52W_NEAR_HIGH", profile2["high_type"]
+    assert float(profile2["dist_to_high_pct"]) <= 3
+
+    # 3) 上場1年未満（120営業日）でも上場来ベースで新高値判定できる。
+    short_dates = pd.bdate_range("2026-01-01", periods=120)
+    close3 = pd.Series(range(500, 620), index=short_dates, dtype=float)
+    profile3 = classify_high_profile(_hist(close3))
+    assert profile3["high_type"] in {"52W_NEW_HIGH", "SWING_HIGH_BREAK"}, profile3["high_type"]
+
+    # 4) 鮮度: 毎日更新の右肩上がり → breaks_20d=20・初回ブレイクではない。
+    fresh_up = analyze_high_freshness(_hist(pd.Series(range(700, 1000), index=dates, dtype=float)))
+    assert fresh_up["is_new_high_today"] is True
+    assert int(fresh_up["breaks_20d"]) >= 15
+    assert fresh_up["first_break_60d"] is False
+
+    # 5) 鮮度: 長期横ばい→当日だけ更新 → 初回ブレイク。
+    flat = pd.Series(900.0, index=dates)
+    flat_high = pd.Series(905.0, index=dates)
+    flat.iloc[-1], flat_high.iloc[-1] = 930.0, 935.0
+    fresh_first = analyze_high_freshness(_hist(flat, flat_high))
+    assert fresh_first["is_new_high_today"] is True
+    assert fresh_first["first_break_60d"] is True
+    assert int(fresh_first["breaks_20d"]) == 1
+
+    # 6) TOB疑い: 直近8日終値が完全固定・値幅ゼロ・52週高値圏。
+    tob = pd.Series(1000.0, index=dates)
+    tob.iloc[:150] = pd.Series(range(700, 850), index=dates[:150], dtype=float)
+    tob.iloc[-8:] = 1200.0
+    tob_high = tob.copy()
+    tob_low = tob.copy()
+    flags_tob = detect_quality_flags(pd.DataFrame({"Open": tob, "High": tob_high, "Low": tob_low, "Close": tob, "Volume": 1_000_000}))
+    assert flags_tob["tob_suspect"] is True, flags_tob
+    assert "TOB疑い" in str(flags_tob["quality_flags"])
+
+    # 7) イナゴ疑い: 直近5営業日で+40%急騰。
+    inago = pd.Series(1000.0, index=dates)
+    inago.iloc[-5:] = [1100.0, 1200.0, 1300.0, 1380.0, 1400.0]
+    flags_inago = detect_quality_flags(_hist(inago))
+    assert flags_inago["inago_suspect"] is True, flags_inago
+    assert "イナゴ疑い" in str(flags_inago["quality_flags"])
+
+    # 8) 平常時の右肩上がりはどちらのフラグも立たない。
+    normal = pd.Series([1000.0 * (1.001 ** i) for i in range(300)], index=dates)
+    flags_normal = detect_quality_flags(_hist(normal))
+    assert flags_normal["inago_suspect"] is False
+    assert flags_normal["tob_suspect"] is False
+
+    # 9) run_screening._collect_highs_row がフラグ・決算日欄付きの行を返す。
+    from run_screening import _collect_highs_row
+    up = pd.Series(range(1000, 1300), index=dates, dtype=float)
+    hist_up = _hist(up)
+    indicators = calculate_indicators(hist_up)
+    assert indicators is not None
+    high_info = classify_high_profile(hist_up)
+    row = _collect_highs_row(
+        {"code": "1111", "ticker": "1111.T", "name": "テスト", "market": "東証プライム", "sector": "情報・通信業"},
+        indicators,
+        high_info,
+        hist_up,
+    )
+    assert row is not None
+    for key in ("breaks_20d", "first_break_60d", "inago_suspect", "tob_suspect", "note_flags", "earnings_date"):
+        assert key in row, key
+
+    # 10) note_draft: 疑いフラグ銘柄はカードから除外し従来表に⚠️付きで残る。決算日列も出る。
+    from note_draft import build_highs_note
+    highs_df = pd.DataFrame(
+        [
+            {"code": "1111", "name": "健全", "high_type": "52W_NEW_HIGH", "current_price": 1000, "high_52w": 1000,
+             "dist_to_high_pct": 0.0, "high_date": "2026-07-10", "turnover_20d": 500_000_000,
+             "inago_suspect": False, "tob_suspect": False, "note_flags": "初回ブレイク", "earnings_date": "2026-08-08"},
+            {"code": "2222", "name": "張付", "high_type": "52W_NEW_HIGH", "current_price": 1200, "high_52w": 1200,
+             "dist_to_high_pct": 0.0, "high_date": "2026-07-10", "turnover_20d": 300_000_000,
+             "inago_suspect": False, "tob_suspect": True, "note_flags": "TOB疑い", "earnings_date": ""},
+        ]
+    )
+    note_text = build_highs_note(highs_df, Path("screening_highs_test.csv"))
+    assert "決算日" in note_text
+    assert "2026-08-08" in note_text
+    assert "⚠️ TOB疑い" in note_text
+    assert "カード候補から外し" in note_text
+    card_section = note_text.split("### 従来表")[0]
+    assert "張付" not in card_section  # TOB疑いはカードに出ない
+    assert "健全" in note_text
 
 
 def _test_previous_52w_high_line_retest() -> None:
