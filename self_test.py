@@ -47,6 +47,7 @@ def main() -> None:
     _test_learning_log()
     _test_csv_schema_contract()
     _test_decision_engine()
+    _test_buy3_validation_ab_policy()
     _test_trade_verification()
     print("self-test: OK")
 
@@ -1063,6 +1064,93 @@ def _test_csv_schema_contract() -> None:
     assert by_code["3333"]["screen_type"] == "SKIP"
     assert by_code["3333"]["screen_tags"] == "52W_BREAKOUT"
     assert by_code["4444"]["screen_type"] == "WATCH"
+
+
+def _test_buy3_validation_ab_policy() -> None:
+    from buy3_validation import _build_ab_detail, _build_ab_summary
+
+    detail = pd.DataFrame(
+        [
+            {
+                "asof_date": "2026-06-01",
+                "entry_date": "2026-06-02",
+                "code": "1111",
+                "ticker": "1111.T",
+                "name": "弱出来高MULTI",
+                "decision": "BUY",
+                "rank": "S",
+                "score": 100,
+                "confidence": 95,
+                "screen_type": "MULTI",
+                "screen_tags": "52W_PULLBACK;52W_MOMENTUM",
+                "regime": "NORMAL",
+                "volume_ratio_5d_20d": 1.2,
+                "dist_52w_high_pct": 1.0,
+                "dist_25ma_pct": 5.0,
+                "dist_200ma_pct": 20.0,
+                "return_5d_pct": -4.0,
+                "return_10d_pct": -2.0,
+                "max_up_10d_pct": 2.0,
+                "max_down_10d_pct": -6.0,
+            },
+            {
+                "asof_date": "2026-06-01",
+                "entry_date": "2026-06-02",
+                "code": "2222",
+                "ticker": "2222.T",
+                "name": "Aランク25MA押し目",
+                "decision": "WATCH",
+                "rank": "A",
+                "score": 80,
+                "confidence": 85,
+                "screen_type": "25MA_PULLBACK",
+                "screen_tags": "25MA_PULLBACK",
+                "regime": "NORMAL",
+                "volume_ratio_5d_20d": 0.8,
+                "dist_52w_high_pct": 5.0,
+                "dist_25ma_pct": 1.0,
+                "dist_200ma_pct": 15.0,
+                "return_5d_pct": 3.0,
+                "return_10d_pct": 4.0,
+                "max_up_10d_pct": 6.0,
+                "max_down_10d_pct": -1.0,
+            },
+            {
+                "asof_date": "2026-06-01",
+                "entry_date": "2026-06-02",
+                "code": "3333",
+                "ticker": "3333.T",
+                "name": "強出来高MULTI",
+                "decision": "BUY",
+                "rank": "S",
+                "score": 98,
+                "confidence": 90,
+                "screen_type": "MULTI",
+                "screen_tags": "MULTI",
+                "regime": "NORMAL",
+                "volume_ratio_5d_20d": 1.8,
+                "dist_52w_high_pct": 1.0,
+                "dist_25ma_pct": 8.0,
+                "dist_200ma_pct": 30.0,
+                "return_5d_pct": 1.0,
+                "return_10d_pct": 2.0,
+                "max_up_10d_pct": 4.0,
+                "max_down_10d_pct": -2.0,
+            },
+        ]
+    )
+
+    ab_detail, changes = _build_ab_detail(detail)
+    assert set(ab_detail["policy"]) == {"baseline", "candidate_v1"}
+    candidate = ab_detail[ab_detail["policy"] == "candidate_v1"].set_index("code")
+    assert candidate.loc["1111"]["candidate_decision"] == "WATCH"
+    assert "出来高比1.5倍未満" in candidate.loc["1111"]["policy_reason"]
+    assert candidate.loc["2222"]["candidate_decision"] == "BUY"
+    assert "25MA押し目" in candidate.loc["2222"]["policy_reason"]
+    assert candidate.loc["3333"]["candidate_decision"] == "BUY"
+    assert len(changes) == 2
+    summary = _build_ab_summary(ab_detail)
+    assert {"decision", "diagnostics", "buy_screen_type", "buy_policy_bucket"}.issubset(set(summary["section"]))
 
 
 def _test_trade_verification() -> None:

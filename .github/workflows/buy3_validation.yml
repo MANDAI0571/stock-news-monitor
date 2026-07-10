@@ -62,7 +62,7 @@ jobs:
         if: always()
         run: |
           echo "=== BUY3 validation files ==="
-          ls -lh outputs/buy3_validation_detail.csv outputs/buy3_validation_summary.csv outputs/buy3_false_positive.csv outputs/buy3_missed_opportunity.csv outputs/buy3_validation_report.md outputs/buy3_validation_manifest.json 2>/dev/null || true
+          ls -lh outputs/buy3_validation_detail.csv outputs/buy3_validation_summary.csv outputs/buy3_false_positive.csv outputs/buy3_missed_opportunity.csv outputs/buy3_validation_report.md outputs/buy3_validation_manifest.json outputs/buy3_ab_summary.csv outputs/buy3_ab_detail.csv outputs/buy3_policy_changes.csv outputs/buy3_ab_report.md 2>/dev/null || true
           echo "=== BUY3 validation manifest ==="
           python3 - <<'PY'
           import json
@@ -72,8 +72,22 @@ jobs:
               print("manifest missing")
           else:
               data = json.loads(path.read_text(encoding="utf-8"))
-              for key in ("start_date", "end_date", "symbols_loaded", "price_histories_ok", "price_fetch_failures", "detail_rows", "buy_rows", "watch_rows", "skip_rows", "earnings_gate_backtested", "elapsed_seconds"):
+              for key in ("start_date", "end_date", "symbols_loaded", "price_histories_ok", "price_fetch_failures", "detail_rows", "buy_rows", "watch_rows", "skip_rows", "ab_policy_change_rows", "ab_summary_rows", "earnings_gate_backtested", "elapsed_seconds"):
                   print(f"{key}={data.get(key)}")
+          PY
+          echo "=== BUY3 A/B summary ==="
+          python3 - <<'PY'
+          import pandas as pd
+          from pathlib import Path
+          path = Path("outputs/buy3_ab_summary.csv")
+          if not path.exists():
+              print("ab summary missing")
+          else:
+              df = pd.read_csv(path)
+              cols = ["section", "policy", "decision", "screen_type", "policy_bucket", "regime", "count", "win_rate_5d_pct", "avg_return_5d_pct", "win_rate_10d_pct", "avg_return_10d_pct", "max_drawdown_like_pct", "false_positive_count", "missed_opportunity_count"]
+              cols = [c for c in cols if c in df.columns]
+              view = df[(df["section"].isin(["decision", "diagnostics"]))][cols]
+              print(view.to_string(index=False))
           PY
 
       - name: Upload BUY3 validation artifact
@@ -88,3 +102,7 @@ jobs:
             outputs/buy3_missed_opportunity.csv
             outputs/buy3_validation_report.md
             outputs/buy3_validation_manifest.json
+            outputs/buy3_ab_summary.csv
+            outputs/buy3_ab_detail.csv
+            outputs/buy3_policy_changes.csv
+            outputs/buy3_ab_report.md

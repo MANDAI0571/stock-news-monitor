@@ -40,6 +40,10 @@ FALSE_POSITIVE_CSV = OUTPUT_DIR / "buy3_false_positive.csv"
 MISSED_CSV = OUTPUT_DIR / "buy3_missed_opportunity.csv"
 REPORT_MD = OUTPUT_DIR / "buy3_validation_report.md"
 MANIFEST_JSON = OUTPUT_DIR / "buy3_validation_manifest.json"
+AB_SUMMARY_CSV = OUTPUT_DIR / "buy3_ab_summary.csv"
+AB_DETAIL_CSV = OUTPUT_DIR / "buy3_ab_detail.csv"
+AB_POLICY_CHANGES_CSV = OUTPUT_DIR / "buy3_policy_changes.csv"
+AB_REPORT_MD = OUTPUT_DIR / "buy3_ab_report.md"
 
 FORWARD_DAYS = (1, 3, 5, 10)
 SCREEN_TYPES = [
@@ -52,6 +56,8 @@ SCREEN_TYPES = [
     "WATCH",
     "SKIP",
 ]
+
+POLICIES = ("baseline", "candidate_v1")
 
 
 @dataclass(frozen=True)
@@ -466,6 +472,323 @@ def _missed_opportunity(detail: pd.DataFrame) -> pd.DataFrame:
     return out.sort_values(["max_up_10d_pct", "return_10d_pct"], ascending=[False, False])
 
 
+def _tag_set(row: pd.Series) -> set[str]:
+    raw_values = [str(row.get("screen_type", "")), str(row.get("screen_tags", ""))]
+    tags: set[str] = set()
+    for raw in raw_values:
+        normalized = raw.replace("、", ";").replace(",", ";").replace("/", ";").replace("|", ";")
+        for part in normalized.split(";"):
+            tag = part.strip().upper()
+            if tag:
+                tags.add(tag)
+    return tags
+
+
+def _has_tag(row: pd.Series, tag: str) -> bool:
+    return tag.upper() in _tag_set(row)
+
+
+def _regime_buy_limit(regime: str) -> int:
+    value = str(regime or "NORMAL").upper()
+    if value == "CAUTION":
+        return 1
+    if value in {"RISK", "STOP"}:
+        return 0
+    return 3
+
+
+def _is_extreme_overheat(row: pd.Series) -> bool:
+    dist25 = _to_float(row.get("dist_25ma_pct"))
+    dist200 = _to_float(row.get("dist_200ma_pct"))
+    return bool(dist25 is not None and dist200 is not None and dist25 > 30 and dist200 > 80)
+
+
+def _candidate_bucket(row: pd.Series) -> str:
+    screen_type = str(row.get("screen_type", "")).upper()
+    if screen_type == "25MA_PULLBACK" or _has_tag(row, "25MA_PULLBACK"):
+        return "25MA_PULLBACK"
+    if screen_type == "52W_MOMENTUM" or _has_tag(row, "52W_MOMENTUM"):
+        return "52W_MOMENTUM"
+    if screen_type == "MULTI":
+        return "MULTI"
+    if screen_type == "52W_PULLBACK" or _has_tag(row, "52W_PULLBACK"):
+        return "52W_PULLBACK"
+    return screen_type or "OTHER"
+
+
+def _candidate_priority(row: pd.Series) -> int:
+    bucket = _candidate_bucket(row)
+    return {
+        "25MA_PULLBACK": 1,
+        "52W_MOMENTUM": 2,
+        "MULTI": 3,
+        "52W_PULLBACK": 4,
+    }.get(bucket, 9)
+
+
+def _candidate_sort_key(row: pd.Series) -> tuple[float, float, float, float]:
+    score = _to_float(row.get("score")) or 0.0
+    confidence = _to_float(row.get("confidence")) or 0.0
+    dist52 = _to_float(row.get("dist_52w_high_pct"))
+    return (
+        float(_candidate_priority(row)),
+        -score,
+        -confidence,
+        dist52 if dist52 is not None else 999.0,
+    )
+
+
+def _single_52w_pullback(row: pd.Series) -> bool:
+    screen_type = str(row.get("screen_type", "")).upper()
+    tags = _tag_set(row)
+    return screen_type == "52W_PULLBACK" or tags == {"52W_PULLBACK"}
+
+
+def _downgrade_reason_for_buy(row: pd.Series) -> str:
+    regime = str(row.get("regime", "") or row.get("_regime", "")).upper()
+    if _regime_buy_limit(regime) == 0:
+        return f"地合い{regime}のためBUYゼロ検証"
+    if _is_extreme_overheat(row):
+        return "過熱リスク: 25MA+30%超かつ200MA+80%超"
+    screen_type = str(row.get("screen_type", "")).upper()
+    volume_ratio = _to_float(row.get("volume_ratio_5d_20d"))
+    if screen_type == "MULTI" and (volume_ratio is None or volume_ratio < 1.5):
+        return "MULTIだが出来高比1.5倍未満"
+    if _single_52w_pullback(row):
+        dist52 = _to_float(row.get("dist_52w_high_pct"))
+        dist25 = _to_float(row.get("dist_25ma_pct"))
+        weak_reversal = dist25 is None or dist25 < 0
+        weak_volume = volume_ratio is None or volume_ratio < 1.2
+        far_from_high = dist52 is None or dist52 > 7
+        if weak_reversal or weak_volume or far_from_high:
+            return "52W_PULLBACK単独で反転確認・出来高・高値距離が不足"
+    return ""
+
+
+def _promotion_reason_for_watch(row: pd.Series) -> str:
+    if str(row.get("decision", "")).upper() != "WATCH":
+        return ""
+    if str(row.get("rank", "")).upper() != "A":
+        return ""
+    regime = str(row.get("regime", "") or row.get("_regime", "")).upper()
+    if _regime_buy_limit(regime) == 0:
+        return ""
+    if _is_extreme_overheat(row):
+        return ""
+    score = _to_float(row.get("score")) or 0.0
+    volume_ratio = _to_float(row.get("volume_ratio_5d_20d"))
+    dist52 = _to_float(row.get("dist_52w_high_pct"))
+    if _has_tag(row, "25MA_PULLBACK"):
+        if score >= 75 and (volume_ratio is None or volume_ratio >= 0.7) and (dist52 is None or dist52 <= 10):
+            return "WATCH昇格候補: Aランク25MA押し目"
+    if _has_tag(row, "52W_MOMENTUM"):
+        if score >= 85 and (volume_ratio is None or volume_ratio >= 1.0) and (dist52 is None or dist52 <= 7):
+            return "WATCH昇格候補: Aランク52W_MOMENTUM"
+    return ""
+
+
+def _build_ab_detail(detail: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    if detail.empty:
+        empty = pd.DataFrame()
+        return empty, empty
+
+    baseline = detail.copy()
+    baseline["policy"] = "baseline"
+    baseline["original_decision"] = baseline["decision"]
+    baseline["candidate_decision"] = baseline["decision"]
+    baseline["policy_action"] = "baseline"
+    baseline["policy_reason"] = "現行ロジック"
+    baseline["policy_bucket"] = baseline.apply(_candidate_bucket, axis=1)
+    baseline["policy_priority"] = baseline.apply(_candidate_priority, axis=1)
+
+    candidate_days: list[pd.DataFrame] = []
+    last_buy_date_pos: dict[str, int] = {}
+    unique_dates = {date: idx for idx, date in enumerate(sorted(detail["asof_date"].astype(str).unique()))}
+
+    for asof_date, day in detail.groupby("asof_date", sort=True):
+        day_candidate = day.copy()
+        day_candidate["policy"] = "candidate_v1"
+        day_candidate["original_decision"] = day_candidate["decision"]
+        day_candidate["candidate_decision"] = day_candidate["decision"]
+        day_candidate["policy_action"] = "keep"
+        day_candidate["policy_reason"] = ""
+        day_candidate["policy_bucket"] = day_candidate.apply(_candidate_bucket, axis=1)
+        day_candidate["policy_priority"] = day_candidate.apply(_candidate_priority, axis=1)
+
+        regime = str(day_candidate["regime"].iloc[0]) if "regime" in day_candidate.columns and not day_candidate.empty else "NORMAL"
+        buy_limit = _regime_buy_limit(regime)
+        eligible_indices: list[int] = []
+        date_pos = unique_dates[str(asof_date)]
+
+        for idx, row in day_candidate.iterrows():
+            if str(row.get("decision", "")).upper() != "BUY":
+                continue
+            reason = _downgrade_reason_for_buy(row)
+            if reason:
+                day_candidate.at[idx, "candidate_decision"] = "WATCH"
+                day_candidate.at[idx, "policy_action"] = "downgrade"
+                day_candidate.at[idx, "policy_reason"] = reason
+            else:
+                eligible_indices.append(idx)
+
+        for idx, row in day_candidate.iterrows():
+            reason = _promotion_reason_for_watch(row)
+            if reason:
+                eligible_indices.append(idx)
+                day_candidate.at[idx, "policy_action"] = "promote_candidate"
+                day_candidate.at[idx, "policy_reason"] = reason
+
+        eligible_indices = sorted(
+            set(eligible_indices),
+            key=lambda idx: _candidate_sort_key(day_candidate.loc[idx]),
+        )
+        selected_indices: set[int] = set()
+        cooldown_indices: set[int] = set()
+        for idx in eligible_indices:
+            if len(selected_indices) >= buy_limit:
+                break
+            row = day_candidate.loc[idx]
+            code = str(row.get("code", ""))
+            last_pos = last_buy_date_pos.get(code)
+            if last_pos is not None and date_pos - last_pos <= 3:
+                cooldown_indices.add(idx)
+                continue
+            selected_indices.add(idx)
+            last_buy_date_pos[code] = date_pos
+
+        for idx in eligible_indices:
+            original = str(day_candidate.at[idx, "original_decision"]).upper()
+            if idx in selected_indices:
+                day_candidate.at[idx, "candidate_decision"] = "BUY"
+                if original == "WATCH":
+                    day_candidate.at[idx, "policy_action"] = "promote"
+                else:
+                    day_candidate.at[idx, "policy_action"] = "keep_buy"
+                    day_candidate.at[idx, "policy_reason"] = "candidate_v1 BUY維持"
+                continue
+            if original == "BUY":
+                day_candidate.at[idx, "candidate_decision"] = "WATCH"
+                day_candidate.at[idx, "policy_action"] = "downgrade"
+                if idx in cooldown_indices:
+                    day_candidate.at[idx, "policy_reason"] = "同一銘柄BUYの3営業日クールダウン"
+                elif not str(day_candidate.at[idx, "policy_reason"]):
+                    day_candidate.at[idx, "policy_reason"] = "candidate_v1優先順位でBUY枠外"
+            elif original == "WATCH" and str(day_candidate.at[idx, "policy_action"]) == "promote_candidate":
+                day_candidate.at[idx, "policy_action"] = "keep_watch"
+                if idx in cooldown_indices:
+                    day_candidate.at[idx, "policy_reason"] = "昇格候補だが同一銘柄3営業日クールダウン"
+                else:
+                    day_candidate.at[idx, "policy_reason"] = "昇格候補だがBUY枠外"
+
+        day_candidate["decision"] = day_candidate["candidate_decision"]
+        candidate_days.append(day_candidate)
+
+    candidate = pd.concat(candidate_days, ignore_index=True, sort=False) if candidate_days else pd.DataFrame()
+    ab_detail = pd.concat([baseline, candidate], ignore_index=True, sort=False)
+    policy_changes = candidate[candidate["original_decision"] != candidate["candidate_decision"]].copy()
+    if not policy_changes.empty:
+        policy_changes = policy_changes.sort_values(["asof_date", "policy_action", "policy_priority", "score"], ascending=[True, True, True, False])
+    return ab_detail, policy_changes
+
+
+def _write_ab_outputs(detail: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    ab_detail, policy_changes = _build_ab_detail(detail)
+    ab_detail.to_csv(AB_DETAIL_CSV, index=False, encoding="utf-8-sig")
+    policy_changes.to_csv(AB_POLICY_CHANGES_CSV, index=False, encoding="utf-8-sig")
+    summary = _build_ab_summary(ab_detail)
+    summary.to_csv(AB_SUMMARY_CSV, index=False, encoding="utf-8-sig")
+    _write_ab_report(ab_detail, summary, policy_changes)
+    return summary, policy_changes
+
+
+def _build_ab_summary(ab_detail: pd.DataFrame) -> pd.DataFrame:
+    if ab_detail.empty:
+        return pd.DataFrame()
+    frames: list[pd.DataFrame] = []
+    sections = (
+        ("decision", ["policy", "decision"], ab_detail),
+        ("buy_screen_type", ["policy", "screen_type"], ab_detail[ab_detail["decision"].eq("BUY")]),
+        ("buy_policy_bucket", ["policy", "policy_bucket"], ab_detail[ab_detail["decision"].eq("BUY")]),
+        ("all_screen_type", ["policy", "screen_type"], ab_detail),
+        ("buy_regime", ["policy", "regime"], ab_detail[ab_detail["decision"].eq("BUY")]),
+        ("all_regime", ["policy", "regime"], ab_detail),
+    )
+    for section, keys, source in sections:
+        part = _summarize_group(source, keys)
+        if part.empty:
+            continue
+        part.insert(0, "section", section)
+        frames.append(part)
+
+    diagnostics: list[dict[str, object]] = []
+    for policy, sub in ab_detail.groupby("policy"):
+        false_positive = _false_positive(sub)
+        missed = _missed_opportunity(sub)
+        buy = sub[sub["decision"].eq("BUY")]
+        row = {
+            "section": "diagnostics",
+            "policy": policy,
+            "decision": "ALL",
+            "false_positive_count": int(len(false_positive)),
+            "missed_opportunity_count": int(len(missed)),
+        }
+        row.update(_metrics(buy))
+        diagnostics.append(row)
+    if diagnostics:
+        frames.append(pd.DataFrame(diagnostics))
+    return pd.concat(frames, ignore_index=True, sort=False) if frames else pd.DataFrame()
+
+
+def _write_ab_report(ab_detail: pd.DataFrame, summary: pd.DataFrame, policy_changes: pd.DataFrame) -> None:
+    lines: list[str] = []
+    lines.append("# BUY3 A/B比較レポート")
+    lines.append("")
+    lines.append("- baseline: 現行ロジックそのまま")
+    lines.append("- candidate_v1: MULTIを無条件に強く扱わず、押し目/モメンタム優先、3営業日クールダウン、弱出来高MULTI降格、WATCH上位昇格を検証")
+    lines.append("- 注意: 本番BUY条件は変更していません。検証CSV上で候補の並べ替え・昇降格を比較しています。")
+    lines.append("")
+    lines.append("## BUY成績比較")
+    lines.append("")
+    buy_summary = summary[(summary.get("section") == "decision") & (summary.get("decision") == "BUY")] if not summary.empty else pd.DataFrame()
+    lines.append(_markdown_table(_display_df(buy_summary)))
+    lines.append("")
+    lines.append("## 診断比較")
+    lines.append("")
+    diagnostics = summary[summary.get("section") == "diagnostics"] if not summary.empty else pd.DataFrame()
+    lines.append(_markdown_table(_display_df(diagnostics)))
+    lines.append("")
+    lines.append("## BUY screen_type別")
+    lines.append("")
+    buy_screen_type = summary[summary.get("section") == "buy_screen_type"] if not summary.empty else pd.DataFrame()
+    lines.append(_markdown_table(_display_df(buy_screen_type)))
+    lines.append("")
+    lines.append("## BUY policy_bucket別")
+    lines.append("")
+    buy_policy_bucket = summary[summary.get("section") == "buy_policy_bucket"] if not summary.empty else pd.DataFrame()
+    lines.append(_markdown_table(_display_df(buy_policy_bucket)))
+    lines.append("")
+    lines.append("## BUY 地合い別")
+    lines.append("")
+    buy_regime = summary[summary.get("section") == "buy_regime"] if not summary.empty else pd.DataFrame()
+    lines.append(_markdown_table(_display_df(buy_regime)))
+    lines.append("")
+    lines.append("## policy change 上位")
+    lines.append("")
+    change_cols = [
+        "asof_date", "code", "name", "original_decision", "candidate_decision",
+        "policy_action", "policy_reason", "screen_type", "rank", "score",
+        "return_5d_pct", "return_10d_pct", "max_down_10d_pct",
+    ]
+    lines.append(_top_table(policy_changes, change_cols))
+    lines.append("")
+    lines.append("## 出力ファイル")
+    lines.append("")
+    for path in (AB_DETAIL_CSV, AB_SUMMARY_CSV, AB_POLICY_CHANGES_CSV):
+        lines.append(f"- {path}")
+    lines.append("")
+    AB_REPORT_MD.write_text("\n".join(lines), encoding="utf-8")
+
+
 def _write_report(
     detail: pd.DataFrame,
     summary: pd.DataFrame,
@@ -669,6 +992,7 @@ def run_validation(config: ValidationConfig) -> dict[str, object]:
     false_positive.to_csv(FALSE_POSITIVE_CSV, index=False, encoding="utf-8-sig")
     missed = _missed_opportunity(detail)
     missed.to_csv(MISSED_CSV, index=False, encoding="utf-8-sig")
+    ab_summary, policy_changes = _write_ab_outputs(detail)
     anomaly_rows = _anomaly_rows(detail)
     cash_days = _cash_opportunity_days(detail, date_summaries)
 
@@ -695,6 +1019,9 @@ def run_validation(config: ValidationConfig) -> dict[str, object]:
         "cash_days": int(len(cash_days)),
         "cash_days_with_opportunity": int(sum(1 for row in cash_days if row.get("opportunity_count", 0) > 0)),
         "cash_opportunity_days_sample": cash_days[:20],
+        "ab_policies": list(POLICIES),
+        "ab_policy_change_rows": int(len(policy_changes)),
+        "ab_summary_rows": int(len(ab_summary)),
         "date_summaries": date_summaries,
         "earnings_gate_backtested": False,
         "lookahead_price_check": "PASS: indicators use history up to asof_date; returns use only later bars",
@@ -705,6 +1032,10 @@ def run_validation(config: ValidationConfig) -> dict[str, object]:
             "false_positive": str(FALSE_POSITIVE_CSV),
             "missed_opportunity": str(MISSED_CSV),
             "report": str(REPORT_MD),
+            "ab_summary": str(AB_SUMMARY_CSV),
+            "ab_detail": str(AB_DETAIL_CSV),
+            "ab_policy_changes": str(AB_POLICY_CHANGES_CSV),
+            "ab_report": str(AB_REPORT_MD),
         },
     }
     MANIFEST_JSON.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
