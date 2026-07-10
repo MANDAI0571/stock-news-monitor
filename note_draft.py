@@ -1149,6 +1149,18 @@ def build_highs_note(highs: pd.DataFrame, source: Path | None) -> str:
                 )
         lines.append("")
 
+    # バックテスト博士: 実績セクション（掲載銘柄のその後。データ不足は明記）
+    try:
+        from track_record import build_track_record_lines, load_track_record_summary
+        lines.extend(build_track_record_lines(load_track_record_summary()))
+    except Exception:
+        lines.extend([
+            "## 実績（過去に掲載した銘柄のその後）",
+            "",
+            "> データ不足：実績データは掲載記録の蓄積開始後、営業日を重ねると自動表示されます。",
+            "",
+        ])
+
     # 編集者: 締め（読者の次の行動につなげる。毎日同じ基準＝この記事の価値）
     lines.append("## おわりに")
     lines.append("")

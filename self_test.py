@@ -40,6 +40,7 @@ def main() -> None:
     _test_price_cache_and_prefetch()
     _test_high_classification()
     _test_kabutan_high_and_quality_flags()
+    _test_track_record()
     _test_previous_52w_high_line_retest()
     _test_duke_old_high_support()
     _test_9256_limit50_excluded_but_full_universe_included()
@@ -969,6 +970,112 @@ def _test_kabutan_high_and_quality_flags() -> None:
     card_section = note_text.split("### 従来表")[0]
     assert "張付" not in card_section  # TOB疑いはカードに出ない
     assert "健全" in note_text
+
+
+def _test_track_record() -> None:
+    """T-I(2026-07-10): バックテスト博士（実績トラッキング）の契約テスト。通信なし。"""
+    import tempfile
+    from datetime import date as _date
+
+    import pandas as pd
+
+    from track_record import (
+        append_today_snapshot,
+        build_track_record_lines,
+        evaluate_track_record,
+        load_record,
+    )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        outputs = tmp_path / "outputs"
+        outputs.mkdir()
+        record_path = tmp_path / "data" / "highs_track_record.csv"
+        summary_path = outputs / "track_record.json"
+
+        highs = pd.DataFrame(
+            [
+                {
+                    "code": "1111",
+                    "ticker": "1111.T",
+                    "name": "上昇テスト",
+                    "high_type": "52W_NEW_HIGH",
+                    "first_break_60d": True,
+                    "inago_suspect": False,
+                    "tob_suspect": False,
+                    "current_price": 100.0,
+                },
+                {
+                    "code": "2222",
+                    "ticker": "2222.T",
+                    "name": "下落テスト",
+                    "high_type": "52W_NEAR_HIGH",
+                    "first_break_60d": False,
+                    "inago_suspect": False,
+                    "tob_suspect": False,
+                    "current_price": 200.0,
+                },
+            ]
+        )
+        highs.to_csv(outputs / "screening_highs_20260708.csv", index=False)
+
+        entry_day = _date(2026, 7, 8)
+        added = append_today_snapshot(output_dir=outputs, record_path=record_path, today=entry_day)
+        assert added == 2, f"追記件数が想定外: {added}"
+        # 再実行しても重複しない
+        added_again = append_today_snapshot(output_dir=outputs, record_path=record_path, today=entry_day)
+        assert added_again == 0, "同一(日付,コード)が重複追記された"
+        record = load_record(record_path)
+        assert len(record) == 2 and set(record["code"]) == {"1111", "2222"}
+
+        # 合成価格: 1111 は掲載後上昇、2222 は下落。営業日インデックスで entry_day を含む。
+        idx = pd.bdate_range("2026-07-08", periods=25)
+
+        def fake_fetcher(ticker: str) -> pd.DataFrame:
+            if ticker == "1111.T":
+                closes = [100.0, 110.0, 112.0, 115.0, 118.0, 120.0] + [130.0] * 14 + [150.0] * 5
+            else:
+                closes = [200.0, 190.0, 188.0, 186.0, 184.0, 180.0] + [170.0] * 14 + [150.0] * 5
+            return pd.DataFrame({"Close": closes}, index=idx)
+
+        summary = evaluate_track_record(
+            record_path=record_path,
+            summary_path=summary_path,
+            price_fetcher=fake_fetcher,
+            today=_date(2026, 8, 10),
+        )
+        assert summary["evaluated"] == 2 and summary["price_missing"] == 0, summary
+        h1 = summary["horizons"]["1"]
+        # +1営業日: 1111=+10%, 2222=-5% → 勝率50%, 平均+2.5%
+        assert h1["n"] == 2 and h1["win_rate_pct"] == 50.0, h1
+        assert abs(h1["avg_return_pct"] - 2.5) < 0.01, h1
+        h5 = summary["horizons"]["5"]
+        # +5営業日: 1111=+20%, 2222=-10%
+        assert h5["best_pct"] == 20.0 and h5["worst_pct"] == -10.0, h5
+        h20 = summary["horizons"]["20"]
+        # +20営業日: 1111=+50%, 2222=-25%
+        assert h20["best_pct"] == 50.0 and h20["worst_pct"] == -25.0, h20
+        fb5 = summary["first_break"].get("5")
+        assert fb5 and fb5["n"] == 1 and fb5["win_rate_pct"] == 100.0, summary["first_break"]
+        assert summary_path.exists(), "track_record.json が出力されていない"
+
+        # note向け整形: データありなら表と初回ブレイクの一文、データ無しなら「データ不足」
+        lines = "\n".join(build_track_record_lines(summary))
+        assert "## 実績" in lines and "| 翌営業日 | 2 | 50.0% |" in lines, lines
+        assert "初回ブレイク" in lines and "100.0%" in lines, lines
+        empty_lines = "\n".join(build_track_record_lines(None))
+        assert "データ不足" in empty_lines
+        # 価格取得できない銘柄は除外し件数を明示（捏造しない）
+        summary_missing = evaluate_track_record(
+            record_path=record_path,
+            summary_path=summary_path,
+            price_fetcher=lambda ticker: pd.DataFrame(),
+            today=_date(2026, 8, 10),
+        )
+        assert summary_missing["price_missing"] == 2 and summary_missing["evaluated"] == 0
+        missing_lines = "\n".join(build_track_record_lines(summary_missing))
+        assert "データ不足" in missing_lines
+    print("self-test: track_record(バックテスト博士) OK")
 
 
 def _test_previous_52w_high_line_retest() -> None:
