@@ -33,6 +33,8 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
+from jptime import jst_today
+
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 DEFAULT_SCREENING = PROJECT_ROOT / "outputs" / "screening_result.csv"
@@ -102,6 +104,7 @@ ALIASES: Dict[str, List[str]] = {
     "rank":        ["rank", "judge", "grade", "ランク", "判定"],
     "price":       ["current_price", "current", "close", "today_close", "現在値", "終値"],
     "vol_ratio":   ["volume_ratio_5d_20d", "volume_ratio", "vol_ratio", "出来高倍率"],
+    # 52週高値基準を最優先にする（dist_to_high_pct は分類窓の高値距離で別物のため後ろ）
     "dist_high":   ["dist_52w_high_pct", "dist_to_52w_high_pct", "dist_to_high_pct",
                     "52週高値差"],
     "lot_value":   ["lot_value_100", "lot_value", "100株購入額"],
@@ -306,8 +309,8 @@ def _bdays_until(date_str: str, today: Optional[date] = None) -> Optional[int]:
             from datetime import datetime as _dt
             parsed = _dt.strptime(d, fmt).date()
             if fmt == "%m/%d":
-                parsed = parsed.replace(year=(today or date.today()).year)
-            base = today or date.today()
+                parsed = parsed.replace(year=(today or jst_today()).year)
+            base = today or jst_today()
             n = int(np.busday_count(base, parsed))
             return n
         except ValueError:
@@ -625,7 +628,7 @@ def validate_decision_consistency(screening: pd.DataFrame, decisions: pd.DataFra
 # ─────────────────────────────────────────
 def build_report(decisions: pd.DataFrame, regime: str = "NORMAL",
                  today: Optional[date] = None) -> str:
-    today = today or date.today()
+    today = today or jst_today()
     n_buy = int((decisions["decision"] == "BUY").sum()) if not decisions.empty else 0
     n_watch = int((decisions["decision"] == "WATCH").sum()) if not decisions.empty else 0
     n_skip = int((decisions["decision"] == "SKIP").sum()) if not decisions.empty else 0

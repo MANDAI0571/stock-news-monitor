@@ -3,10 +3,11 @@ from __future__ import annotations
 import argparse
 import os
 import time
-from datetime import date
 from pathlib import Path
 
 import pandas as pd
+
+from jptime import jst_today
 
 from scanner.indicators import calculate_indicators, detect_ma_touches, passes_base_filters
 from scanner.openwork import add_openwork_scores
@@ -20,23 +21,6 @@ from scanner.universe import UniverseConfig, load_jpx_listed
 PROJECT_ROOT = Path(__file__).resolve().parent
 CAPITAL = 3_000_000
 
-
-def _quick_limit_from_env() -> int | None:
-    quick = os.environ.get("QUICK_MODE", "").lower() in {"1", "true", "yes", "on"}
-    max_symbols = os.environ.get("MAX_SYMBOLS", "").strip()
-    if max_symbols:
-        try:
-            return max(1, int(max_symbols))
-        except ValueError:
-            print(f"WARNING invalid MAX_SYMBOLS={max_symbols}; ignored", flush=True)
-    return 30 if quick else None
-
-
-def _write_latest_screening_copy(result: pd.DataFrame, output_dir: str | Path) -> Path:
-    path = Path(output_dir) / "screening_result.csv"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    result.to_csv(path, index=False, encoding="utf-8-sig")
-    return path
 
 # 結果CSV / コンソール表示で使う列。
 DISPLAY_COLUMNS = [
@@ -178,7 +162,7 @@ def run_screening(
     highs_rows: list[dict[str, object]] = []
     retest_rows: list[dict[str, object]] = []
     total = len(universe)
-    today = date.today()
+    today = jst_today()
 
     loop_started = time.perf_counter()
     for idx, stock in enumerate(universe.itertuples(index=False), start=1):

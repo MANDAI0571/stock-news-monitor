@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from jptime import jst_today
 from scanner.highs import build_high_sections_markdown
 from scanner.openwork import format_openwork_score
 
@@ -34,7 +35,7 @@ def load_gmail_config() -> GmailConfig | None:
 
 
 def build_subject(today: date | None = None) -> str:
-    today = today or date.today()
+    today = today or jst_today()
     return f"【DUKEシステム】本日のS/A/B候補 {today.isoformat()}"
 
 

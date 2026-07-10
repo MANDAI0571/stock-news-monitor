@@ -20,6 +20,19 @@ REQUIRED_FILES = [
     "note_daily.md",
     "note_title.txt",
     "note_daily.html",
+    # 4本のNote下書き（52週高値 / 押し目MAタッチ / 300万ChatGPT / 300万Claude）は必須
+    "note_chatgpt.md",
+    "note_claude.md",
+    "note_pullback.md",
+    "note_highs.md",
+    "note_chatgpt.html",
+    "note_claude.html",
+    "note_pullback.html",
+    "note_highs.html",
+    "note_chatgpt_title.txt",
+    "note_claude_title.txt",
+    "note_pullback_title.txt",
+    "note_highs_title.txt",
     "note_body.md",
     "note_preview.html",
     "eyecatch.png",
@@ -858,6 +871,13 @@ def main() -> None:
     parser.add_argument("--output-dir", default=str(OUTPUT_DIR))
     args = parser.parse_args()
     build_note_assets(args.output_dir)
+    # 編集長: X告知文の自動生成（best-effort。失敗しても下書き生成は止めない）
+    try:
+        from sns_promo import build_sns_posts
+
+        build_sns_posts(Path(args.output_dir))
+    except Exception as exc:  # noqa: BLE001
+        print(f"sns_promo_failed={exc}")
 
 
 if __name__ == "__main__":

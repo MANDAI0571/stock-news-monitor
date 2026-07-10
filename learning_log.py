@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
-from datetime import date
 from pathlib import Path
 
 import pandas as pd
+
+from jptime import jst_today
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -109,7 +110,7 @@ def infer_strategy(row: pd.Series) -> str:
 
 
 def build_learning_rows(screening: pd.DataFrame, run_date: str | None = None) -> pd.DataFrame:
-    run_date = run_date or date.today().isoformat()
+    run_date = run_date or jst_today().isoformat()
     rows: list[dict[str, object]] = []
     if screening is None or screening.empty:
         return pd.DataFrame(columns=LEARNING_COLUMNS)
@@ -157,7 +158,7 @@ def append_learning_candidates(
 ) -> LearningLogResult:
     screening_path = Path(screening_path)
     output_path = Path(output_path)
-    run_date = run_date or date.today().isoformat()
+    run_date = run_date or jst_today().isoformat()
 
     if screening_path.exists():
         screening = pd.read_csv(screening_path, dtype={"code": str})
@@ -179,7 +180,12 @@ def append_learning_candidates(
             new_rows[col] = ""
 
     before_keys = set(zip(existing["date"].astype(str), existing["code"].astype(str))) if not existing.empty else set()
-    combined = pd.concat([existing[LEARNING_COLUMNS], new_rows[LEARNING_COLUMNS]], ignore_index=True)
+    # 空DataFrameを含むconcatはpandasのFutureWarning（将来dtype挙動が変わる）を出すため除外する。
+    frames = [df[LEARNING_COLUMNS] for df in (existing, new_rows) if not df.empty]
+    if frames:
+        combined = pd.concat(frames, ignore_index=True)
+    else:
+        combined = pd.DataFrame(columns=LEARNING_COLUMNS)
     combined["code"] = combined["code"].astype(str).map(_code)
     combined["date"] = combined["date"].astype(str)
     combined = combined.drop_duplicates(subset=["date", "code"], keep="first")

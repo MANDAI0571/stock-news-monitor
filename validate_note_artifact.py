@@ -23,7 +23,37 @@ REQUIRED_FILES = [
     "discipline_result.csv",
     "paper_portfolio_decision.csv",
     "note_cloud_artifact_manifest.json",
+    "note_drafts_manifest.json",
+    "note_chatgpt.md",
+    "note_claude.md",
+    "note_pullback.md",
+    "note_highs.md",
 ]
+
+# 正しい4本（この定義は変更しない）
+NOTE4_KEYS = ("highs", "pullback", "chatgpt", "claude")
+NOTE4_LABELS = {
+    "highs": "52週新高値到達・接近",
+    "pullback": "新高値後の押し目（25MA・200MAタッチ）",
+    "chatgpt": "300万円運用 ChatGPT",
+    "claude": "300万円運用 Claude",
+}
+VALID_REGIMES = ("NORMAL", "CAUTION", "RISK", "STOP")
+
+# 4本それぞれの「最低限の記事内容」チェック（存在するだけではPASSにしない）
+# 300万円運用（chatgpt/claude）に必須のセクション見出し
+NOTE4_PORTFOLIO_SECTIONS = (
+    "## 保有銘柄・CASH判断",
+    "## 売買理由",
+    "## 評価額・現金比率",
+    "## 損益（未実現損益）",
+    "## 次営業日の方針",
+)
+# highs/pullback: 候補がある場合に必須の「理由」マーカー（従来表の根拠列）
+NOTE4_REASON_MARKERS = {
+    "highs": ("高値乖離%",),
+    "pullback": ("新高値ライン", "MA25", "MA200", "MA240"),
+}
 
 MARKET_INDICATORS = [
     ("nikkei", "日経平均"),
@@ -76,6 +106,7 @@ class ArtifactValidation:
     selected_symbols: list[str] = field(default_factory=list)
     market_status: dict[str, str] = field(default_factory=dict)
     preview_images: list[str] = field(default_factory=list)
+    note4_status: dict[str, str] = field(default_factory=dict)
 
     def fail(self, item: str) -> None:
         self.valid = False
@@ -298,6 +329,84 @@ def _validate_warren_summary(result: ArtifactValidation, summary: dict[str, Any]
             result.fail_warren(f"{name} がArtifactにありません")
 
 
+def _md_section_body(text: str, header: str) -> str:
+    """header見出しから次の「## 」見出しまでの本文を返す（見出し行は含まない）。"""
+    body: list[str] = []
+    in_section = False
+    for line in text.splitlines():
+        if line.strip() == header:
+            in_section = True
+            continue
+        if in_section and line.startswith("## "):
+            break
+        if in_section:
+            body.append(line)
+    return "\n".join(body)
+
+
+def _note4_content_issue(key: str, text: str) -> str | None:
+    """4本それぞれの最低限の記事内容を確認。問題があれば理由文字列を返す（None=OK）。"""
+    if key in ("chatgpt", "claude"):
+        # 300万円運用: 保有/CASH判断・売買理由・評価額/現金比率・損益・次営業日方針の5点
+        for header in NOTE4_PORTFOLIO_SECTIONS:
+            if header not in text:
+                return f"必須セクション欠落: {header[3:]}"
+            if not _md_section_body(text, header).strip():
+                return f"セクション空欄: {header[3:]}"
+        return None
+    # highs / pullback: 候補銘柄一覧＋理由、無い場合は「該当なし」「データ不足」の明記が必須
+    has_candidates = "### カード型候補" in text
+    if has_candidates:
+        markers = NOTE4_REASON_MARKERS[key]
+        if not any(m in text for m in markers):
+            return "候補はあるが理由列（" + "/".join(markers) + "）がありません"
+        table_rows = sum(
+            1 for line in text.splitlines()
+            if line.startswith("|") and "---" not in line and "コード" not in line
+        )
+        if table_rows == 0:
+            return "候補カードはあるが候補銘柄一覧（表）が空です"
+        return None
+    if "該当なし" not in text and "データ不足" not in text:
+        return "候補銘柄一覧が無く、「該当なし」「データ不足」の明記もありません"
+    return None
+
+
+def _validate_note4(result: ArtifactValidation) -> None:
+    """正しい4本（highs/pullback/chatgpt/claude）が生成され、各冒頭に市場ステータスが入っているか。"""
+    manifest_path = result.artifact_dir / "note_drafts_manifest.json"
+    manifest_keys: set[str] = set()
+    if manifest_path.exists():
+        try:
+            entries = json.loads(_read_text(manifest_path))
+            manifest_keys = {str(e.get("key")) for e in entries if isinstance(e, dict)}
+        except (json.JSONDecodeError, TypeError):
+            result.fail("note_drafts_manifest.json: JSONとして読めません")
+    for key in NOTE4_KEYS:
+        label = NOTE4_LABELS[key]
+        if manifest_path.exists() and key not in manifest_keys:
+            result.fail(f"note_drafts_manifest.json: {label}（{key}）がありません")
+        md_path = result.artifact_dir / f"note_{key}.md"
+        if not md_path.exists() or md_path.stat().st_size == 0:
+            result.fail(f"note_{key}.md: {label} の下書きがありません（4本必須）")
+            result.note4_status[label] = "未生成"
+            continue
+        text = _read_text(md_path)
+        if "## 市場ステータス" not in text:
+            result.fail(f"note_{key}.md: 冒頭の市場ステータスがありません")
+            result.note4_status[label] = "市場ステータス欠落"
+        elif not any(f"**{v}**" in text for v in VALID_REGIMES):
+            result.fail(f"note_{key}.md: 市場ステータスが空欄です（NORMAL/CAUTION/RISK/STOPのいずれも無し）")
+            result.note4_status[label] = "市場ステータス空欄"
+        else:
+            issue = _note4_content_issue(key, text)
+            if issue:
+                result.fail(f"note_{key}.md: {issue}")
+                result.note4_status[label] = f"内容不足（{issue}）"
+            else:
+                result.note4_status[label] = "OK"
+
+
 def _int_value(value: Any) -> int | None:
     try:
         return int(value)
@@ -308,6 +417,7 @@ def _int_value(value: Any) -> int | None:
 def validate_artifact(artifact_dir: str | Path) -> ArtifactValidation:
     result = ArtifactValidation(Path(artifact_dir))
     _validate_files(result)
+    _validate_note4(result)
 
     body_path = result.artifact_dir / "note_body.md"
     if body_path.exists():
@@ -351,8 +461,14 @@ def _summary_lines(result: ArtifactValidation) -> list[str]:
         f"- 欠けている項目: {', '.join(result.missing_items) if result.missing_items else 'なし'}",
         f"- ウォーレン欠け項目: {', '.join(result.warren_missing_items) if result.warren_missing_items else 'なし'}",
         "",
-        "### 市場指標の取得状況",
+        "### 4本下書きの状態",
     ]
+    if result.note4_status:
+        for label, status in result.note4_status.items():
+            lines.append(f"- {label}: {status}")
+    else:
+        lines.append("- 未検査")
+    lines.extend(["", "### 市場指標の取得状況"])
     if result.market_status:
         for label, status in result.market_status.items():
             lines.append(f"- {label}: {status}")

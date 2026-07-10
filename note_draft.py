@@ -466,6 +466,49 @@ NOTE4_TITLES = {
     "highs": "52週新高値タッチ・接近銘柄｜本日の高値更新候補",
 }
 NOTE4_MANIFEST_PATH = OUTPUT_DIR / "note_drafts_manifest.json"
+NOTE4_VALID_REGIMES = ("NORMAL", "CAUTION", "RISK", "STOP")
+
+
+def _market_status_block() -> list[str]:
+    """4本すべての冒頭に入れる市場ステータス。空欄では絶対に返さない。
+
+    優先1: outputs/market_snapshot.json（fetch_market.py が regime + 指標判定を書く）
+    優先2: market_regime.fetch_regime()（raw regime.txt → ローカル regime.txt → 安全側STOP）
+    """
+    regime_value = ""
+    source = ""
+    note = ""
+    indicator_regime = ""
+    snap = OUTPUT_DIR / "market_snapshot.json"
+    if snap.exists():
+        try:
+            data = json.loads(snap.read_text(encoding="utf-8"))
+            regime_value = str(data.get("regime") or "").strip().upper()
+            source = str(data.get("regime_source") or data.get("source") or "market_snapshot.json")
+            note = str(data.get("regime_note") or data.get("note") or "").strip()
+            indicator_regime = str(data.get("indicator_regime") or "").strip().upper()
+        except (json.JSONDecodeError, OSError):
+            pass
+    if regime_value not in NOTE4_VALID_REGIMES:
+        from market_regime import fetch_regime
+
+        regime = fetch_regime()
+        regime_value, source, note = regime.value, regime.source, regime.note
+    lines = ["## 市場ステータス", "", f"- 本日の地合い: **{regime_value}**"]
+    if indicator_regime in NOTE4_VALID_REGIMES:
+        lines.append(f"- 指標ベース判定: {indicator_regime}")
+    if note:
+        lines.append(f"- 補足: {note}")
+    lines.append(f"- 判定元: {source}")
+    lines.append("")
+    return lines
+
+
+def _insert_market_status(note_markdown: str, status_lines: list[str]) -> str:
+    """タイトル(# ...)の直後に市場ステータスを挿入する。タイトルが無ければ先頭に。"""
+    lines = note_markdown.splitlines()
+    insert_at = 1 if lines and lines[0].startswith("# ") else 0
+    return "\n".join(lines[:insert_at] + [""] + status_lines + lines[insert_at:])
 
 # 各noteの代表銘柄コード（chart_images.SPECS と対応）。
 # チャートPNGは outputs/charts_YYYYMMDD/chart_<key>_<code>.png。
@@ -641,6 +684,53 @@ def _enrich_openwork(df: pd.DataFrame) -> pd.DataFrame:
         return out
 
 
+def _editor_comment(row) -> str:
+    """編集者: 取得済みの事実データだけから読者向けの一言コメントを組み立てる。
+    数値・材料の捏造はしない。使える事実が無ければ空文字を返す。"""
+    parts: list[str] = []
+    vr = _first_value(row, ("volume_ratio_5d_20d", "volume_ratio", "出来高倍率"))
+    if not _is_missing(vr):
+        try:
+            v = float(vr)
+            if v >= 3:
+                parts.append(f"出来高が平常時の{v:.1f}倍に膨らみ、資金が集中")
+            elif v >= 1.5:
+                parts.append(f"出来高{v:.1f}倍と商いを伴う動き")
+        except (TypeError, ValueError):
+            pass
+    dist = _first_value(row, ("dist_to_high_pct", "dist_52w_high_pct", "retest_dist_pct"))
+    if not _is_missing(dist):
+        try:
+            d = abs(float(dist))
+            if d < 0.5:
+                parts.append("52週高値の目前")
+            elif d <= 3:
+                parts.append(f"52週高値まであと{d:.1f}%")
+        except (TypeError, ValueError):
+            pass
+    roe = _first_value(row, ("roe", "ROE"))
+    if not _is_missing(roe):
+        try:
+            r = float(roe)
+            r = r * 100 if r < 1 else r
+            if r >= 15:
+                parts.append(f"ROE{r:.0f}%と資本効率も高い")
+        except (TypeError, ValueError):
+            pass
+    growth = _first_value(row, ("profit_growth", "earnings_growth", "利益成長率"))
+    if not _is_missing(growth):
+        try:
+            g = float(growth)
+            g = g * 100 if abs(g) < 1 else g
+            if g >= 20:
+                parts.append(f"利益成長+{g:.0f}%と業績も追い風")
+        except (TypeError, ValueError):
+            pass
+    if not parts:
+        return ""
+    return "、".join(parts[:3]) + "。"
+
+
 def build_stock_cards(df: pd.DataFrame, max_rows: int | None = None) -> list[str]:
     """銘柄をnote向けカード型紹介にする。取得できない項目は未取得で続行。"""
     if df.empty:
@@ -682,8 +772,11 @@ def build_stock_cards(df: pd.DataFrame, max_rows: int | None = None) -> list[str
             f"👥 OpenWork評価: {openwork if openwork != '未取得' else '未取得'}",
             f"🏢 時価総額 {_fmt_market_cap(market_cap)} / セクター: {safe_text(sector)}",
             f"[📈 チャートを見る]({_chart_url(code)})",
-            "",
         ])
+        comment = _editor_comment(row)
+        if comment:
+            lines.append(f"💬 {comment}")
+        lines.append("")
     return lines
 
 
@@ -711,6 +804,7 @@ def build_chatgpt_note(discipline: pd.DataFrame, screening: pd.DataFrame, source
     lines.append("")
     lines.extend(summarize_discipline(discipline))
     lines.append("")
+    lines.extend(_portfolio_status_block(discipline))
     buys = discipline[discipline.get("action", pd.Series(dtype=str)).astype(str).str.upper() == "BUY"] if not discipline.empty else discipline
     lines.extend(["## 300万円運用BUY候補カード", ""])
     lines.extend(build_stock_cards(buys, None))
@@ -741,6 +835,9 @@ def build_claude_note(screening: pd.DataFrame, discipline: pd.DataFrame, backtes
         card_lines = ["", "## Claude候補TOP10カード", ""]
         card_lines.extend(build_stock_cards(top_buy_candidates(screening, 10), 10))
         out_lines[1:1] = card_lines
+    if not any(line.startswith(PORTFOLIO_SECTION_HOLDINGS) for line in out_lines):
+        out_lines.append("")
+        out_lines.extend(_portfolio_status_block(discipline))
     return "\n".join(out_lines)
 
 
@@ -772,19 +869,145 @@ def _top10_block(screening: pd.DataFrame) -> list[str]:
     return lines
 
 
+PORTFOLIO_CAPITAL = 3_000_000  # paper_portfolio_discipline.CAPITAL と同値（表示用）
+
+# 品質ゲート（validate_note_artifact.py）が確認する必須セクション見出し
+PORTFOLIO_SECTION_HOLDINGS = "## 保有銘柄・CASH判断"
+PORTFOLIO_SECTION_REASONS = "## 売買理由"
+PORTFOLIO_SECTION_VALUATION = "## 評価額・現金比率"
+PORTFOLIO_SECTION_PNL = "## 損益（未実現損益）"
+PORTFOLIO_SECTION_NEXT_DAY = "## 次営業日の方針"
+
+
+def _portfolio_status_block(discipline: pd.DataFrame) -> list[str]:
+    """300万円運用の運用状況セクション（ChatGPT版・Claude版の両方に共通で入れる事実データ）。
+    discipline CSVから機械的に作れる事実のみ記載し、無いものは「データ不足」と明記する。"""
+    lines: list[str] = []
+    empty = discipline is None or discipline.empty
+    buys = (
+        discipline[discipline.get("action", pd.Series(dtype=str)).astype(str).str.upper() == "BUY"]
+        if not empty else pd.DataFrame()
+    )
+    cashes = (
+        discipline[discipline.get("action", pd.Series(dtype=str)).astype(str).str.upper() == "CASH"]
+        if not empty else pd.DataFrame()
+    )
+
+    # ① 保有銘柄・CASH判断
+    lines.extend([PORTFOLIO_SECTION_HOLDINGS, ""])
+    if empty:
+        lines.append("- データ不足：discipline CSVが未生成または空のため、保有/CASH判断を表示できません。")
+    elif buys.empty:
+        lines.append(f"- 本日は新規買いなし → CASH判断（現金維持 / CASH枠 {len(cashes)}件）")
+    else:
+        for _, row in buys.iterrows():
+            lines.append(
+                f"- 枠{_val(row,'slot')}: {_val(row,'code')} {_val(row,'name')} "
+                f"{_val(row,'shares')}株 @ {_val(row,'entry_price')}円（投資額 {_val(row,'position_value')}円）"
+            )
+        if not cashes.empty:
+            lines.append(f"- 残り {len(cashes)}枠はCASH（現金）")
+    lines.append("")
+
+    # ② 売買理由
+    lines.extend([PORTFOLIO_SECTION_REASONS, ""])
+    if empty:
+        lines.append("- データ不足：discipline CSVが未生成のため、売買理由を表示できません。")
+    else:
+        wrote = False
+        for _, row in buys.iterrows():
+            rule = _val(row, "rule")
+            if rule and rule != "未取得":
+                lines.append(f"- BUY {_val(row,'code')} {_val(row,'name')}: {rule}")
+                wrote = True
+        cash_reasons = [
+            _val(row, "cash_reason") for _, row in cashes.iterrows()
+            if _val(row, "cash_reason") not in ("", "未取得")
+        ]
+        for reason in dict.fromkeys(cash_reasons):  # 重複除去・順序維持
+            lines.append(f"- CASH: {reason}")
+            wrote = True
+        if not wrote:
+            lines.append("- データ不足：rule / cash_reason 列が未出力のため、売買理由を表示できません。")
+    lines.append("")
+
+    # ③ 評価額・現金比率
+    lines.extend([PORTFOLIO_SECTION_VALUATION, ""])
+    invested = None
+    if not empty and "position_value" in discipline.columns:
+        invested = int(pd.to_numeric(discipline["position_value"], errors="coerce").fillna(0).sum())
+    if invested is None:
+        lines.append("- データ不足：position_value 列が未出力のため、評価額・現金比率を算出できません。")
+    else:
+        cash = PORTFOLIO_CAPITAL - invested
+        cash_pct = cash / PORTFOLIO_CAPITAL * 100
+        lines.append(f"- 運用資金: {PORTFOLIO_CAPITAL:,}円")
+        lines.append(f"- 投資額合計（取得想定）: {invested:,}円")
+        lines.append(f"- 現金: {cash:,}円（現金比率 {cash_pct:.1f}%）")
+        lines.append(f"- 想定評価額: {PORTFOLIO_CAPITAL:,}円（当日取得想定のため取得額ベース）")
+    lines.append("")
+
+    # ④ 損益（未実現損益）
+    lines.extend([PORTFOLIO_SECTION_PNL, ""])
+    pnl_col = next((c for c in ("unrealized_pnl", "pnl", "profit_loss") if not empty and c in discipline.columns), None)
+    if pnl_col:
+        pnl = pd.to_numeric(discipline[pnl_col], errors="coerce").fillna(0).sum()
+        lines.append(f"- 未実現損益合計: {pnl:+,.0f}円")
+    elif not empty and not buys.empty:
+        lines.append("- 未実現損益: 0円（本日取得想定＝エントリー直後のため）")
+        lines.append("- データ不足：現値ベースの未実現損益列（unrealized_pnl）は本CSVに未出力です。翌日以降はMac側の検証で更新されます。")
+    else:
+        lines.append("- 未実現損益: 0円（保有なし・現金のみ）")
+    lines.append("")
+
+    # ⑤ 次営業日の方針（paper_portfolio_discipline.py の規律ルールをそのまま記載。新規判断は書かない）
+    lines.extend([PORTFOLIO_SECTION_NEXT_DAY, ""])
+    regime = ""
+    if not empty and "regime" in discipline.columns:
+        vals = discipline["regime"].astype(str).replace("nan", "").tolist()
+        regime = next((v for v in vals if v), "")
+    next_day_policy = {
+        "NORMAL": "地合いNORMAL: 規律どおりSランク上位を最大3銘柄・1枠100万円で買付（損切-7% / 利確+15% / 10営業日タイムアウト）。",
+        "CAUTION": "地合いCAUTION: 新規買いは最大1銘柄に制限。既存保有は損切・利確ルールを継続。",
+        "RISK": "地合いRISK: 新規買い停止・現金維持。既存保有は損切・利確ルールで手仕舞いのみ。",
+        "STOP": "地合いSTOP: 新規買い停止・現金維持。",
+    }
+    if regime in next_day_policy:
+        lines.append(f"- {next_day_policy[regime]}")
+        lines.append("- 翌朝の regime.txt / 市場ステータスが変わった場合はそちらを優先。")
+    else:
+        lines.append("- データ不足：regime 列が未出力のため、次営業日の規律方針を確定できません（安全側＝新規買い見送り）。")
+    lines.append("")
+    return lines
+
+
 def build_pullback_note(pullback: pd.DataFrame, source: Path | None) -> str:
     """③押し目候補。4バケット: 52週新高値リテスト / 25MAタッチ / 200MAタッチ / 240MAタッチ。
     データが無いバケットは「該当なし」。空想は作らない。"""
     today = datetime.now().strftime("%Y-%m-%d")
     lines = [f"# {NOTE4_TITLES['pullback']} {today}", ""]
-    lines.append("52週新高値ブレイク後にラインまで戻った銘柄（リテスト）と、上昇トレンド中の25/200/240日線タッチ銘柄をまとめました。")
-    lines.append("")
 
     def bucket(df: pd.DataFrame, flag: str) -> pd.DataFrame:
         if df.empty or flag not in df.columns:
             return df.iloc[0:0] if not df.empty else df
         mask = df[flag].astype(str).str.lower().isin(["true", "1", "1.0"])
         return df[mask]
+
+    rt_cnt = len(bucket(pullback, "retest_52w"))
+    ma_cnt = len(bucket(pullback, "ma25_touch")) + len(bucket(pullback, "ma200_touch")) + len(bucket(pullback, "ma240_touch"))
+    # 編集者: リード文（事実の件数だけで組み立てる。相場観の捏造はしない）
+    lines.append(
+        f"52週新高値をブレイクした後、ラインまで戻ってきた「リテスト」候補が**{rt_cnt}銘柄**、"
+        f"上昇トレンド（移動平均線が右肩上がり）のまま25/200/240日線にタッチした押し目候補が**{ma_cnt}銘柄**です。"
+    )
+    lines.append(
+        "強い銘柄を高値で追いかけるのではなく、**強い銘柄が休んだところ**を狙うのがこの記事のテーマです。"
+        "移動平均線が上向きのままのタッチだけを拾うので、下落トレンドの「落ちるナイフ」は含みません。"
+    )
+    lines.append("")
+    if source is None or pullback.empty:
+        lines.append("> データ不足：本日の押し目スクリーニング出力（screening_pullback）が未生成または空のため、候補を表示できません。下書きは規定どおり生成しています。")
+        lines.append("")
 
     # ①52週新高値リテスト
     lines.append("## 【52週新高値後リテスト】")
@@ -831,6 +1054,13 @@ def build_pullback_note(pullback: pd.DataFrame, source: Path | None) -> str:
                 )
         lines.append("")
 
+    # 編集者: 締め（読者の次の行動につなげる）
+    lines.append("## おわりに")
+    lines.append("")
+    lines.append("- このリストは毎営業日、**同じ基準で機械的に**抽出しています。裁量で候補を足したり引いたりしません。")
+    lines.append("- どの銘柄が新高値を付けたのかは、姉妹記事「52週新高値」で毎日確認できます。")
+    lines.append("- フォローしておくと毎日の更新を見逃しません。")
+    lines.append("")
     lines.append("## 注意書き")
     lines.append("")
     lines.append("- これは投資助言ではありません。スクリーニング結果（事実）です。")
@@ -842,13 +1072,26 @@ def build_highs_note(highs: pd.DataFrame, source: Path | None) -> str:
     """④52週新高値タッチ・接近。2バケット: 52週新高値 / 52週高値接近。空は「該当なし」。"""
     today = datetime.now().strftime("%Y-%m-%d")
     lines = [f"# {NOTE4_TITLES['highs']} {today}", ""]
-    lines.append("本日の52週新高値更新・接近銘柄です。")
-    lines.append("")
 
     def bucket(df: pd.DataFrame, htype: str) -> pd.DataFrame:
         if df.empty or "high_type" not in df.columns:
             return df.iloc[0:0] if not df.empty else df
         return df[df["high_type"].astype(str) == htype]
+
+    new_cnt = len(bucket(highs, "52W_NEW_HIGH"))
+    near_cnt = len(bucket(highs, "52W_NEAR_HIGH"))
+    # 編集者: リード文（事実の件数だけで組み立てる。相場観の捏造はしない）
+    lines.append(
+        f"本日、52週新高値を更新した銘柄は**{new_cnt}銘柄**、高値まで3%以内に迫った銘柄は**{near_cnt}銘柄**でした。"
+    )
+    lines.append(
+        "52週新高値は「1年分の売り圧力（やれやれ売り）を全部こなした」ことを意味する、最も客観的な強さのサインです。"
+        "この記事では毎営業日、同じ基準で機械的に抽出した銘柄を、出来高・業績データ付きで紹介します。"
+    )
+    lines.append("")
+    if source is None or highs.empty:
+        lines.append("> データ不足：本日の52週高値スクリーニング出力（screening_highs）が未生成または空のため、候補を表示できません。下書きは規定どおり生成しています。")
+        lines.append("")
 
     for htype, title in (("52W_NEW_HIGH", "52週新高値更新"), ("52W_NEAR_HIGH", "52週高値接近（3%以内）")):
         lines.append(f"## 【{title}】")
@@ -876,6 +1119,13 @@ def build_highs_note(highs: pd.DataFrame, source: Path | None) -> str:
                 )
         lines.append("")
 
+    # 編集者: 締め（読者の次の行動につなげる。毎日同じ基準＝この記事の価値）
+    lines.append("## おわりに")
+    lines.append("")
+    lines.append("- このリストは毎営業日、**同じ基準で機械的に**抽出しています。基準がぶれないことがこの記事の価値です。")
+    lines.append("- 新高値銘柄がその後押し目を作ったら、姉妹記事「押し目（25MA・200MAタッチ）」で追跡します。")
+    lines.append("- フォローしておくと毎日の更新を見逃しません。")
+    lines.append("")
     lines.append("## 注意書き")
     lines.append("")
     lines.append("- これは投資助言ではありません。スクリーニング結果（事実）です。")
@@ -923,9 +1173,25 @@ def build_note4(sources: SourceFiles, screening: pd.DataFrame, discipline: pd.Da
         "pullback": build_pullback_note(pullback, pullback_src),
         "highs": build_highs_note(highs, highs_src),
     }
+    # 4本すべての冒頭に市場ステータスを挿入（空欄禁止）
+    status_lines = _market_status_block()
+    notes = {key: _insert_market_status(body, status_lines) for key, body in notes.items()}
     manifest = [write_one_note(key, body, chart_rel_path(key)) for key, body in notes.items()]
     NOTE4_MANIFEST_PATH.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"saved={NOTE4_MANIFEST_PATH}")
+    # 完成条件: 4本すべて生成され、各冒頭に市場ステータスが入っていなければ失敗扱い
+    broken: list[str] = []
+    for key in NOTE4_TITLES:
+        md_path = OUTPUT_DIR / f"note_{key}.md"
+        if not md_path.exists() or md_path.stat().st_size == 0:
+            broken.append(f"note_{key}.md 未生成")
+            continue
+        text = md_path.read_text(encoding="utf-8")
+        if "## 市場ステータス" not in text or not any(f"**{v}**" in text for v in NOTE4_VALID_REGIMES):
+            broken.append(f"note_{key}.md 市場ステータス欠落")
+    if len(manifest) != len(NOTE4_TITLES) or broken:
+        raise RuntimeError(f"note4 generation incomplete: {', '.join(broken) or 'manifest不足'}")
+    print("note4=4本生成OK（各冒頭に市場ステータス入り）")
     return manifest
 
 

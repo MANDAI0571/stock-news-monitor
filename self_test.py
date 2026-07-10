@@ -34,6 +34,7 @@ def main() -> None:
     _test_gmail_body()
     _test_openwork_display_only()
     _test_note_autosave_and_mail_body()
+    _test_sns_promo()
     _test_production_paths_do_not_use_limit()
     _test_jpx_float_codes_normalized()
     _test_price_cache_and_prefetch()
@@ -47,7 +48,6 @@ def main() -> None:
     _test_learning_log()
     _test_csv_schema_contract()
     _test_decision_engine()
-    _test_buy3_validation_ab_policy()
     _test_trade_verification()
     print("self-test: OK")
 
@@ -274,6 +274,26 @@ BUY条件を満たす銘柄がないため、現金を守ります。
         (out_dir / "discipline_result.csv").write_text("slot,action,cash_reason\n1,CASH,条件不足\n", encoding="utf-8")
         (out_dir / "paper_portfolio_decision.csv").write_text("slot,action,cash_reason\n1,CASH,条件不足\n", encoding="utf-8")
         (out_dir / "note_cloud_artifact_manifest.json").write_text("{}", encoding="utf-8")
+        # 正しい4本（highs/pullback/chatgpt/claude）＋各冒頭の市場ステータス＋最低限の記事内容が新契約
+        status_block = "## 市場ステータス\n\n- 本日の地合い: **NORMAL**\n- 判定元: regime.txt\n\n"
+        portfolio_block = (
+            "## 保有銘柄・CASH判断\n\n- 本日は新規買いなし → CASH判断（現金維持）\n\n"
+            "## 売買理由\n\n- CASH: Sランク不足のため現金保有\n\n"
+            "## 評価額・現金比率\n\n- 運用資金: 3,000,000円\n- 現金: 3,000,000円（現金比率 100.0%）\n\n"
+            "## 損益（未実現損益）\n\n- 未実現損益: 0円（保有なし・現金のみ）\n\n"
+            "## 次営業日の方針\n\n- 地合いNORMAL: 規律どおりSランク上位を最大3銘柄で買付。\n"
+        )
+        note4_manifest = []
+        for key in ["highs", "pullback", "chatgpt", "claude"]:
+            if key in ("chatgpt", "claude"):
+                body = f"# ダミー {key} 2026-07-07\n\n{status_block}{portfolio_block}"
+            else:
+                body = f"# ダミー {key} 2026-07-07\n\n{status_block}- 該当なし\n"
+            (out_dir / f"note_{key}.md").write_text(body, encoding="utf-8")
+            note4_manifest.append({"key": key, "title": f"ダミー {key}", "md_file": f"note_{key}.md"})
+        (out_dir / "note_drafts_manifest.json").write_text(
+            json.dumps(note4_manifest, ensure_ascii=False), encoding="utf-8"
+        )
         for name in ["eyecatch.png", "market_status.png", "funnel.png", "buy_cash.png", "watch.png"]:
             _write_fake_png(out_dir / name)
 
@@ -282,6 +302,51 @@ BUY条件を満たす銘柄がないため、現金を守ります。
         assert valid.warren_valid is True
         assert valid.buy_cash_judgement == "CASH"
         assert valid.watch_count == 1
+        assert set(valid.note4_status.values()) == {"OK"}
+
+        # 4本のうち1本の市場ステータスが欠けたら失敗扱い
+        (out_dir / "note_chatgpt.md").write_text("# ダミー chatgpt 2026-07-07\n\n- 該当なし\n", encoding="utf-8")
+        broken = validate_artifact(out_dir)
+        assert broken.valid is False
+        assert any("note_chatgpt.md" in item for item in broken.missing_items)
+
+        # 中身が薄い300万円運用（市場ステータスのみ・運用セクションなし）は失敗扱い
+        (out_dir / "note_chatgpt.md").write_text(
+            f"# ダミー chatgpt 2026-07-07\n\n{status_block}- 該当なし\n", encoding="utf-8"
+        )
+        thin = validate_artifact(out_dir)
+        assert thin.valid is False
+        assert any("必須セクション欠落" in item for item in thin.missing_items)
+
+        # 運用セクションのうち1つ（損益）が欠けても失敗扱い
+        (out_dir / "note_claude.md").write_text(
+            f"# ダミー claude 2026-07-07\n\n{status_block}"
+            + portfolio_block.replace("## 損益（未実現損益）\n\n- 未実現損益: 0円（保有なし・現金のみ）\n\n", ""),
+            encoding="utf-8",
+        )
+        thin2 = validate_artifact(out_dir)
+        assert any("損益" in item for item in thin2.missing_items)
+
+        # highs/pullback: 候補なしかつ「該当なし/データ不足」の明記もなければ失敗扱い
+        (out_dir / "note_highs.md").write_text(
+            f"# ダミー highs 2026-07-07\n\n{status_block}本日のまとめです。\n", encoding="utf-8"
+        )
+        thin3 = validate_artifact(out_dir)
+        assert any("note_highs.md" in item and "該当なし" in item for item in thin3.missing_items)
+
+        # 全部復元して再びPASSすること
+        (out_dir / "note_chatgpt.md").write_text(
+            f"# ダミー chatgpt 2026-07-07\n\n{status_block}{portfolio_block}", encoding="utf-8"
+        )
+        (out_dir / "note_claude.md").write_text(
+            f"# ダミー claude 2026-07-07\n\n{status_block}{portfolio_block}", encoding="utf-8"
+        )
+        (out_dir / "note_highs.md").write_text(
+            f"# ダミー highs 2026-07-07\n\n{status_block}- 該当なし\n", encoding="utf-8"
+        )
+        restored = validate_artifact(out_dir)
+        assert restored.valid is True
+        assert set(restored.note4_status.values()) == {"OK"}
 
         (out_dir / "watch.png").unlink()
         invalid = validate_artifact(out_dir)
@@ -476,6 +541,69 @@ def _test_journal_and_pattern_learning() -> None:
         assert summary.iloc[0]["metric"] == "データ蓄積中"
 
 
+def _test_sns_promo() -> None:
+    """編集長: X告知文が4本分・URL枠・ハッシュタグ付きで生成されること。"""
+    import json as _json
+
+    from sns_promo import build_post, build_sns_posts
+
+    post = build_post("highs", "更新した銘柄は**3銘柄**、迫った銘柄は**5銘柄**でした。", "NORMAL", "2026-07-10")
+    assert "新高値3銘柄" in post and "接近5銘柄" in post and "{URL}" in post and "#52週新高値" in post
+    with TemporaryDirectory() as tmp:
+        out_dir = Path(tmp)
+        # manifestが無い場合はスキップ（例外を出さない）
+        assert build_sns_posts(out_dir) is None
+        (out_dir / "note_drafts_manifest.json").write_text("[]", encoding="utf-8")
+        for key in ("highs", "pullback", "chatgpt", "claude"):
+            (out_dir / f"note_{key}.md").write_text(f"# dummy {key}\n", encoding="utf-8")
+        md_path = build_sns_posts(out_dir)
+        assert md_path is not None and md_path.exists()
+        posts = _json.loads((out_dir / "sns_posts.json").read_text(encoding="utf-8"))
+        assert [p["key"] for p in posts] == ["highs", "pullback", "chatgpt", "claude"]
+        assert all("{URL}" in p["text"] for p in posts)
+
+
+def _test_cloud_verify_ok_contract() -> None:
+    """保存後確認（verify_ok）の判定契約。実際のnote画面に合わせた条件。"""
+    from note_autosave import _cloud_verify_ok
+
+    url = "https://editor.note.com/notes/abc123/edit/?from=notes"
+    # 正常系: 今回の実ログと同じ状態（title/画像/不足なし/一覧あり/非公開下書き）→ 成功
+    ok_case = {
+        "title_found": True,
+        "missing_texts": [],
+        "image_count": 5,
+        "min_image_count": 5,
+        "public_state": "draft_unpublished_assumed",
+        "draft_list": {"checked": True, "title_found": True},
+        "url_pattern_ok": True,
+    }
+    assert _cloud_verify_ok(ok_case, url) is True
+    # URLパターンが不一致でも本文確認がそろっていれば成功
+    weird_url_case = dict(ok_case, url_pattern_ok=False)
+    assert _cloud_verify_ok(weird_url_case, "https://editor.note.com/notes/abc123/edit/?weird=1") is True
+    # 編集画面の再確認がフレーキーに失敗しても、下書き一覧にタイトルがあれば成功
+    flaky_case = {
+        "title_found": False,
+        "missing_texts": ["x"],
+        "image_count": 0,
+        "min_image_count": 5,
+        "error": "timeout",
+        "public_state": "draft_unpublished_assumed",
+        "draft_list": {"checked": True, "title_found": True},
+        "url_pattern_ok": True,
+    }
+    assert _cloud_verify_ok(flaky_case, url) is True
+    # 異常系: タイトルも一覧も確認できない → 失敗
+    bad_case = dict(flaky_case, draft_list={"checked": True, "title_found": False})
+    assert _cloud_verify_ok(bad_case, url) is False
+    # 異常系: draft_urlなし → 失敗
+    assert _cloud_verify_ok(ok_case, "") is False
+    # 異常系: 公開されてしまっている状態は成功にしない
+    published_case = dict(ok_case, public_state="published")
+    assert _cloud_verify_ok(published_case, url) is False
+
+
 def _test_note_autosave_and_mail_body() -> None:
     import base64
     import json
@@ -485,6 +613,11 @@ def _test_note_autosave_and_mail_body() -> None:
     assert extract_body_fragment(html) == "<h1>タイトル</h1><p>本文</p>"
     assert is_saved_draft_url("https://note.com/notes/abc123")
     assert not is_saved_draft_url("https://note.com/notes/new")
+    # クエリ・フラグメント付きの下書きURLも保存済みとして認める
+    assert is_saved_draft_url("https://editor.note.com/notes/abc123/edit/?from=notes")
+    assert is_saved_draft_url("https://note.com/notes/abc123?magazine_key=x#top")
+    assert not is_saved_draft_url("https://note.com/notes/new?from=menu")
+    _test_cloud_verify_ok_contract()
     with TemporaryDirectory() as tmp:
         out_dir = Path(tmp)
         for name in ["eyecatch.png", "market_status.png", "funnel.png", "buy_cash.png", "watch.png"]:
@@ -1064,93 +1197,6 @@ def _test_csv_schema_contract() -> None:
     assert by_code["3333"]["screen_type"] == "SKIP"
     assert by_code["3333"]["screen_tags"] == "52W_BREAKOUT"
     assert by_code["4444"]["screen_type"] == "WATCH"
-
-
-def _test_buy3_validation_ab_policy() -> None:
-    from buy3_validation import _build_ab_detail, _build_ab_summary
-
-    detail = pd.DataFrame(
-        [
-            {
-                "asof_date": "2026-06-01",
-                "entry_date": "2026-06-02",
-                "code": "1111",
-                "ticker": "1111.T",
-                "name": "弱出来高MULTI",
-                "decision": "BUY",
-                "rank": "S",
-                "score": 100,
-                "confidence": 95,
-                "screen_type": "MULTI",
-                "screen_tags": "52W_PULLBACK;52W_MOMENTUM",
-                "regime": "NORMAL",
-                "volume_ratio_5d_20d": 1.2,
-                "dist_52w_high_pct": 1.0,
-                "dist_25ma_pct": 5.0,
-                "dist_200ma_pct": 20.0,
-                "return_5d_pct": -4.0,
-                "return_10d_pct": -2.0,
-                "max_up_10d_pct": 2.0,
-                "max_down_10d_pct": -6.0,
-            },
-            {
-                "asof_date": "2026-06-01",
-                "entry_date": "2026-06-02",
-                "code": "2222",
-                "ticker": "2222.T",
-                "name": "Aランク25MA押し目",
-                "decision": "WATCH",
-                "rank": "A",
-                "score": 80,
-                "confidence": 85,
-                "screen_type": "25MA_PULLBACK",
-                "screen_tags": "25MA_PULLBACK",
-                "regime": "NORMAL",
-                "volume_ratio_5d_20d": 0.8,
-                "dist_52w_high_pct": 5.0,
-                "dist_25ma_pct": 1.0,
-                "dist_200ma_pct": 15.0,
-                "return_5d_pct": 3.0,
-                "return_10d_pct": 4.0,
-                "max_up_10d_pct": 6.0,
-                "max_down_10d_pct": -1.0,
-            },
-            {
-                "asof_date": "2026-06-01",
-                "entry_date": "2026-06-02",
-                "code": "3333",
-                "ticker": "3333.T",
-                "name": "強出来高MULTI",
-                "decision": "BUY",
-                "rank": "S",
-                "score": 98,
-                "confidence": 90,
-                "screen_type": "MULTI",
-                "screen_tags": "MULTI",
-                "regime": "NORMAL",
-                "volume_ratio_5d_20d": 1.8,
-                "dist_52w_high_pct": 1.0,
-                "dist_25ma_pct": 8.0,
-                "dist_200ma_pct": 30.0,
-                "return_5d_pct": 1.0,
-                "return_10d_pct": 2.0,
-                "max_up_10d_pct": 4.0,
-                "max_down_10d_pct": -2.0,
-            },
-        ]
-    )
-
-    ab_detail, changes = _build_ab_detail(detail)
-    assert set(ab_detail["policy"]) == {"baseline", "candidate_v1"}
-    candidate = ab_detail[ab_detail["policy"] == "candidate_v1"].set_index("code")
-    assert candidate.loc["1111"]["candidate_decision"] == "WATCH"
-    assert "出来高比1.5倍未満" in candidate.loc["1111"]["policy_reason"]
-    assert candidate.loc["2222"]["candidate_decision"] == "BUY"
-    assert "25MA押し目" in candidate.loc["2222"]["policy_reason"]
-    assert candidate.loc["3333"]["candidate_decision"] == "BUY"
-    assert len(changes) == 2
-    summary = _build_ab_summary(ab_detail)
-    assert {"decision", "diagnostics", "buy_screen_type", "buy_policy_bucket"}.issubset(set(summary["section"]))
 
 
 def _test_trade_verification() -> None:

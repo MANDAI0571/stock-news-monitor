@@ -34,6 +34,7 @@ from typing import Callable, Dict, List, Optional
 import pandas as pd
 
 from decision_engine import STOP_LOSS_PCT, TAKE_PROFIT_PCT, HOLD_MAX_BDAYS
+from jptime import jst_today
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 DEFAULT_DECISION = PROJECT_ROOT / "outputs" / "decision_result.csv"
@@ -127,7 +128,7 @@ def save_history(df: pd.DataFrame, path: Path = DEFAULT_HISTORY) -> None:
 def record_signals(decision_path: Path = DEFAULT_DECISION,
                    history_path: Path = DEFAULT_HISTORY,
                    run_date: Optional[str] = None) -> Dict[str, int]:
-    run_date = run_date or date.today().isoformat()
+    run_date = run_date or jst_today().isoformat()
     decision_path = Path(decision_path)
     history = load_history(history_path)
 
@@ -136,7 +137,11 @@ def record_signals(decision_path: Path = DEFAULT_DECISION,
         return {"appended": 0, "total": len(history)}
 
     dec = pd.read_csv(decision_path, dtype=str).fillna("")
-    dec = dec[dec.get("decision", "").isin(["BUY", "WATCH"])]
+    if "decision" not in dec.columns:
+        # 列欠落＝スキーマ不整合。クラッシュせず何も記録しない（捏造しない）。
+        save_history(history, history_path)
+        return {"appended": 0, "total": len(history)}
+    dec = dec[dec["decision"].isin(["BUY", "WATCH"])]
 
     existing = set(zip(history["signal_date"].astype(str), history["code"].astype(str)))
     rows: List[Dict[str, object]] = []
@@ -193,7 +198,9 @@ def _default_fetcher(code: str) -> Optional[pd.DataFrame]:
     """yfinance で東証銘柄の日足を取得する（update 時のみネットワークを使う）。"""
     try:
         import yfinance as yf
-        df = yf.Ticker(f"{code}.T").history(period="3mo", auto_adjust=False)
+        # スクリーニング(scanner/prices.py)と同じ auto_adjust=True に統一する。
+        # 分割・配当落ちをまたいでも系列の整合が取れ、検証リターンが歪まない。
+        df = yf.Ticker(f"{code}.T").history(period="3mo", auto_adjust=True)
         if df is None or df.empty:
             return None
         df = df[["Open", "High", "Low", "Close"]].copy()
@@ -247,10 +254,20 @@ def evaluate_signal(signal_date: date, prices: pd.DataFrame) -> Dict[str, object
             # 同日両到達はザラ場の順序が分からないため保守的に損切り扱い
             first_hit = "STOP" if day_stop else "TP"
             exit_date = ts.date().isoformat()
+            day_open = float(row["Open"])
             if first_hit == "STOP":
-                exit_price, exit_return, exit_reason = stop_px, -STOP_LOSS_PCT * 100, "損切り(-7%)"
+                # 寄付きが既に損切りラインを下回るギャップダウンは寄付きで決済したとみなす
+                # （常に-7%固定にすると損失を系統的に過小評価してしまう）。
+                px = day_open if day_open < stop_px else stop_px
+                exit_price = px
+                exit_return = (px / entry_open - 1) * 100
+                exit_reason = "損切り(寄付GD)" if day_open < stop_px else "損切り(-7%)"
             else:
-                exit_price, exit_return, exit_reason = tp_px, TAKE_PROFIT_PCT * 100, "利確(+15%)"
+                # 寄付きが既に利確ラインを上回るギャップアップは寄付きで決済したとみなす。
+                px = day_open if day_open > tp_px else tp_px
+                exit_price = px
+                exit_return = (px / entry_open - 1) * 100
+                exit_reason = "利確(寄付GU)" if day_open > tp_px else "利確(+15%)"
 
     out["stop_hit"] = stop_hit
     out["tp_hit"] = tp_hit
@@ -277,7 +294,7 @@ def update_history(history_path: Path = DEFAULT_HISTORY,
                    fetcher: Optional[PriceFetcher] = None,
                    today: Optional[date] = None) -> Dict[str, int]:
     fetcher = fetcher or _default_fetcher
-    today = today or date.today()
+    today = today or jst_today()
     history = load_history(history_path)
     if history.empty:
         return {"updated": 0, "closed": 0, "open": 0, "pending": 0}
@@ -361,7 +378,7 @@ def _mean_of(sub: pd.DataFrame, col: str, base_col: str = "entry_open") -> str:
 
 def build_performance_report(history: pd.DataFrame,
                              today: Optional[date] = None) -> str:
-    today = today or date.today()
+    today = today or jst_today()
     stats = aggregate(history)
     n_all = len(history) if history is not None else 0
 
