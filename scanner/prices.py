@@ -48,7 +48,9 @@ def _wall_timeout(seconds: int, label: str):
 def _cache_dir(period: str, run_date: date | None = None) -> Path:
     run_date = run_date or date.today()
     safe_period = re.sub(r"[^A-Za-z0-9]+", "_", str(period))
-    return PRICE_CACHE_ROOT / f"{run_date.isoformat()}__{safe_period}"
+    # T-K修正(2026-07-12): "__raw" = 未調整価格(auto_adjust=False)のキャッシュ。
+    # 旧・配当調整済みキャッシュ（サフィックスなし）と混在しないよう名前で分離する。
+    return PRICE_CACHE_ROOT / f"{run_date.isoformat()}__{safe_period}__raw"
 
 
 def _cache_path(ticker: str, period: str) -> Path:
@@ -192,7 +194,11 @@ def prefetch_price_histories(
                 wall_timeout=YFINANCE_WALL_TIMEOUT,
                 period=period,
                 interval="1d",
-                auto_adjust=True,
+                # T-K修正(2026-07-12): カブタン整合のため未調整価格を使う。
+                # 配当調整済み設定（旧実装）は過去の高値を配当分だけ下方修正するため、
+                # 52週高値の「位置」と「距離%」がカブタン（分割調整のみ）とズレていた。
+                # False = 分割調整のみ・配当未調整 ＝ カブタンと同じ基準。
+                auto_adjust=False,
                 progress=False,
                 group_by="ticker",
                 threads=YFINANCE_THREADS,
@@ -236,7 +242,8 @@ def fetch_price_history(ticker: str, period: str = "18mo") -> pd.DataFrame:
         wall_timeout=YFINANCE_WALL_TIMEOUT,
         period=period,
         interval="1d",
-        auto_adjust=True,
+        # T-K修正(2026-07-12): カブタン整合（分割調整のみ・配当未調整）。上のprefetchと同一方針。
+        auto_adjust=False,
         progress=False,
         timeout=YFINANCE_TIMEOUT,
     )
