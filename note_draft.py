@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 from dataclasses import dataclass
@@ -12,7 +13,7 @@ from pathlib import Path
 import pandas as pd
 
 from scanner.highs import build_high_sections_markdown
-from scanner.openwork import add_openwork_scores, format_openwork_score
+from scanner.openwork import add_openwork_scores, format_openwork_score, openwork_cache_status
 from scanner.prices import fetch_next_earnings_date
 
 
@@ -114,15 +115,17 @@ def rank_sort_key(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def fmt_num(value, digits: int = 1) -> str:
-    if pd.isna(value):
+    if _is_missing(value):
         return "未取得"
     if isinstance(value, (int, float)):
+        if not math.isfinite(float(value)):
+            return "未取得"
         return f"{value:.{digits}f}"
     return str(value)
 
 
 def safe_text(value) -> str:
-    if value is None or (isinstance(value, float) and pd.isna(value)):
+    if _is_missing(value):
         return "未取得"
     text = str(value).strip()
     return text if text else "未取得"
@@ -552,13 +555,16 @@ def inject_chart_marker(note_markdown: str, chart_rel: str | None) -> str:
 
 def _val(row, key, digits: int | None = None) -> str:
     value = row.get(key)
-    if value is None or (isinstance(value, float) and pd.isna(value)):
+    if _is_missing(value):
         return "未取得"
     if digits is not None:
         try:
-            return f"{float(value):.{digits}f}"
+            number = float(value)
+            if not math.isfinite(number):
+                return "未取得"
+            return f"{number:.{digits}f}"
         except (TypeError, ValueError):
-            return str(value)
+            return safe_text(value)
     text = str(value).strip()
     return text if text else "未取得"
 
@@ -573,7 +579,7 @@ def _is_missing(value) -> bool:
     except (TypeError, ValueError):
         pass
     text = str(value).strip()
-    return text == "" or text.lower() in {"nan", "none", "<na>", "nat"}
+    return text == "" or text.lower() in {"nan", "none", "null", "<na>", "nat", "inf", "-inf", "infinity", "-infinity"}
 
 
 def _first_value(row, keys: tuple[str, ...]):
@@ -587,7 +593,10 @@ def _fmt_number(value, digits: int = 1) -> str:
     if _is_missing(value):
         return "未取得"
     try:
-        return f"{float(value):,.{digits}f}"
+        number = float(value)
+        if not math.isfinite(number):
+            return "未取得"
+        return f"{number:,.{digits}f}"
     except (TypeError, ValueError):
         return safe_text(value)
 
@@ -597,6 +606,8 @@ def _fmt_pct(value, digits: int = 1, signed: bool = False) -> str:
         return "未取得"
     try:
         num = float(value)
+        if not math.isfinite(num):
+            return "未取得"
         sign = "+" if signed and num > 0 else ""
         return f"{sign}{num:.{digits}f}%"
     except (TypeError, ValueError):
@@ -607,7 +618,10 @@ def _fmt_yen(value) -> str:
     if _is_missing(value):
         return "未取得"
     try:
-        return f"{float(value):,.1f}円"
+        number = float(value)
+        if not math.isfinite(number):
+            return "未取得"
+        return f"{number:,.1f}円"
     except (TypeError, ValueError):
         return f"{safe_text(value)}円"
 
@@ -617,6 +631,8 @@ def _fmt_oku(value) -> str:
         return "未取得"
     try:
         num = float(value)
+        if not math.isfinite(num):
+            return "未取得"
         oku = num / 100_000_000 if abs(num) >= 10_000 else num
         return f"{oku:,.1f}億円"
     except (TypeError, ValueError):
@@ -667,9 +683,120 @@ def _format_earnings_date(row, code: str) -> str:
         value = _fetch_earnings_safe(code)
     text = "未取得" if _is_missing(value) else safe_text(value)
     days = _business_days_until(text)
+    if days is not None:
+        suffix = f"（あと{days}営業日）"
+        if days <= 7:
+            suffix += " ⚠️ 決算接近"
+        return f"{text}{suffix}"
+    if text == "未取得":
+        return "取得できず（決算までの日数: 取得できず）"
+    return f"{text}（決算までの日数: 取得できず）"
+
+
+def _earnings_days_cell(row, code: str) -> str:
+    value = _first_value(row, ("earnings_date", "next_earnings_date", "決算予定日"))
+    if _is_missing(value):
+        value = _fetch_earnings_safe(code)
+    text = "未取得" if _is_missing(value) else safe_text(value)
+    days = _business_days_until(text)
     if days is not None and days <= 7:
-        return f"{text} ⚠️ 決算接近"
-    return text
+        return f"{days}営業日 ⚠️"
+    if days is not None:
+        return f"{days}営業日"
+    return "取得できず"
+
+
+def _jp_today() -> str:
+    return datetime.now().strftime("%Y年%m月%d日")
+
+
+def _clean_series_text(series: pd.Series) -> pd.Series:
+    return series.astype(str).map(lambda x: "" if _is_missing(x) else x.strip())
+
+
+def _top_counts(df: pd.DataFrame, column: str, limit: int = 3) -> list[tuple[str, int]]:
+    if df.empty or column not in df.columns:
+        return []
+    values = _clean_series_text(df[column])
+    values = values[values != ""]
+    counts = values.value_counts().head(limit)
+    return [(str(idx), int(value)) for idx, value in counts.items()]
+
+
+def _theme_from_row(row) -> str:
+    text = safe_text(_first_value(row, ("sector", "業種", "セクター")))
+    combined = " ".join(
+        safe_text(row.get(key))
+        for key in ("name", "sector", "note_flags", "reason", "screen_tags")
+    )
+    theme_rules = [
+        ("半導体", ("半導体", "電子部品", "電気機器")),
+        ("AI・データセンター", ("AI", "データセンター", "通信", "情報・通信")),
+        ("資源・エネルギー", ("石油", "鉱業", "電力", "ガス", "エネルギー")),
+        ("金融・金利", ("銀行", "証券", "保険", "金融")),
+        ("建設・インフラ", ("建設", "不動産", "インフラ", "電鉄", "倉庫")),
+        ("内需・消費", ("小売", "食品", "サービス", "外食", "卸売")),
+        ("素材・化学", ("化学", "鉄鋼", "非鉄", "金属", "ガラス")),
+    ]
+    for theme, keywords in theme_rules:
+        if any(keyword in combined for keyword in keywords):
+            return theme
+    if text and text != "未取得":
+        return f"{text}関連"
+    return ""
+
+
+def _top_themes(df: pd.DataFrame, limit: int = 3) -> list[tuple[str, int]]:
+    if df.empty:
+        return []
+    themes = [_theme_from_row(row) for _, row in df.iterrows()]
+    clean = [theme for theme in themes if theme]
+    if not clean:
+        return []
+    counts = pd.Series(clean).value_counts().head(limit)
+    return [(str(idx), int(value)) for idx, value in counts.items()]
+
+
+def _format_count_list(items: list[tuple[str, int]], empty: str = "取得できず") -> str:
+    if not items:
+        return empty
+    return "、".join(f"{name} {count}件" for name, count in items)
+
+
+def _market_view_for_highs(highs: pd.DataFrame, new_cnt: int, near_cnt: int) -> list[str]:
+    sectors = _top_counts(highs, "sector", 3)
+    themes = _top_themes(highs, 3)
+    total = new_cnt + near_cnt
+    if new_cnt >= near_cnt and new_cnt > 0:
+        tone = "新高値更新が中心で、強い銘柄へ資金が向かいやすい日です。"
+    elif near_cnt > 0:
+        tone = "新高値目前の接近銘柄が多く、次のブレイク候補を先回りで確認したい日です。"
+    else:
+        tone = "52週高値圏の候補は少なく、無理に追わず次の更新候補を待つ日です。"
+    lead = (
+        f"今日は52週高値圏に入った銘柄が合計**{total}銘柄**あります。"
+        "新高値は強い一方で、急騰過熱やTOB疑いも混ざるため、本文ではフラグ付きで仕分けています。"
+    )
+    return [
+        "## 今日の相場観と注目テーマ",
+        "",
+        f"- 当日の相場観: {tone}",
+        f"- 目立ったセクター: {_format_count_list(sectors)}",
+        f"- 注目テーマ: {_format_count_list(themes)}",
+        f"- 今日の読みどころ: {lead}",
+        "",
+    ]
+
+
+def _openwork_note_text() -> str:
+    status = openwork_cache_status()
+    rows = int(status.get("rows") or 0)
+    updated = safe_text(status.get("updated_at"))
+    if rows <= 0:
+        return "OpenWork評価は月1回更新の保存済みキャッシュを使用します。本日は値が無いため「取得できず」と表示します。"
+    if str(status.get("last_error") or ""):
+        return f"OpenWork評価は月1回更新の保存済みキャッシュを使用します。前回値を保持中です（更新日: {updated}）。"
+    return f"OpenWork評価は月1回更新の保存済みキャッシュを使用します（日次生成ではOpenWorkへアクセスしません / 更新日: {updated} / {rows}件）。"
 
 
 def _enrich_openwork(df: pd.DataFrame) -> pd.DataFrame:
@@ -776,6 +903,66 @@ def build_stock_cards(df: pd.DataFrame, max_rows: int | None = None) -> list[str
         comment = _editor_comment(row)
         if comment:
             lines.append(f"💬 {comment}")
+        lines.append("")
+    return lines
+
+
+def build_highs_stock_cards(df: pd.DataFrame, max_rows: int | None = None) -> list[str]:
+    """52週高値記事専用カード。日次生成は保存済みOpenWorkキャッシュだけを読む。"""
+    if df.empty:
+        return ["- 該当なし"]
+    data = _enrich_openwork(df)
+    if max_rows is not None:
+        data = data.head(max_rows)
+    lines: list[str] = []
+    for _, row in data.iterrows():
+        code = _code_text(row)
+        name = safe_text(row.get("name"))
+        high_type = safe_text(row.get("high_label") or row.get("high_type"))
+        price = _first_value(row, ("current_price", "entry_price", "close", "Close"))
+        high_52w = _first_value(row, ("high_52w", "52w_high", "high_price"))
+        dist = _first_value(row, ("dist_to_high_pct", "dist_52w_high_pct"))
+        high_date = _first_value(row, ("high_date", "52w_high_date"))
+        turnover = _first_value(row, ("turnover_20d", "turnover", "売買代金"))
+        volume_ratio = _first_value(row, ("volume_ratio_5d_20d", "volume_ratio", "出来高倍率"))
+        sector = _first_value(row, ("sector", "業種", "セクター"))
+        flags = safe_text(row.get("note_flags"))
+        openwork = format_openwork_score(row.get("openwork_score"), missing_label="取得できず")
+        earnings = _format_earnings_date(row, code)
+        earnings_days = _earnings_days_cell(row, code)
+        breaks = _first_value(row, ("breaks_20d",))
+        first_break = row.get("first_break_60d")
+        fresh = "初回ブレイク" if _flag_true(first_break) else "連続更新・再接近"
+        risk_notes: list[str] = []
+        if _flag_true(row.get("inago_suspect")):
+            risk_notes.append("イナゴ疑い")
+        if _flag_true(row.get("tob_suspect")):
+            risk_notes.append("TOB疑い")
+        risk_text = " / ".join(risk_notes) if risk_notes else "なし"
+        dist_text = _fmt_pct(dist, 2)
+        if str(high_type) == "52W_NEW_HIGH":
+            high_sentence = "本日52週新高値を更新。"
+        elif not _is_missing(dist):
+            high_sentence = f"52週高値まで{dist_text}に接近。"
+        else:
+            high_sentence = "52週高値圏の候補。"
+
+        lines.extend([
+            f"### {code} {name}",
+            "",
+            f"- 高値区分: {high_type} / {high_sentence}",
+            f"- 現在値: {_fmt_yen(price)} / 52週高値: {_fmt_yen(high_52w)} / 高値乖離: {dist_text}",
+            f"- 高値日: {safe_text(high_date)} / 鮮度: {fresh} / 直近20日更新回数: {_fmt_number(breaks, 0)}",
+            f"- 売買代金: {_fmt_oku(turnover)} / 出来高倍率: {_fmt_number(volume_ratio, 2)}倍",
+            f"- セクター: {safe_text(sector)} / 注目テーマ: {safe_text(_theme_from_row(row))}",
+            f"- 次回四半期決算日: {earnings} / 決算まで: {earnings_days}",
+            f"- OpenWork評価: {openwork}（月1回更新キャッシュ）",
+            f"- 注意フラグ: {risk_text if risk_text != 'なし' else safe_text(flags) if flags != '未取得' else 'なし'}",
+            f"- チャート: {_chart_url(code)}",
+        ])
+        comment = _editor_comment(row)
+        if comment:
+            lines.append(f"- 編集メモ: {comment}")
         lines.append("")
     return lines
 
@@ -1088,8 +1275,8 @@ def _split_flagged_highs(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
 
 def build_highs_note(highs: pd.DataFrame, source: Path | None) -> str:
     """④52週新高値タッチ・接近。2バケット: 52週新高値 / 52週高値接近。空は「該当なし」。"""
-    today = datetime.now().strftime("%Y-%m-%d")
-    lines = [f"# {NOTE4_TITLES['highs']} {today}", ""]
+    today = _jp_today()
+    lines = [f"# {today} 52週新高値 接近・到達銘柄", ""]
 
     def bucket(df: pd.DataFrame, htype: str) -> pd.DataFrame:
         if df.empty or "high_type" not in df.columns:
@@ -1098,20 +1285,23 @@ def build_highs_note(highs: pd.DataFrame, source: Path | None) -> str:
 
     new_cnt = len(bucket(highs, "52W_NEW_HIGH"))
     near_cnt = len(bucket(highs, "52W_NEAR_HIGH"))
-    # 編集者: リード文（事実の件数だけで組み立てる。相場観の捏造はしない）
-    lines.append(
-        f"本日、52週新高値を更新した銘柄は**{new_cnt}銘柄**、高値まで3%以内に迫った銘柄は**{near_cnt}銘柄**でした。"
-    )
-    lines.append(
-        "52週新高値は「1年分の売り圧力（やれやれ売り）を全部こなした」ことを意味する、最も客観的な強さのサインです。"
-        "この記事では毎営業日、同じ基準で機械的に抽出した銘柄を、出来高・業績データ付きで紹介します。"
-    )
-    lines.append("")
+    lines.extend(_market_view_for_highs(highs, new_cnt, near_cnt))
+    lines.extend([
+        "## 本日の抽出結果",
+        "",
+        f"- 52週新高値に到達した銘柄: **{new_cnt}銘柄**",
+        f"- 52週高値まで3%以内に接近した銘柄: **{near_cnt}銘柄**",
+        f"- OpenWork: {_openwork_note_text()}",
+        "",
+        "52週新高値は、過去1年の戻り売りをこなして上に抜けた銘柄を探すための客観的なシグナルです。"
+        "ただし、急騰直後の過熱やTOB価格への張り付きも混ざるため、この記事では到達・接近・注意フラグを分けて確認します。",
+        "",
+    ])
     if source is None or highs.empty:
         lines.append("> データ不足：本日の52週高値スクリーニング出力（screening_highs）が未生成または空のため、候補を表示できません。下書きは規定どおり生成しています。")
         lines.append("")
 
-    for htype, title in (("52W_NEW_HIGH", "52週新高値更新"), ("52W_NEAR_HIGH", "52週高値接近（3%以内）")):
+    for htype, title in (("52W_NEW_HIGH", "52週新高値 到達"), ("52W_NEAR_HIGH", "52週高値 接近（3%以内）")):
         lines.append(f"## 【{title}】")
         lines.append("")
         b = bucket(highs, htype)
@@ -1121,31 +1311,32 @@ def build_highs_note(highs: pd.DataFrame, source: Path | None) -> str:
             clean, flagged = _split_flagged_highs(b)
             if not clean.empty:
                 if htype == "52W_NEW_HIGH":
-                    lines.append("### カード型候補（全件）")
+                    lines.append("### 銘柄紹介（全件）")
                     lines.append("")
-                    lines.extend(build_stock_cards(clean, None))
+                    lines.extend(build_highs_stock_cards(clean, None))
                 else:
-                    lines.append("### カード型候補（上位20件）")
+                    lines.append("### 銘柄紹介（上位20件）")
                     lines.append("")
-                    lines.extend(build_stock_cards(clean, 20))
+                    lines.extend(build_highs_stock_cards(clean, 20))
             if not flagged.empty:
                 lines.append(
                     f"※ イナゴ疑い（急騰過熱）・TOB疑い（高値張り付き）の**{len(flagged)}銘柄**は"
-                    "カード候補から外し、従来表に⚠️付きで参考掲載しています。"
+                    "銘柄紹介から外し、一覧表に⚠️付きで参考掲載しています。"
                 )
                 lines.append("")
-            lines.append("### 従来表")
+            lines.append("### 一覧表")
             lines.append("")
-            lines.append("| コード | 銘柄 | 現在値 | 52週高値 | 高値乖離% | 高値日 | 決算日 | 売買代金 | フラグ |")
-            lines.append("|---|---|---:|---:|---:|---|---|---:|---|")
+            lines.append("| コード | 銘柄 | 現在値 | 52週高値 | 高値乖離% | 高値日 | 次回決算日 | 決算まで | 売買代金 | フラグ |")
+            lines.append("|---|---|---:|---:|---:|---|---|---:|---:|---|")
             for _, row in b.iterrows():
                 flags = _val(row, "note_flags")
                 is_flagged = _flag_true(row.get("inago_suspect")) or _flag_true(row.get("tob_suspect"))
                 flag_cell = f"⚠️ {flags}" if (flags and is_flagged) else flags
+                code = _code_text(row)
                 lines.append(
-                    f"| {_val(row,'code')} | {_val(row,'name')} | {_val(row,'current_price')} | "
+                    f"| {code} | {_val(row,'name')} | {_val(row,'current_price')} | "
                     f"{_val(row,'high_52w')} | {_val(row,'dist_to_high_pct')} | {_val(row,'high_date')} | "
-                    f"{_val(row,'earnings_date')} | {_val(row,'turnover_20d')} | {flag_cell} |"
+                    f"{_val(row,'earnings_date')} | {_earnings_days_cell(row, code)} | {_val(row,'turnover_20d')} | {flag_cell} |"
                 )
         lines.append("")
 

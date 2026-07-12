@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import json
+import re
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -16,7 +17,7 @@ from daily_note_mail import build_mail_body
 from note_autosave import extract_body_fragment, is_saved_draft_url, load_cloud_note_payload, load_storage_state
 from scanner.highs import analyze_high_freshness, build_high_sections_markdown, classify_high_profile, detect_duke_old_high_support, detect_previous_52w_high_line_retest, detect_quality_flags, detect_swing_high_break
 from scanner.indicators import calculate_indicators
-from scanner.openwork import add_openwork_scores, format_openwork_score
+from scanner.openwork import add_openwork_scores, format_openwork_score, openwork_cache_status, save_openwork_scores_cache
 from scanner.scoring import meets_s_technical_gate, meets_strict_s_gate, score_stock
 from scanner.universe import JPX_CACHE_PATH, UniverseConfig, load_jpx_listed, normalize_jpx_listed
 from trade_journal import load_journal, log_entry, log_exit
@@ -510,6 +511,33 @@ def _test_openwork_display_only() -> None:
         assert list(merged["score"]) == [80, 90]
         assert format_openwork_score(merged.loc[0, "openwork_score"]) == "3.78"
         assert format_openwork_score(merged.loc[1, "openwork_score"]) == "未取得"
+        assert format_openwork_score(merged.loc[1, "openwork_score"], missing_label="取得できず") == "取得できず"
+        meta_path = Path(tmp) / "openwork_scores_meta.json"
+        meta_path.write_text(
+            json.dumps({"updated_at": "2026-07-01", "update_month": "2026-07", "last_error": ""}),
+            encoding="utf-8",
+        )
+        cache = openwork_cache_status(score_path, meta_path, today=pd.Timestamp("2026-07-12").date())
+        assert cache["rows"] == 1
+        assert cache["monthly_cache"] is True
+        assert cache["source"] == "saved_cache_only"
+        saved = save_openwork_scores_cache(
+            pd.DataFrame([{"code": "3333", "openwork_score": 4.1}]),
+            score_path,
+            meta_path,
+            today=pd.Timestamp("2026-07-12").date(),
+        )
+        assert saved["rows"] == 1
+        assert "3333" in score_path.read_text(encoding="utf-8")
+        failed = save_openwork_scores_cache(
+            None,
+            score_path,
+            meta_path,
+            error="network unavailable",
+            today=pd.Timestamp("2026-07-13").date(),
+        )
+        assert failed["last_error"] == "network unavailable"
+        assert "3333" in score_path.read_text(encoding="utf-8")  # 失敗時も前回値を保持
         body = build_candidate_body(merged, "NORMAL")
         assert "OpenWork: 3.78" in body
         assert "OpenWork: 未取得" in body
@@ -957,18 +985,35 @@ def _test_kabutan_high_and_quality_flags() -> None:
         [
             {"code": "1111", "name": "健全", "high_type": "52W_NEW_HIGH", "current_price": 1000, "high_52w": 1000,
              "dist_to_high_pct": 0.0, "high_date": "2026-07-10", "turnover_20d": 500_000_000,
+             "volume_ratio_5d_20d": 1.8, "sector": "電気機器",
+             "breaks_20d": 1, "first_break_60d": True,
              "inago_suspect": False, "tob_suspect": False, "note_flags": "初回ブレイク", "earnings_date": "2026-08-08"},
+            {"code": "9999", "name": "接近", "high_type": "52W_NEAR_HIGH", "current_price": "nan", "high_52w": 1300,
+             "dist_to_high_pct": 2.4, "high_date": "2026-07-09", "turnover_20d": 200_000_000,
+             "volume_ratio_5d_20d": "null", "sector": "情報・通信業",
+             "inago_suspect": False, "tob_suspect": False, "note_flags": "", "earnings_date": ""},
             {"code": "2222", "name": "張付", "high_type": "52W_NEW_HIGH", "current_price": 1200, "high_52w": 1200,
              "dist_to_high_pct": 0.0, "high_date": "2026-07-10", "turnover_20d": 300_000_000,
              "inago_suspect": False, "tob_suspect": True, "note_flags": "TOB疑い", "earnings_date": ""},
         ]
     )
     note_text = build_highs_note(highs_df, Path("screening_highs_test.csv"))
+    assert "52週新高値 接近・到達銘柄" in note_text
+    assert "## 今日の相場観と注目テーマ" in note_text
+    assert "目立ったセクター" in note_text
+    assert "注目テーマ" in note_text
+    assert "52週高値まで3%以内に接近した銘柄" in note_text
     assert "決算日" in note_text
+    assert "決算まで" in note_text
     assert "2026-08-08" in note_text
+    assert "あと" in note_text and "営業日" in note_text
+    assert "OpenWork評価" in note_text
+    assert "取得できず" in note_text
+    assert "現在値: 未取得" in note_text
+    assert re.search(r"(?i)(^|[^a-z])(?:nan|none|null)([^a-z]|$)", note_text) is None
     assert "⚠️ TOB疑い" in note_text
-    assert "カード候補から外し" in note_text
-    card_section = note_text.split("### 従来表")[0]
+    assert "銘柄紹介から外し" in note_text
+    card_section = note_text.split("### 一覧表")[0]
     assert "張付" not in card_section  # TOB疑いはカードに出ない
     assert "健全" in note_text
 
