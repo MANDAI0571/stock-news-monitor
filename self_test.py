@@ -54,6 +54,7 @@ def main() -> None:
     _test_swing_high_break_9256_style()
     _test_journal_and_pattern_learning()
     _test_intraday_watchlist()
+    _test_intraday_cloud_workflow_contract()
     _test_learning_log()
     _test_csv_schema_contract()
     _test_decision_engine()
@@ -1459,6 +1460,19 @@ def _test_intraday_watchlist() -> None:
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = value
+
+
+def _test_intraday_cloud_workflow_contract() -> None:
+    """リアルタイム監視はGitHub Actions本番scheduleでGmail送信し、通知済みstateをrun間で引き継ぐ。"""
+    workflow = (Path(__file__).resolve().parent / ".github" / "workflows" / "intraday_high_alert.yml").read_text(encoding="utf-8")
+    assert 'ENABLE_INTRADAY_MAIL: "false"' not in workflow
+    assert "send_mail:" in workflow
+    assert "github.event_name == 'schedule' && 'true'" in workflow
+    assert "actions/cache/restore@v4" in workflow
+    assert "actions/cache/save@v4" in workflow
+    assert "intraday-alert-state-${{ steps.holiday.outputs.jst_date }}" in workflow
+    assert "Check Gmail secrets" in workflow
+    assert "GMAIL_USER secret is missing" in workflow
 
 
 def _test_learning_log() -> None:

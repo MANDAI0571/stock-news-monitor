@@ -23,6 +23,10 @@ on:
         description: "QUICK_MODE時に処理する銘柄数"
         type: string
         default: "30"
+      send_mail:
+        description: "手動実行でもGmailを送る（通常はOFF。本番scheduleは常にON）"
+        type: boolean
+        default: false
   schedule:
     # 前場: 00:00〜02:30 UTC（= 09:00〜11:30 JST）平日のみ、15分ごと
     - cron: "0,15,30,45 0,1 * * 1-5"
@@ -45,7 +49,7 @@ jobs:
     env:
       QUICK_MODE: ${{ github.event_name == 'schedule' && 'false' || (github.event.inputs.quick_mode == 'false' && 'false' || 'true') }}
       MAX_SYMBOLS: ${{ github.event.inputs.max_symbols || '30' }}
-      ENABLE_INTRADAY_MAIL: "false"
+      ENABLE_INTRADAY_MAIL: ${{ github.event_name == 'schedule' && 'true' || (github.event.inputs.send_mail == 'true' && 'true' || 'false') }}
 
     steps:
       - name: Checkout
@@ -65,12 +69,12 @@ jobs:
           pip install jpholiday >/dev/null 2>&1 || true
           python - <<'PY'
           import datetime, os
+          # UTC実行時刻 + 9h = JSTの当日
+          jst = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
+          today = jst.date()
           skip = False
           try:
               import jpholiday
-              # UTC実行時刻 + 9h = JSTの当日
-              jst = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
-              today = jst.date()
               if jpholiday.is_holiday(today):
                   skip = True
                   print(f"jp_holiday={jpholiday.is_holiday_name(today)} date={today} -> skip")
@@ -80,13 +84,42 @@ jobs:
               print(f"holiday_check_skipped={exc} (continue)")
           with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
               fh.write(f"skip={'true' if skip else 'false'}\n")
+              fh.write(f"jst_date={today.strftime('%Y%m%d')}\n")
           PY
+
+      - name: Prepare output dir
+        if: steps.holiday.outputs.skip != 'true'
+        run: mkdir -p outputs
+
+      # 15分ごとの別runでも「同じ銘柄・同じアラート種別は1日1回」を守る。
+      # GitHub Actions cacheはimmutableなので、日付prefixで直近stateを復元し、runごとに新しいkeyで保存する。
+      - name: Restore intraday dedup state
+        if: steps.holiday.outputs.skip != 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: outputs/intraday_alert_state_${{ steps.holiday.outputs.jst_date }}.json
+          key: intraday-alert-state-${{ steps.holiday.outputs.jst_date }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            intraday-alert-state-${{ steps.holiday.outputs.jst_date }}-
 
       - name: Install dependencies
         if: steps.holiday.outputs.skip != 'true'
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+
+      - name: Check Gmail secrets
+        if: steps.holiday.outputs.skip != 'true' && env.ENABLE_INTRADAY_MAIL == 'true'
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+        run: |
+          missing=0
+          [ -n "$GMAIL_USER" ] || { echo "::error::GMAIL_USER secret is missing"; missing=1; }
+          [ -n "$GMAIL_APP_PASSWORD" ] || { echo "::error::GMAIL_APP_PASSWORD secret is missing"; missing=1; }
+          [ -n "$MAIL_TO" ] || { echo "::error::MAIL_TO secret is missing"; missing=1; }
+          exit "$missing"
 
       # 前日引け後の daily-discipline ジョブが上げた screening_result.csv を取得（ジョブ間はFS非共有のため）。
       # 取得できなくても失敗にしない＝ウォッチリストが無ければ intraday は全銘柄にフォールバックする。
@@ -128,6 +161,23 @@ jobs:
             python3 intraday_high_alert.py
           fi
           end=$(date +%s); echo "[TIMER] intraday_high_alert elapsed=$((end-start))s"
+
+      - name: Check intraday state file
+        if: steps.holiday.outputs.skip != 'true'
+        id: intraday_state
+        run: |
+          if [ -f "outputs/intraday_alert_state_${{ steps.holiday.outputs.jst_date }}.json" ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Save intraday dedup state
+        if: steps.holiday.outputs.skip != 'true' && steps.intraday_state.outputs.exists == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: outputs/intraday_alert_state_${{ steps.holiday.outputs.jst_date }}.json
+          key: intraday-alert-state-${{ steps.holiday.outputs.jst_date }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Upload alert outputs
         if: steps.holiday.outputs.skip != 'true'
