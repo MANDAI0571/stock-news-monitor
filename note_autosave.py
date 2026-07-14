@@ -1098,9 +1098,35 @@ def _run_multi(output_dir: Path, entries: list[dict], headless: bool) -> int:
     return ok
 
 
+def should_skip_autosave(event_name: str | None = None, today=None) -> tuple[bool, str]:
+    """T-K修正(2026-07-12): 祝日・休場日の重複下書き防止ガード。
+
+    平日16:30の自動実行（schedule）が祝日・年末年始に走った場合、
+    市場は休場で新しいデータが無いため、下書きを作らずスキップする。
+    - 対象は schedule 実行のみ（手動 workflow_dispatch は常に保存する＝検証用）。
+    - 判定は jptime.is_jpx_business_day（土日・日本の祝日・12/31〜1/3）。
+      休場日＝当日の新しい市場データは存在しないため、重複下書きを作らない。
+    - 営業日は必ず保存する（データが古い場合はvalidator側で検知＝障害に気付けるように）。
+    """
+    from jptime import is_jpx_business_day, jst_today
+
+    event = (event_name if event_name is not None else os.environ.get("GITHUB_EVENT_NAME", "")).strip()
+    if event != "schedule":
+        return False, "手動実行のため保存します"
+    day = today or jst_today()
+    if is_jpx_business_day(day):
+        return False, "JPX営業日のため保存します"
+    return True, f"{day.isoformat()} はJPX休場日（祝日・年末年始・土日）のため、新しい市場データが無く下書き保存をスキップします"
+
+
 def main() -> None:
     args = parse_args()
     output_dir = Path(args.output_dir)
+    skip, reason = should_skip_autosave()
+    print(f"note_autosave_guard={reason}")
+    if skip:
+        print("note_autosave_skipped=holiday_no_new_data")
+        return
     if args.cloud_article:
         save_cloud_note_draft(output_dir, note_url_file=args.note_url_file, headless=args.headless)
     else:

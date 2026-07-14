@@ -1,0 +1,74 @@
+# T-K(2026-07-12): OpenWork手動データの月次キャッシュ反映
+#
+# 【重要】これは「OpenWorkの自動取得」ではありません。
+# 手動で用意したOpenWorkデータ（data/openwork_scores.csv）を、
+# 月次で data/openwork_cache.csv へ反映するワークフローです。
+#
+# このワークフローが実際に行うこと:
+#   1. data/openwork_scores.csv（手動整備）を読み込む
+#   2. 新しい取得日・評価値を data/openwork_cache.csv へ反映する
+#   3. 取得日から30日未満の既存正常値は上書きしない
+#   4. 空欄や異常値（評価1.0〜5.0の範囲外）で既存の正常値を消さない
+#   5. 変更がある場合のみ commit する
+#   6. 外部サイト（OpenWork等）へ自動アクセスしない
+#      （規約遵守のためスクレイパーは意図的に実装していない）
+#
+# 対象企業: 直近60日で記事候補に出た企業 + 既存キャッシュのうち
+# 取得日から30日以上経過した企業のみ。
+# 日次のnote生成はOpenWorkへ一切アクセスせず data/openwork_cache.csv だけを読む。
+#
+# 実行時刻: 毎月1日 9:00 JST（= 毎月1日 0:00 UTC）+ 手動実行（workflow_dispatch）。
+name: OpenWork手動データの月次キャッシュ反映（毎月1日9:00 JST・外部アクセスなし）
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 0 1 * *"
+
+permissions:
+  contents: write
+
+# 同時実行防止（data/ への push 競合を避ける）
+concurrency:
+  group: openwork-cache
+  cancel-in-progress: false
+
+jobs:
+  update-openwork-cache:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas
+
+      # 手動整備の data/openwork_scores.csv をキャッシュへ反映（外部サイトへのアクセスなし）
+      - name: Reflect manual OpenWork data into cache
+        run: python3 openwork_cache.py --update
+
+      - name: Commit cache if changed
+        run: |
+          if [ ! -f data/openwork_cache.csv ]; then
+            echo "openwork_cache: ファイルなし（コミットせず）"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/openwork_cache.csv
+          if git diff --cached --quiet; then
+            echo "openwork_cache: 変更なし（コミットせず）"
+            exit 0
+          fi
+          git commit -m "chore: update openwork cache [skip ci]"
+          git pull --rebase origin "${GITHUB_REF_NAME}" || true
+          git push origin HEAD:"${GITHUB_REF_NAME}"

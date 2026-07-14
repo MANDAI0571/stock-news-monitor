@@ -356,7 +356,8 @@ def _note4_content_issue(key: str, text: str) -> str | None:
         return None
     # highs / pullback: 候補銘柄一覧＋理由、無い場合は「該当なし」「データ不足」の明記が必須
     # 全候補がイナゴ/TOB疑いでカードが無い日でも、従来表があれば「候補あり」として扱う
-    has_candidates = "### カード型候補" in text or "### 従来表" in text
+    # T-K: highs新形式（A/B/C構成）は「### 一覧表」を候補ありの根拠として扱う
+    has_candidates = "### カード型候補" in text or "### 従来表" in text or "### 一覧表" in text
     if has_candidates:
         markers = NOTE4_REASON_MARKERS[key]
         if not any(m in text for m in markers):

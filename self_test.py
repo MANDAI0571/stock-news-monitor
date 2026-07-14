@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import json
-import re
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -17,7 +16,7 @@ from daily_note_mail import build_mail_body
 from note_autosave import extract_body_fragment, is_saved_draft_url, load_cloud_note_payload, load_storage_state
 from scanner.highs import analyze_high_freshness, build_high_sections_markdown, classify_high_profile, detect_duke_old_high_support, detect_previous_52w_high_line_retest, detect_quality_flags, detect_swing_high_break
 from scanner.indicators import calculate_indicators
-from scanner.openwork import add_openwork_scores, format_openwork_score, openwork_cache_status, save_openwork_scores_cache
+from scanner.openwork import add_openwork_scores, format_openwork_score
 from scanner.scoring import meets_s_technical_gate, meets_strict_s_gate, score_stock
 from scanner.universe import JPX_CACHE_PATH, UniverseConfig, load_jpx_listed, normalize_jpx_listed
 from trade_journal import load_journal, log_entry, log_exit
@@ -43,6 +42,12 @@ def main() -> None:
     _test_kabutan_high_and_quality_flags()
     _test_track_record()
     _test_kabutan_check()
+    _test_note_highs_v2()
+    _test_fundamentals_contract()
+    _test_openwork_cache_contract()
+    _test_jpx_business_day_calendar()
+    _test_holiday_target_date_and_skip_guard()
+    _test_openwork_manual_reflection_contract()
     _test_previous_52w_high_line_retest()
     _test_duke_old_high_support()
     _test_9256_limit50_excluded_but_full_universe_included()
@@ -511,33 +516,6 @@ def _test_openwork_display_only() -> None:
         assert list(merged["score"]) == [80, 90]
         assert format_openwork_score(merged.loc[0, "openwork_score"]) == "3.78"
         assert format_openwork_score(merged.loc[1, "openwork_score"]) == "未取得"
-        assert format_openwork_score(merged.loc[1, "openwork_score"], missing_label="取得できず") == "取得できず"
-        meta_path = Path(tmp) / "openwork_scores_meta.json"
-        meta_path.write_text(
-            json.dumps({"updated_at": "2026-07-01", "update_month": "2026-07", "last_error": ""}),
-            encoding="utf-8",
-        )
-        cache = openwork_cache_status(score_path, meta_path, today=pd.Timestamp("2026-07-12").date())
-        assert cache["rows"] == 1
-        assert cache["monthly_cache"] is True
-        assert cache["source"] == "saved_cache_only"
-        saved = save_openwork_scores_cache(
-            pd.DataFrame([{"code": "3333", "openwork_score": 4.1}]),
-            score_path,
-            meta_path,
-            today=pd.Timestamp("2026-07-12").date(),
-        )
-        assert saved["rows"] == 1
-        assert "3333" in score_path.read_text(encoding="utf-8")
-        failed = save_openwork_scores_cache(
-            None,
-            score_path,
-            meta_path,
-            error="network unavailable",
-            today=pd.Timestamp("2026-07-13").date(),
-        )
-        assert failed["last_error"] == "network unavailable"
-        assert "3333" in score_path.read_text(encoding="utf-8")  # 失敗時も前回値を保持
         body = build_candidate_body(merged, "NORMAL")
         assert "OpenWork: 3.78" in body
         assert "OpenWork: 未取得" in body
@@ -985,37 +963,20 @@ def _test_kabutan_high_and_quality_flags() -> None:
         [
             {"code": "1111", "name": "健全", "high_type": "52W_NEW_HIGH", "current_price": 1000, "high_52w": 1000,
              "dist_to_high_pct": 0.0, "high_date": "2026-07-10", "turnover_20d": 500_000_000,
-             "volume_ratio_5d_20d": 1.8, "sector": "電気機器",
-             "breaks_20d": 1, "first_break_60d": True,
              "inago_suspect": False, "tob_suspect": False, "note_flags": "初回ブレイク", "earnings_date": "2026-08-08"},
-            {"code": "9999", "name": "接近", "high_type": "52W_NEAR_HIGH", "current_price": "nan", "high_52w": 1300,
-             "dist_to_high_pct": 2.4, "high_date": "2026-07-09", "turnover_20d": 200_000_000,
-             "volume_ratio_5d_20d": "null", "sector": "情報・通信業",
-             "inago_suspect": False, "tob_suspect": False, "note_flags": "", "earnings_date": ""},
             {"code": "2222", "name": "張付", "high_type": "52W_NEW_HIGH", "current_price": 1200, "high_52w": 1200,
              "dist_to_high_pct": 0.0, "high_date": "2026-07-10", "turnover_20d": 300_000_000,
              "inago_suspect": False, "tob_suspect": True, "note_flags": "TOB疑い", "earnings_date": ""},
         ]
     )
     note_text = build_highs_note(highs_df, Path("screening_highs_test.csv"))
-    assert "52週新高値 接近・到達銘柄" in note_text
-    assert "## 今日の相場観と注目テーマ" in note_text
-    assert "目立ったセクター" in note_text
-    assert "注目テーマ" in note_text
-    assert "52週高値まで3%以内に接近した銘柄" in note_text
-    assert "決算日" in note_text
-    assert "決算まで" in note_text
-    assert "2026-08-08" in note_text
-    assert "あと" in note_text and "営業日" in note_text
-    assert "OpenWork評価" in note_text
-    assert "取得できず" in note_text
-    assert "現在値: 未取得" in note_text
-    assert re.search(r"(?i)(^|[^a-z])(?:nan|none|null)([^a-z]|$)", note_text) is None
-    assert "⚠️ TOB疑い" in note_text
-    assert "銘柄紹介から外し" in note_text
-    card_section = note_text.split("### 一覧表")[0]
-    assert "張付" not in card_section  # TOB疑いはカードに出ない
-    assert "健全" in note_text
+    # T-K新形式: 到達(A)/接近(B)/参考掲載(C)。TOB疑いはCへ、決算日は表とカウントダウンで出る。
+    assert "2026-08-08" in note_text or "2026年8月8日" in note_text
+    assert "TOB疑い" in note_text
+    assert "参考掲載" in note_text
+    main_section = note_text.split("## 【C】")[0]
+    assert "張付" not in main_section  # TOB疑いはA/B本体に出ない
+    assert "健全" in main_section
 
 
 def _test_track_record() -> None:
@@ -1177,6 +1138,183 @@ def _test_kabutan_check() -> None:
     finally:
         kabutan_check.fetch_price_history = original
     print("self-test: kabutan_check(カブタン照合) OK")
+
+
+def _test_note_highs_v2() -> None:
+    """T-K(2026-07-12): note1本目（52週新高値 接近・到達）新形式の契約テスト。通信なし。"""
+    import pandas as pd
+
+    from note_draft import build_highs_note
+
+    rows = [
+        {"code": "1111", "ticker": "1111.T", "name": "到達テスト", "sector": "電気機器",
+         "high_type": "52W_NEW_HIGH", "current_price": 1500.0, "prev_close": 1450.0, "change_pct": 3.45,
+         "today_high": 1520.0, "high_price": 1490.0, "high_52w": 1490.0, "dist_to_high_pct": 0.0,
+         "high_date": "2026-07-10", "turnover_20d": 2_500_000_000, "volume_ratio_today": 3.2,
+         "intraday_range_pct": 4.1, "breaks_20d": 1, "first_break_60d": True,
+         "inago_suspect": False, "tob_suspect": False, "data_anomaly": False, "anomaly_note": "",
+         "note_flags": "初回ブレイク", "earnings_date": "2026-07-14", "data_date": "2026-07-10",
+         "per_actual": 18.2, "pbr": 2.1, "roe_pct": 12.4, "sales_growth_pct": 12.3, "market_cap_oku": 3500},
+        {"code": "2222", "ticker": "2222.T", "name": "接近テスト", "sector": "サービス業",
+         "high_type": "52W_NEAR_HIGH", "current_price": 980.0, "change_pct": 1.03, "high_price": 1000.0,
+         "dist_to_high_pct": 2.0, "turnover_20d": 300_000_000, "breaks_20d": 0, "first_break_60d": False,
+         "inago_suspect": False, "tob_suspect": False, "data_anomaly": False, "anomaly_note": "",
+         "note_flags": "", "earnings_date": "2026-01-15", "data_date": "2026-07-10",
+         "per_actual": float("nan"), "market_cap_oku": None},
+        {"code": "3333", "ticker": "3333.T", "name": "張付参考", "sector": "卸売業",
+         "high_type": "52W_NEW_HIGH", "current_price": 1200.0, "dist_to_high_pct": 0.0,
+         "turnover_20d": 500_000_000, "breaks_20d": 12, "first_break_60d": False,
+         "inago_suspect": False, "tob_suspect": True, "data_anomaly": False, "anomaly_note": "",
+         "note_flags": "TOB疑い", "earnings_date": "", "data_date": "2026-07-10"},
+        {"code": "4444", "ticker": "4444.T", "name": "異常参考", "sector": "銀行業",
+         "high_type": "52W_NEAR_HIGH", "current_price": 82270.0, "prev_close": 4100.0, "change_pct": 1.2,
+         "dist_to_high_pct": 1.5, "turnover_20d": 200_000_000, "breaks_20d": 0, "first_break_60d": False,
+         "inago_suspect": False, "tob_suspect": False, "data_anomaly": True,
+         "anomaly_note": "前日比と前日終値から逆算した現在値が不整合（桁ずれ・分割の疑い）",
+         "note_flags": "", "earnings_date": "", "data_date": "2026-07-10"},
+    ]
+    text = build_highs_note(pd.DataFrame(rows), Path("screening_highs_test.csv"))
+
+    # 1) タイトルに対象取引日（データ最終日）が入る
+    assert text.splitlines()[0] == "# 2026年7月10日 52週新高値 接近・到達銘柄", text.splitlines()[0]
+    # 2) NaN/None/null が本文に残らない
+    import re
+    for token in ("nan", "NaN", "None", "null", "NULL", "inf"):
+        hits = re.findall(rf"(?<![A-Za-z0-9_]){token}(?![A-Za-z0-9_])", text)
+        assert not hits, f"{token} が本文に残存: {hits}"
+    # 3) 到達(A)と接近(B)が別セクションで表示される
+    assert "## 【A】52週新高値に本日到達した銘柄" in text
+    assert "## 【B】52週新高値まで3%以内に接近している銘柄" in text
+    a_section = text.split("## 【A】")[1].split("## 【B】")[0]
+    b_section = text.split("## 【B】")[1].split("## 【C】")[0]
+    assert "到達テスト" in a_section and "接近テスト" not in a_section
+    assert "接近テスト" in b_section and "到達テスト" not in b_section
+    # 4) TOB疑い・データ異常は参考掲載(C)へ。A/B本体には出ない
+    assert "張付参考" not in a_section and "異常参考" not in b_section
+    c_section = text.split("## 【C】")[1].split("## 本日の集計")[0]
+    assert "張付参考" in c_section and "異常参考" in c_section
+    assert "データ異常のため参考掲載" in c_section
+    # 5) 決算カウントダウン: 未来日は「あとN日」(2026-07-10→07-14=4日)、過去日は次回として出さない
+    assert "2026年7月14日／あと4日" in text
+    assert "2026年1月15日" not in text and "未公表" in b_section
+    # 6) 実績セクション・集計・免責が末尾にある
+    assert "## 本日の集計" in text and "## 実績（過去に掲載した銘柄のその後）" in text
+    assert "本記事は情報提供を目的としたもので、特定銘柄の売買を推奨するものではありません" in text
+    # 7) 検索トレンドは取得していないので「急上昇」と書かない
+    assert "急上昇" not in text
+    # 8) 注目ポイントとチャートリンクがある（銘柄ごとの解説）
+    assert "🔍 **注目ポイント**" in text
+    assert "https://finance.yahoo.co.jp/quote/1111.T/chart" in text
+    # 9) OpenWork行が通信なしで出力される（キャッシュ無し→取得できず）
+    assert "OpenWork" in text
+    # 10) validator互換: 一覧表と高値乖離%マーカー
+    assert "### 一覧表" in text and "高値乖離%" in text
+
+    # 空データ日: データ不足の明記＋4本構成を壊さない
+    empty_text = build_highs_note(pd.DataFrame(), None)
+    assert "データ不足" in empty_text and "該当なし" in empty_text
+    assert "本記事は情報提供を目的としたもので" in empty_text
+    print("self-test: note_highs_v2(52週新高値 記事新形式) OK")
+
+
+def _test_fundamentals_contract() -> None:
+    """T-K(2026-07-12): ファンダ指標の妥当性検証と株価・単位の異常値チェック。通信なし。"""
+    from fundamentals import detect_price_anomalies, sanitize_fundamentals
+
+    info = {
+        "currency": "JPY", "trailingPE": 18.23, "forwardPE": 16.5, "priceToBook": 2.14,
+        "dividendYield": 0.018, "returnOnEquity": 0.124, "operatingMargins": 0.152,
+        "profitMargins": 0.108, "revenueGrowth": 0.123, "earningsGrowth": 0.205,
+        "marketCap": 350_000_000_000, "currentPrice": 1500.0,
+    }
+    out = sanitize_fundamentals(info, current_price=1500.0)
+    assert out["per_actual"] == 18.2 and out["pbr"] == 2.14, out
+    assert out["dividend_yield_pct"] == 1.8 and out["roe_pct"] == 12.4, out
+    assert out["market_cap_oku"] == 3500, out
+    assert out["fundamentals_source"] == "yfinance"
+
+    # 異常値は「使わない」: マイナスPER・通貨違いの時価総額・株価不整合
+    bad = sanitize_fundamentals({"currency": "USD", "trailingPE": -5, "marketCap": 1e12}, 1500.0)
+    assert "per_actual" not in bad and "market_cap_oku" not in bad, bad
+    mismatch = sanitize_fundamentals(
+        {"currency": "JPY", "marketCap": 350_000_000_000, "currentPrice": 82270.0}, current_price=4100.0
+    )
+    assert "market_cap_oku" not in mismatch, mismatch  # 桁ずれ・分割疑いは時価総額を信用しない
+    assert sanitize_fundamentals({}, None) == {}
+
+    # 株価異常値チェック: キオクシア型（前日比と現在値の不整合）を検出できる
+    kioxia_like = {"current_price": 82270.0, "prev_close": 4100.0, "change_pct": 1.2, "turnover_20d": 5e9}
+    issues = detect_price_anomalies(kioxia_like)
+    assert any("不整合" in i for i in issues), issues
+    assert any("値幅制限" in i for i in detect_price_anomalies({"current_price": 100.0, "prev_close": 60.0, "change_pct": 66.7}))
+    assert any("本日高値" in i for i in detect_price_anomalies({"current_price": 1000.0, "today_high": 900.0}))
+    normal = {"current_price": 1500.0, "prev_close": 1450.0, "change_pct": 3.45, "today_high": 1520.0, "turnover_20d": 2.5e9}
+    assert detect_price_anomalies(normal) == [], detect_price_anomalies(normal)
+    print("self-test: fundamentals(妥当性・異常値検証) OK")
+
+
+def _test_openwork_cache_contract() -> None:
+    """T-K(2026-07-12): OpenWork月次キャッシュ（30日ルール・失敗時前回値保持・捏造禁止）。通信なし。"""
+    import tempfile
+    from datetime import date as _date
+
+    import pandas as pd
+
+    import openwork_cache as ow
+
+    today = _date(2026, 7, 12)
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        cache_path = tmp_path / "openwork_cache.csv"
+        record_path = tmp_path / "highs_track_record.csv"
+        pd.DataFrame([
+            {"code": "1111", "name": "新鮮", "overall": 4.1, "respondents": 120,
+             "fetched_at": "2026-07-01", "source_url": "", "status": "ok"},
+            {"code": "2222", "name": "古株", "overall": 3.2, "respondents": 5,
+             "fetched_at": "2026-05-01", "source_url": "", "status": "ok"},
+        ]).to_csv(cache_path, index=False)
+        pd.DataFrame([{"date": "2026-07-10", "code": "3333", "ticker": "3333.T", "name": "新顔"}]).to_csv(record_path, index=False)
+
+        cache = ow.load_cache(cache_path)
+        # 1) 30日未満は再取得しない / 2) 30日以上は更新対象
+        fresh = cache[cache["code"] == "1111"].iloc[0]
+        stale = cache[cache["code"] == "2222"].iloc[0]
+        assert ow.needs_update(fresh, today) is False
+        assert ow.needs_update(stale, today) is True
+
+        # 3) 取得失敗（fetcherが返さない）→ 前回値と取得日を保持 / 4) 新規で取得できず→捏造せずunavailable
+        stats = ow.update_cache(cache_path=cache_path, record_path=record_path, fetcher=lambda codes: {}, today=today)
+        assert stats["targets"] == 2 and stats["kept"] == 1 and stats["missing"] == 1, stats
+        updated = ow.load_cache(cache_path)
+        kept_row = updated[updated["code"] == "2222"].iloc[0]
+        assert float(kept_row["overall"]) == 3.2 and str(kept_row["fetched_at"])[:10] == "2026-05-01"
+        new_row = updated[updated["code"] == "3333"].iloc[0]
+        assert str(new_row["status"]) == "unavailable" and str(new_row.get("overall", "")).strip() in ("", "nan")
+
+        # 取得成功時は更新される（fetcher差し替え）
+        stats2 = ow.update_cache(
+            cache_path=cache_path, record_path=record_path,
+            fetcher=lambda codes: {"2222": {"overall": 3.5, "respondents": 6, "fetched_at": today.isoformat()}},
+            today=today,
+        )
+        assert stats2["updated"] == 1, stats2
+        updated2 = ow.load_cache(cache_path)
+        assert float(updated2[updated2["code"] == "2222"].iloc[0]["overall"]) == 3.5
+
+        # 5-7) note表示: 通信なしでキャッシュのみ参照。取得日を必ず表示。少人数は参考値。
+        lines_fresh = "\n".join(ow.build_openwork_lines("1111", updated2, today))
+        assert "総合評価：4.10" in lines_fresh and "取得日：2026-07-01" in lines_fresh
+        lines_stale = "\n".join(ow.build_openwork_lines("2222", ow.load_cache(cache_path), _date(2026, 9, 1)))
+        assert "更新待ち" in lines_stale and "参考値" in lines_stale
+        lines_missing = "\n".join(ow.build_openwork_lines("3333", updated2, today))
+        assert "取得できず" in lines_missing
+        lines_none = "\n".join(ow.build_openwork_lines("9999", updated2, today))
+        assert "取得できず" in lines_none
+        # NaN等が表示に残らない
+        for text in (lines_fresh, lines_stale, lines_missing):
+            for token in ("nan", "None", "null"):
+                assert token not in text, text
+    print("self-test: openwork_cache(月次キャッシュ) OK")
 
 
 def _test_previous_52w_high_line_retest() -> None:
@@ -1628,6 +1766,150 @@ def _test_trade_verification() -> None:
         empty_rep = tv.write_report(tmp_path / "no_hist.csv", tmp_path / "empty.md",
                                     today=_date(2026, 6, 20))
         assert "確定トレードがまだありません" in empty_rep.read_text(encoding="utf-8")
+
+
+def _test_jpx_business_day_calendar() -> None:
+    """T-K修正: 日本の祝日・年末年始対応のJPX営業日カレンダー。"""
+    from datetime import date
+
+    from jptime import is_jpx_business_day, jp_holidays, prev_jpx_business_day
+
+    holidays_2026 = jp_holidays(2026)
+    # 固定祝日・ハッピーマンデー・春分/秋分
+    assert date(2026, 1, 1) in holidays_2026        # 元日
+    assert date(2026, 1, 12) in holidays_2026       # 成人の日（1月第2月曜）
+    assert date(2026, 2, 11) in holidays_2026       # 建国記念の日
+    assert date(2026, 2, 23) in holidays_2026       # 天皇誕生日
+    assert date(2026, 3, 20) in holidays_2026       # 春分の日
+    assert date(2026, 7, 20) in holidays_2026       # 海の日（7月第3月曜）
+    assert date(2026, 9, 21) in holidays_2026       # 敬老の日
+    assert date(2026, 9, 23) in holidays_2026       # 秋分の日
+    assert date(2026, 9, 22) in holidays_2026       # 国民の休日（祝日に挟まれた平日）
+    assert date(2026, 5, 6) in holidays_2026        # 振替休日（5/3憲法記念日が日曜）
+    assert date(2026, 10, 12) in holidays_2026      # スポーツの日
+
+    # 営業日判定: 祝日・年末年始は休場、通常平日は営業日
+    assert not is_jpx_business_day(date(2026, 7, 20))   # 海の日（月曜だが休場）
+    assert not is_jpx_business_day(date(2026, 12, 31))  # 大納会翌日（年末休場）
+    assert not is_jpx_business_day(date(2027, 1, 2))    # 年始休場
+    assert not is_jpx_business_day(date(2026, 7, 18))   # 土曜
+    assert is_jpx_business_day(date(2026, 7, 17))       # 通常の金曜
+    assert is_jpx_business_day(date(2026, 12, 30))      # 大納会（営業日）
+
+    # 直近営業日: 祝日・年末年始をまたいで正しく遡る
+    assert prev_jpx_business_day(date(2026, 7, 20)) == date(2026, 7, 17)   # 海の日→金曜
+    assert prev_jpx_business_day(date(2026, 7, 19)) == date(2026, 7, 17)   # 日曜→金曜
+    assert prev_jpx_business_day(date(2027, 1, 3)) == date(2026, 12, 30)   # 年始→大納会
+    assert prev_jpx_business_day(date(2026, 5, 6)) == date(2026, 5, 1)     # GW連休→5/1
+    print("self-test: jpx_business_day(祝日・年末年始カレンダー) OK")
+
+
+def _test_holiday_target_date_and_skip_guard() -> None:
+    """T-K修正: 祝日に記事日付が祝日当日にならない＋休場日の重複下書き防止ガード。"""
+    from datetime import date
+
+    import jptime
+    import note_draft
+    from note_autosave import should_skip_autosave
+
+    # (1) 祝日（2026-07-20 海の日）に生成しても、タイトルは直近取引日 7/17 になる
+    original_jst_today = jptime.jst_today
+    jptime.jst_today = lambda: date(2026, 7, 20)
+    try:
+        # データなしフォールバック: 直近JPX営業日
+        assert note_draft._prev_jst_business_day() == date(2026, 7, 17)
+        empty = pd.DataFrame()
+        text = note_draft.build_highs_note(empty, Path("screening_highs_test.csv"))
+        first_line = text.splitlines()[0]
+        assert first_line == "# 2026年7月17日 52週新高値 接近・到達銘柄", first_line
+        assert "2026年7月20日 52週新高値" not in text  # 祝日当日がタイトルにならない
+        assert "直近取引日" in text  # 生成日と対象日が違う旨を明記
+        # データがある場合は data_date が最優先（既存挙動の回帰確認）
+        row = {"code": "1111", "name": "テスト", "data_date": "2026-07-17"}
+        with_data = pd.DataFrame([row])
+        text2 = note_draft.build_highs_note(with_data, Path("screening_highs_test.csv"))
+        assert text2.splitlines()[0] == "# 2026年7月17日 52週新高値 接近・到達銘柄"
+    finally:
+        jptime.jst_today = original_jst_today
+
+    # (2) 休場日ガード: schedule実行×休場日のみスキップ。手動実行・営業日は保存する
+    skip, reason = should_skip_autosave("schedule", date(2026, 7, 20))
+    assert skip and "休場" in reason  # 祝日
+    skip, _ = should_skip_autosave("schedule", date(2027, 1, 1))
+    assert skip  # 年末年始
+    skip, _ = should_skip_autosave("schedule", date(2026, 7, 17))
+    assert not skip  # 通常営業日は保存
+    skip, _ = should_skip_autosave("workflow_dispatch", date(2026, 7, 20))
+    assert not skip  # 手動実行は祝日でも保存（検証用）
+    print("self-test: holiday_target_date_and_skip_guard(祝日対応) OK")
+
+
+def _test_openwork_manual_reflection_contract() -> None:
+    """T-K修正: OpenWork月次workflowの契約テスト。
+    ①空欄・異常値で既存正常値を消さない ②外部サイトへ自動アクセスしない
+    ③時刻表記が9:00 JSTで統一されている。"""
+    import tempfile
+    from datetime import date
+
+    import openwork_cache
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        cache_path = tmp_path / "openwork_cache.csv"
+        record_path = tmp_path / "highs_track_record.csv"
+        scores_path = tmp_path / "openwork_scores.csv"
+        today = date(2026, 7, 1)
+
+        # 既存キャッシュ: 1111は正常値（古い=更新対象）
+        pd.DataFrame([
+            {"code": "1111", "name": "既存社", "overall": 4.0, "respondents": 120,
+             "fetched_at": "2026-04-01", "status": "ok"},
+        ]).to_csv(cache_path, index=False)
+        record_path.write_text("date,code\n2026-06-20,1111\n2026-06-20,2222\n", encoding="utf-8")
+
+        # scores.csv: 1111は空欄と異常値のみ（→既存値を消してはいけない）、2222は異常値のみ
+        scores_path.write_text(
+            "code,openwork_score,treatment,respondents\n"
+            "1111,,9.9,\n"
+            "2222,0.2,,-5\n",
+            encoding="utf-8",
+        )
+        fetcher = lambda codes: openwork_cache.manual_source_fetcher(codes, scores_path=scores_path, today=today)  # noqa: E731
+        stats = openwork_cache.update_cache(cache_path=cache_path, record_path=record_path, fetcher=fetcher, today=today)
+        assert stats["updated"] == 0, stats  # 空欄・異常値は「取得成功」にしない
+        after = openwork_cache.load_cache(cache_path)
+        kept_row = after[after["code"] == "1111"].iloc[0]
+        assert float(kept_row["overall"]) == 4.0          # 既存正常値を保持
+        assert str(kept_row["fetched_at"]) == "2026-04-01"  # 取得日も前回のまま（古さが分かる）
+        assert str(kept_row["status"]) == "ok"
+        bad_row = after[after["code"] == "2222"].iloc[0]
+        assert str(bad_row["status"]) == "unavailable"    # 異常値のみ→取得できず扱い
+
+        # 妥当な値なら反映される（範囲1.0〜5.0）
+        scores_path.write_text("code,openwork_score,respondents\n1111,4.3,150\n", encoding="utf-8")
+        stats2 = openwork_cache.update_cache(cache_path=cache_path, record_path=record_path, fetcher=fetcher, today=today)
+        assert stats2["updated"] == 1, stats2
+        after2 = openwork_cache.load_cache(cache_path)
+        assert float(after2[after2["code"] == "1111"].iloc[0]["overall"]) == 4.3
+
+    # 外部アクセスなし契約: モジュールにも月次workflowにも通信手段が存在しない
+    project_root = Path(__file__).resolve().parent
+    module_src = (project_root / "openwork_cache.py").read_text(encoding="utf-8")
+    for banned in ("import requests", "import urllib", "import httpx", "import aiohttp",
+                   "playwright", "selenium", "http.client", "socket"):
+        assert banned not in module_src, f"openwork_cache.py に通信手段が存在: {banned}"
+
+    workflow_path = project_root / ".github" / "workflows" / "openwork_monthly.yml"
+    if workflow_path.exists():
+        workflow_text = workflow_path.read_text(encoding="utf-8")
+        for banned in ("playwright", "curl ", "wget ", "requests", "yfinance"):
+            assert banned not in workflow_text, f"openwork_monthly.yml に外部アクセス手段: {banned}"
+        assert "openwork_cache.py --update" in workflow_text
+        assert 'cron: "0 0 1 * *"' in workflow_text       # 毎月1日 0:00 UTC
+        assert "9:00 JST" in workflow_text                # 表記は9:00 JSTで統一
+        assert "6:00 JST" not in workflow_text            # 旧表記が残っていない
+        assert "自動取得」ではありません" in workflow_text  # 方式の明記
+    print("self-test: openwork_manual_reflection(空欄保持・外部アクセスなし・9:00JST統一) OK")
 
 
 if __name__ == "__main__":

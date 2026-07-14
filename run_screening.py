@@ -191,6 +191,7 @@ def run_screening(
                     highs_extra = _collect_highs_row(row_base, lenient, high_info, history)
                     if highs_extra is not None:
                         highs_extra["earnings_date"] = _earnings_date_text(stock.ticker)
+                        _finalize_highs_row(highs_extra, stock.ticker)
                         highs_rows.append(highs_extra)
                 if include_rejected:
                     rows.append(row_base | high_info | rejection_row(None, "価格データ不足"))
@@ -215,6 +216,9 @@ def run_screening(
                 for extra in (pullback_extra, retest_extra, highs_extra):
                     if extra is not None:
                         extra["earnings_date"] = earnings_text
+            if highs_extra is not None:
+                # T-K: note1本目用のファンダ取得（ヒット銘柄のみ）＋異常値チェック
+                _finalize_highs_row(highs_extra, stock.ticker)
 
             passed, reject_reasons = passes_base_filters(indicators)
             if not passed:
@@ -648,6 +652,62 @@ def _note_flags_text(quality: dict[str, object]) -> str:
     return " / ".join(parts)
 
 
+def _daily_price_fields(history: pd.DataFrame) -> dict[str, object]:
+    """当日データ（前日終値・前日比・本日高値・日中値幅・当日出来高倍率・対象取引日）。
+    計算できない項目は入れない（捏造しない）。"""
+    out: dict[str, object] = {}
+    if history is None or history.empty or "Close" not in history.columns:
+        return out
+    close = history["Close"].astype(float)
+    try:
+        out["data_date"] = pd.Timestamp(history.index[-1]).date().isoformat()
+    except Exception:
+        pass
+    if len(close) >= 2:
+        current = float(close.iloc[-1])
+        prev = float(close.iloc[-2])
+        out["prev_close"] = round(prev, 1)
+        if prev > 0:
+            out["change_pct"] = round((current / prev - 1) * 100, 2)
+    if "High" in history.columns and "Low" in history.columns:
+        today_high = float(history["High"].astype(float).iloc[-1])
+        today_low = float(history["Low"].astype(float).iloc[-1])
+        out["today_high"] = round(today_high, 1)
+        base = out.get("prev_close") or (float(close.iloc[-1]) or 0)
+        try:
+            base_f = float(base)
+            if base_f > 0 and today_high >= today_low:
+                out["intraday_range_pct"] = round((today_high - today_low) / base_f * 100, 2)
+        except (TypeError, ValueError):
+            pass
+    if "Volume" in history.columns and len(history) >= 21:
+        vol = history["Volume"].astype(float)
+        avg20 = float(vol.iloc[-21:-1].mean())
+        if avg20 > 0:
+            out["volume_ratio_today"] = round(float(vol.iloc[-1]) / avg20, 2)
+    return out
+
+
+def _finalize_highs_row(extra: dict[str, object], ticker: str) -> None:
+    """T-K: highs行にファンダ指標（検証済みのみ）と異常値判定を付与する（in-place）。
+    取得失敗でもスクリーニングは止めない。"""
+    try:
+        from fundamentals import detect_price_anomalies, fetch_fundamentals
+
+        current = extra.get("current_price")
+        try:
+            current_f = float(current)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            current_f = None
+        extra.update(fetch_fundamentals(ticker, current_f))
+        issues = detect_price_anomalies(extra)
+        extra["data_anomaly"] = bool(issues)
+        extra["anomaly_note"] = " / ".join(issues)
+    except Exception:
+        extra.setdefault("data_anomaly", False)
+        extra.setdefault("anomaly_note", "")
+
+
 def _collect_highs_row(
     row_base: dict[str, object],
     indicators: dict[str, float],
@@ -695,6 +755,8 @@ def _collect_highs_row(
         "note_flags": _note_flags_text(quality),
         # 決算日（呼び出し側で該当行のみ取得して上書きする）
         "earnings_date": "",
+        # T-K: 当日データ（前日比・本日高値・日中値幅・当日出来高倍率・対象取引日）
+        **_daily_price_fields(history),
     }
 
 
@@ -707,6 +769,11 @@ AUX_COLUMNS = {
         "code", "ticker", "name", "market", "sector", "screen_type", "screen_tags",
         "high_type", "high_label",
         "breaks_20d", "first_break_60d", "inago_suspect", "tob_suspect", "note_flags", "earnings_date",
+        # T-K: note1本目（52週新高値 接近・到達）用の当日データ・ファンダ・異常値判定
+        "data_date", "prev_close", "change_pct", "today_high", "intraday_range_pct", "volume_ratio_today",
+        "per_actual", "per_forecast", "pbr", "dividend_yield_pct", "roe_pct", "op_margin_pct", "net_margin_pct",
+        "sales_growth_pct", "profit_growth_pct", "market_cap_oku", "fundamentals_source",
+        "data_anomaly", "anomaly_note",
     ],
     "screening_52w_retest": [
         "code", "ticker", "name", "market", "sector", "screen_type", "screen_tags",
