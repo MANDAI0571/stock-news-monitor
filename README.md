@@ -219,6 +219,21 @@ python backtest.py --run --limit 50 --timeout-bdays 40
 
 `.github/workflows/daily-discipline.yml`で、平日朝07:30 JSTに実行できます。GitHub ActionsのcronはUTCなので、`22:30 UTC`を指定しています。
 
+### AI社員メトロン（日次KPI）
+
+メトロンは会社OSの経営ダッシュボード管理官です。既存の`outputs/`と`data/highs_track_record.csv`を読み、note4本・スクリーニング・300万円運用・実績・日中監視の状態を日次KPIとして集計します。データが無い項目は推測せず「取得できず」と表示します。
+
+```bash
+python3 metron_kpi.py
+```
+
+出力:
+
+- `outputs/metron_kpi_report.md`
+- `outputs/metron_kpi.json`
+
+クラウドでは`.github/workflows/metron_kpi.yml`が平日17:45 JSTに起動します。`note_draft_cloud.yml`の成果物にも同じメトロンレポートを含めます。
+
 生成CSVはGitへコミットせず、ActionsのArtifactsとしてアップロードします。手動実行もできます。
 
 ### Gmail通知

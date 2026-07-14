@@ -55,6 +55,7 @@ def main() -> None:
     _test_journal_and_pattern_learning()
     _test_intraday_watchlist()
     _test_intraday_cloud_workflow_contract()
+    _test_metron_kpi()
     _test_learning_log()
     _test_csv_schema_contract()
     _test_decision_engine()
@@ -1473,6 +1474,93 @@ def _test_intraday_cloud_workflow_contract() -> None:
     assert "intraday-alert-state-${{ steps.holiday.outputs.jst_date }}" in workflow
     assert "Check Gmail secrets" in workflow
     assert "GMAIL_USER secret is missing" in workflow
+
+
+def _test_metron_kpi() -> None:
+    """メトロンはnote4本・運用・実績KPIを捏造せず日次レポートに集計する。"""
+    import tempfile
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from metron_kpi import build_kpi, render_markdown, write_outputs
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        out = root / "outputs"
+        data = root / "data"
+        out.mkdir()
+        data.mkdir()
+        pd.DataFrame(
+            [
+                {"code": "1111", "name": "A社", "rank": "S", "score": 91, "dist_52w_high_pct": 1.2, "reason": "テスト"},
+                {"code": "2222", "name": "B社", "rank": "A", "score": 80, "dist_52w_high_pct": 3.4, "reason": "テスト"},
+            ]
+        ).to_csv(out / "screening_result.csv", index=False)
+        pd.DataFrame(
+            [
+                {"code": "1111", "name": "A社", "decision": "BUY", "score": 91, "rank": "S"},
+                {"code": "2222", "name": "B社", "decision": "WATCH", "score": 80, "rank": "A"},
+            ]
+        ).to_csv(out / "decision_result.csv", index=False)
+        pd.DataFrame(
+            [
+                {"slot": 1, "action": "BUY", "code": "1111", "name": "A社"},
+                {"slot": 2, "action": "CASH", "cash_reason": "残りは現金"},
+            ]
+        ).to_csv(out / "discipline_result.csv", index=False)
+        (out / "warren_summary.json").write_text(
+            json.dumps(
+                {
+                    "capital": 3000000,
+                    "regime": "NORMAL",
+                    "buy_count": 1,
+                    "watch_count": 1,
+                    "skip_count": 0,
+                    "cash_count": 1,
+                    "selected_symbols": ["1111"],
+                    "cash_reason": "残りは現金",
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        manifest = []
+        for key in ["chatgpt", "claude", "pullback", "highs"]:
+            manifest.append({"key": key, "title": f"{key}記事", "md_file": f"note_{key}.md", "title_file": f"note_{key}_title.txt", "html_file": f"note_{key}.html"})
+            (out / f"note_{key}.md").write_text("本文", encoding="utf-8")
+            (out / f"note_{key}_title.txt").write_text("タイトル", encoding="utf-8")
+            (out / f"note_{key}.html").write_text("<p>本文</p>", encoding="utf-8")
+        (out / "note_drafts_manifest.json").write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+        (out / "performance_report.md").write_text("# 実績", encoding="utf-8")
+        pd.DataFrame(
+            [{"date": "2026-07-13", "code": "1111", "ticker": "1111.T", "name": "A社", "entry_close": 1000}]
+        ).to_csv(data / "highs_track_record.csv", index=False)
+
+        kpi = build_kpi(output_dir=out, data_dir=data, now=datetime(2026, 7, 14, 17, 45, tzinfo=ZoneInfo("Asia/Tokyo")))
+        assert kpi["employee"] == "メトロン"
+        assert kpi["overall_status"] == "OK"
+        assert kpi["research"]["s_rank_count"] == 1
+        assert kpi["operations"]["buy_count"] == 1
+        assert kpi["editorial"]["ready"] == 4
+        report = render_markdown(kpi)
+        assert "メトロン日次KPIレポート" in report
+        assert "note4本チェック" in report
+        for banned in ("NaN", "None", "null", "inf"):
+            assert banned not in report
+        md_path, json_path = write_outputs(kpi, output_dir=out)
+        assert md_path.exists()
+        assert json_path.exists()
+
+    project_root = Path(__file__).resolve().parent
+    metron_workflow = (project_root / ".github" / "workflows" / "metron_kpi.yml").read_text(encoding="utf-8")
+    assert "Metron KPI Report" in metron_workflow
+    assert "python3 metron_kpi.py" in metron_workflow
+    assert 'cron: "45 8 * * 1-5"' in metron_workflow
+    assert "actions/upload-artifact@v7" in metron_workflow
+    note_workflow = (project_root / ".github" / "workflows" / "note_draft_cloud.yml").read_text(encoding="utf-8")
+    assert "Metron KPI report" in note_workflow
+    assert "outputs/metron_kpi_report.md" in note_workflow
+    assert "outputs/metron_kpi.json" in note_workflow
 
 
 def _test_learning_log() -> None:

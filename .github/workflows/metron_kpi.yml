@@ -1,0 +1,51 @@
+name: Metron KPI Report
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 17:45 JST, Monday-Friday. note4本の生成後に会社OSのKPIを集計する。
+    - cron: "45 8 * * 1-5"
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  metron-kpi:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Fetch latest Note draft cloud artifact (best-effort)
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p outputs
+          run_id=$(gh run list --workflow note_draft_cloud.yml --status success --limit 1 --json databaseId --jq '.[0].databaseId' 2>/dev/null || true)
+          if [ -n "$run_id" ]; then
+            echo "download note-draft-cloud artifact from run_id=$run_id"
+            gh run download "$run_id" -n note-draft-cloud -D outputs 2>/dev/null || echo "artifact download skipped"
+          else
+            echo "no successful note_draft_cloud run found -> checked-out outputs fallback"
+          fi
+
+      - name: Build Metron KPI report
+        run: python3 metron_kpi.py
+
+      - name: Upload Metron KPI artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: metron-kpi
+          path: |
+            outputs/metron_kpi_report.md
+            outputs/metron_kpi.json
+          if-no-files-found: error

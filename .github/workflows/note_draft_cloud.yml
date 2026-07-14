@@ -162,6 +162,10 @@ jobs:
           echo "=== cloud note artifact files ==="
           ls -lh outputs/note_body.md outputs/note_preview.html outputs/warren_summary.json outputs/decision_result.csv outputs/discipline_result.csv outputs/paper_portfolio_decision.csv outputs/eyecatch.png outputs/market_status.png outputs/funnel.png outputs/buy_*.png outputs/watch.png 2>/dev/null || true
 
+      - name: Metron KPI report
+        if: always()
+        run: python3 metron_kpi.py
+
       - name: Upload Note draft artifact
         if: always()
         uses: actions/upload-artifact@v7
@@ -193,6 +197,8 @@ jobs:
             outputs/note_image_debug*.png
             outputs/market_snapshot.json
             outputs/track_record.json
+            outputs/metron_kpi_report.md
+            outputs/metron_kpi.json
             outputs/warren_summary.json
             outputs/decision_result.csv
             outputs/decision_report.md
