@@ -1,0 +1,69 @@
+name: Cloud Digest Mail
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  send-cloud-digest-mail:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Fetch latest cloud note artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p outputs
+          run_id=$(gh run list --workflow note_draft_cloud.yml --status success --limit 1 --json databaseId --jq '.[0].databaseId' 2>/dev/null || true)
+          if [ -z "$run_id" ]; then
+            echo "::warning::successful note_draft_cloud run was not found"
+            exit 0
+          fi
+          gh run download "$run_id" -n note-draft-cloud -D outputs || echo "::warning::note-draft-cloud artifact download failed"
+          find outputs -maxdepth 1 -type f | sort
+
+      - name: Check Gmail secrets
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+        run: |
+          missing=0
+          [ -n "$GMAIL_USER" ] || { echo "::error::GMAIL_USER secret is missing"; missing=1; }
+          [ -n "$GMAIL_APP_PASSWORD" ] || { echo "::error::GMAIL_APP_PASSWORD secret is missing"; missing=1; }
+          [ -n "$MAIL_TO" ] || { echo "::error::MAIL_TO secret is missing"; missing=1; }
+          exit "$missing"
+
+      - name: Send cloud digest mail
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+        run: python3 cloud_mail_digest.py --output-dir outputs
+
+      - name: Upload digest mail artifact
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: cloud-digest-mail
+          path: |
+            outputs/cloud_digest_mail_subject.txt
+            outputs/cloud_digest_mail_body.md
+          if-no-files-found: warn

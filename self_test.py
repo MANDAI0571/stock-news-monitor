@@ -55,6 +55,7 @@ def main() -> None:
     _test_journal_and_pattern_learning()
     _test_intraday_watchlist()
     _test_intraday_cloud_workflow_contract()
+    _test_cloud_digest_mail()
     _test_metron_kpi()
     _test_learning_log()
     _test_csv_schema_contract()
@@ -1485,6 +1486,49 @@ def _test_intraday_cloud_workflow_contract() -> None:
     assert "intraday-alert-state-${{ steps.holiday.outputs.jst_date }}" in workflow
     assert "Check Gmail secrets" in workflow
     assert "GMAIL_USER secret is missing" in workflow
+
+
+def _test_cloud_digest_mail() -> None:
+    """25MA/押し目などの引け後クラウド結果はGmailで届き、手動再送もできる。"""
+    import tempfile
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from cloud_mail_digest import build_digest, collect_attachments
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp)
+        (out / "note_pullback_title.txt").write_text("25MAタッチ候補", encoding="utf-8")
+        (out / "note_pullback.md").write_text("# 25MAタッチ候補\n\n7011 三菱重工\n", encoding="utf-8")
+        (out / "note_highs_title.txt").write_text("52週新高値候補", encoding="utf-8")
+        (out / "note_highs.md").write_text("# 52週新高値候補\n\n該当なし\n", encoding="utf-8")
+        (out / "note_chatgpt.md").write_text("# ChatGPT案\n\nBUY なし\n", encoding="utf-8")
+        (out / "note_claude.md").write_text("# Claude案\n\nWATCH なし\n", encoding="utf-8")
+        (out / "metron_kpi_report.md").write_text("# メトロンKPI\n\n- note4本: OK\n", encoding="utf-8")
+        (out / "screening_pullback_20260716_160000.csv").write_text("code,name\n7011,三菱重工\n", encoding="utf-8")
+
+        digest = build_digest(out, now=datetime(2026, 7, 16, 18, 40, tzinfo=ZoneInfo("Asia/Tokyo")))
+        assert digest.subject == "【DUKEクラウド】本日のスクリーニング結果 2026-07-16"
+        assert "25MA/押し目" in digest.body
+        assert "25MAタッチ候補" in digest.body
+        assert "52週新高値" in digest.body
+        assert "メトロンKPI" in digest.body
+        assert "nan" not in digest.body.lower()
+        assert any(path.name == "screening_pullback_20260716_160000.csv" for path in collect_attachments(out))
+
+    project_root = Path(__file__).resolve().parent
+    note_workflow = (project_root / ".github" / "workflows" / "note_draft_cloud.yml").read_text(encoding="utf-8")
+    daily_workflow = (project_root / ".github" / "workflows" / "daily-discipline.yml").read_text(encoding="utf-8")
+    resend_workflow = (project_root / ".github" / "workflows" / "cloud_digest_mail.yml").read_text(encoding="utf-8")
+    assert "Send cloud digest mail" in note_workflow
+    assert "cloud_mail_digest.py --output-dir outputs" in note_workflow
+    assert "outputs/screening_pullback_*.csv" in note_workflow
+    assert "python daily_discipline_run.py --send-gmail" in daily_workflow
+    assert "GMAIL_USER secret is missing" in daily_workflow
+    assert "workflow_dispatch:" in resend_workflow
+    assert "note_draft_cloud.yml" in resend_workflow
+    assert "cloud_mail_digest.py --output-dir outputs" in resend_workflow
+    print("self-test: cloud_digest_mail(25MAメール・手動再送) OK")
 
 
 def _test_metron_kpi() -> None:

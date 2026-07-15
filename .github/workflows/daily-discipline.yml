@@ -35,10 +35,26 @@ jobs:
           pip install -r requirements.txt
           end=$(date +%s); echo "[TIMER] install_dependencies elapsed=$((end-start))s"
 
+      - name: Check Gmail secrets
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+        run: |
+          missing=0
+          [ -n "$GMAIL_USER" ] || { echo "::error::GMAIL_USER secret is missing"; missing=1; }
+          [ -n "$GMAIL_APP_PASSWORD" ] || { echo "::error::GMAIL_APP_PASSWORD secret is missing"; missing=1; }
+          [ -n "$MAIL_TO" ] || { echo "::error::MAIL_TO secret is missing"; missing=1; }
+          exit "$missing"
+
       - name: Run screening and discipline portfolio
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
         run: |
           start=$(date +%s)
-          python daily_discipline_run.py
+          python daily_discipline_run.py --send-gmail
           end=$(date +%s); echo "[TIMER] daily_discipline_run elapsed=$((end-start))s"
 
       - name: Run decision engine

@@ -166,6 +166,28 @@ jobs:
         if: always()
         run: python3 metron_kpi.py
 
+      - name: Check Gmail secrets for cloud digest
+        id: gmail_secrets
+        if: always()
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+        run: |
+          missing=0
+          [ -n "$GMAIL_USER" ] || { echo "::error::GMAIL_USER secret is missing"; missing=1; }
+          [ -n "$GMAIL_APP_PASSWORD" ] || { echo "::error::GMAIL_APP_PASSWORD secret is missing"; missing=1; }
+          [ -n "$MAIL_TO" ] || { echo "::error::MAIL_TO secret is missing"; missing=1; }
+          exit "$missing"
+
+      - name: Send cloud digest mail
+        if: always() && steps.gmail_secrets.outcome == 'success'
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+        run: python3 cloud_mail_digest.py --output-dir outputs
+
       - name: Upload Note draft artifact
         if: always()
         uses: actions/upload-artifact@v7
@@ -192,6 +214,8 @@ jobs:
             outputs/note_drafts_manifest.json
             outputs/note_cloud_artifact_manifest.json
             outputs/note_draft_url_cloud.txt
+            outputs/cloud_digest_mail_subject.txt
+            outputs/cloud_digest_mail_body.md
             outputs/note_autosave_verify_cloud.json
             outputs/note_autosave_error*.png
             outputs/note_image_debug*.png
@@ -199,6 +223,13 @@ jobs:
             outputs/track_record.json
             outputs/metron_kpi_report.md
             outputs/metron_kpi.json
+            outputs/screening_result.csv
+            outputs/screening_result_*.csv
+            outputs/screening_pullback_*.csv
+            outputs/screening_highs_*.csv
+            outputs/screening_52w_retest_*.csv
+            outputs/discipline_portfolio_*.csv
+            outputs/s_rank_candidates_*.csv
             outputs/warren_summary.json
             outputs/decision_result.csv
             outputs/decision_report.md
