@@ -116,8 +116,10 @@ def send_gmail(
 ) -> None:
     message = EmailMessage()
     message["Subject"] = subject
-    message["From"] = config.user
+    message["From"] = f"DUKEクラウド通知 <{config.user}>"
     message["To"] = config.mail_to
+    message["Importance"] = "high"
+    message["X-Priority"] = "1"
     message.set_content(body)
 
     for attachment in _expand_attachments(attachments):
