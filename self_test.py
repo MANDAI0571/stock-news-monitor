@@ -1505,6 +1505,7 @@ def _test_cloud_digest_mail() -> None:
         (out / "note_chatgpt.md").write_text("# ChatGPT案\n\nBUY なし\n", encoding="utf-8")
         (out / "note_claude.md").write_text("# Claude案\n\nWATCH なし\n", encoding="utf-8")
         (out / "metron_kpi_report.md").write_text("# メトロンKPI\n\n- note4本: OK\n", encoding="utf-8")
+        (out / "screening_pullback_20260621_132309.csv").write_text("code,name\n1111,古い候補\n", encoding="utf-8")
         (out / "screening_pullback_20260716_160000.csv").write_text("code,name\n7011,三菱重工\n", encoding="utf-8")
 
         digest = build_digest(out, now=datetime(2026, 7, 16, 18, 40, tzinfo=ZoneInfo("Asia/Tokyo")))
@@ -1515,6 +1516,7 @@ def _test_cloud_digest_mail() -> None:
         assert "メトロンKPI" in digest.body
         assert "nan" not in digest.body.lower()
         assert any(path.name == "screening_pullback_20260716_160000.csv" for path in collect_attachments(out))
+        assert not any(path.name == "screening_pullback_20260621_132309.csv" for path in collect_attachments(out))
 
     project_root = Path(__file__).resolve().parent
     note_workflow = (project_root / ".github" / "workflows" / "note_draft_cloud.yml").read_text(encoding="utf-8")
@@ -1526,6 +1528,8 @@ def _test_cloud_digest_mail() -> None:
     assert "python daily_discipline_run.py --send-gmail" in daily_workflow
     assert "GMAIL_USER secret is missing" in daily_workflow
     assert "workflow_dispatch:" in resend_workflow
+    assert "rm -rf outputs" in resend_workflow
+    assert "daily-discipline.yml" in resend_workflow
     assert "note_draft_cloud.yml" in resend_workflow
     assert "cloud_mail_digest.py --output-dir outputs" in resend_workflow
     print("self-test: cloud_digest_mail(25MAメール・手動再送) OK")

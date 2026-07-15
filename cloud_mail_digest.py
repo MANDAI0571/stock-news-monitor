@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -185,7 +186,14 @@ def _latest(output_dir: Path, pattern: str) -> Path | None:
     files = [path for path in output_dir.glob(pattern) if path.is_file()]
     if not files:
         return None
-    return max(files, key=lambda path: path.stat().st_mtime)
+    return max(files, key=_latest_key)
+
+
+def _latest_key(path: Path) -> tuple[str, float, str]:
+    match = re.search(r"_(20\d{6})(?:_(\d{6}))?", path.stem)
+    if match:
+        return (match.group(1) + (match.group(2) or "000000"), path.stat().st_mtime, path.name)
+    return ("", path.stat().st_mtime, path.name)
 
 
 def _attachment_lines(attachments: list[Path]) -> list[str]:

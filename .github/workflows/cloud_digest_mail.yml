@@ -26,11 +26,26 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Prepare output dir
+        run: |
+          rm -rf outputs
+          mkdir -p outputs
+
+      - name: Fetch latest daily screening artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          run_id=$(gh run list --workflow daily-discipline.yml --status success --limit 1 --json databaseId --jq '.[0].databaseId' 2>/dev/null || true)
+          if [ -z "$run_id" ]; then
+            echo "::warning::successful daily-discipline run was not found"
+            exit 0
+          fi
+          gh run download "$run_id" -n stock-news-monitor-outputs -D outputs || echo "::warning::stock-news-monitor-outputs artifact download failed"
+
       - name: Fetch latest cloud note artifact
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          mkdir -p outputs
           run_id=$(gh run list --workflow note_draft_cloud.yml --status success --limit 1 --json databaseId --jq '.[0].databaseId' 2>/dev/null || true)
           if [ -z "$run_id" ]; then
             echo "::warning::successful note_draft_cloud run was not found"
