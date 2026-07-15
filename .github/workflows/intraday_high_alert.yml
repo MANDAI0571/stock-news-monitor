@@ -27,6 +27,10 @@ on:
         description: "手動実行でもGmailを送る（通常はOFF。本番scheduleは常にON）"
         type: boolean
         default: false
+      status_mail_on_no_new:
+        description: "手動確認時、新規0件でも到達確認メールを送る"
+        type: boolean
+        default: true
   schedule:
     # 前場: 00:00〜02:30 UTC（= 09:00〜11:30 JST）平日のみ、15分ごと
     - cron: "0,15,30,45 0,1 * * 1-5"
@@ -50,6 +54,7 @@ jobs:
       QUICK_MODE: ${{ github.event_name == 'schedule' && 'false' || (github.event.inputs.quick_mode == 'false' && 'false' || 'true') }}
       MAX_SYMBOLS: ${{ github.event.inputs.max_symbols || '30' }}
       ENABLE_INTRADAY_MAIL: ${{ github.event_name == 'schedule' && 'true' || (github.event.inputs.send_mail == 'true' && 'true' || 'false') }}
+      INTRADAY_STATUS_MAIL_ON_NO_NEW: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.send_mail == 'true' && github.event.inputs.status_mail_on_no_new != 'false' && 'true' || 'false' }}
 
     steps:
       - name: Checkout

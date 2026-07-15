@@ -64,6 +64,11 @@ def intraday_mail_enabled() -> bool:
     return os.environ.get("ENABLE_INTRADAY_MAIL", "true").strip().lower() not in ("0", "false", "no", "off")
 
 
+def status_mail_on_no_new_enabled() -> bool:
+    """手動確認時だけ、新規0件でも到達確認メールを送れるようにする。"""
+    return os.environ.get("INTRADAY_STATUS_MAIL_ON_NO_NEW", "false").strip().lower() in ("1", "true", "yes", "on")
+
+
 def load_watchlist_codes(path: Path) -> set[str] | None:
     """intraday_watchlist.csv から監視対象コードを読む。無ければ None（＝全銘柄フォールバック）。
     英数字4桁コード(285A等)もそのまま保持する。捏造しない。"""
@@ -277,7 +282,12 @@ def build_subject(new_alerts: list[Alert]) -> str:
     return f"{SUBJECT_PREFIX} {base}"
 
 
-def build_body(new_alerts: list[Alert]) -> str:
+def build_body(
+    new_alerts: list[Alert],
+    detected_count: int | None = None,
+    status_note: str = "",
+) -> str:
+    detected_count = len(new_alerts) if detected_count is None else detected_count
     lines: list[str] = [
         "workflow: Intraday High Alert",
         "source: GitHub Actions",
@@ -287,9 +297,12 @@ def build_body(new_alerts: list[Alert]) -> str:
         "",
         "ザラ場リアルタイム高値アラート",
         f"検知時刻: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+        f"検出アラート: {detected_count}件",
         f"新規アラート: {len(new_alerts)}件",
         "",
     ]
+    if status_note:
+        lines.extend([status_note, ""])
     # 種別ごとにまとめる（直近高値のブレイク→接近の順）。52週高値系はメールしない。
     order = ["直近高値ブレイク", "直近高値接近"]
     grouped: dict[str, list[Alert]] = {key: [] for key in order}
@@ -303,6 +316,10 @@ def build_body(new_alerts: list[Alert]) -> str:
         lines.append(f"■ {key}（{len(group)}件）")
         for alert in group:
             lines.extend(_format_alert(alert))
+        lines.append("")
+
+    if not new_alerts:
+        lines.append("新規通知対象はありません。既に本日通知済み、または手動の到達確認メールです。")
         lines.append("")
 
     lines.append(DISCLAIMER)
@@ -432,7 +449,11 @@ def scan(
 # --------------------------------------------------------------------------
 # Gmail送信（gmail_notify を再利用）
 # --------------------------------------------------------------------------
-def send_alert_mail(new_alerts: list[Alert]) -> bool:
+def send_alert_mail(
+    new_alerts: list[Alert],
+    detected_count: int | None = None,
+    status_note: str = "",
+) -> bool:
     from gmail_notify import load_gmail_config, send_gmail
 
     if not intraday_mail_enabled():
@@ -445,7 +466,7 @@ def send_alert_mail(new_alerts: list[Alert]) -> bool:
               "required=GMAIL_USER,GMAIL_APP_PASSWORD,MAIL_TO")
         return False
     subject = build_subject(new_alerts)
-    body = build_body(new_alerts)
+    body = build_body(new_alerts, detected_count=detected_count, status_note=status_note)
     send_gmail(subject, body, config)
     print(f"intraday_alert_mail=sent to={config.mail_to} subject={subject}")
     return True
@@ -485,6 +506,15 @@ def run(
         print(f"intraday_csv={csv_path}")
 
     if not new_alerts:
+        if alerts and not dry_run and status_mail_on_no_new_enabled():
+            sent = send_alert_mail(
+                [],
+                detected_count=len(alerts),
+                status_note="手動確認: クラウド実行は成功しています。検出銘柄はありますが、本日は重複防止により新規通知対象は0件です。",
+            )
+            if sent:
+                print("intraday_alert_mail=sent reason=status_on_no_new")
+            return 0
         print("intraday_alert_mail=skipped reason=no_new_alerts")
         return 0
 

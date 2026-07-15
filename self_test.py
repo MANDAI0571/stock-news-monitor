@@ -1380,7 +1380,7 @@ def _test_duke_old_high_support() -> None:
 def _test_intraday_watchlist() -> None:
     """日中監視ウォッチリスト: 選定・優先順・上限クリップ・英数字コード・全銘柄フォールバック。"""
     from build_intraday_watchlist import select_watchlist, build, WATCHLIST_NAME
-    from intraday_high_alert import build_alert, build_body, build_subject, intraday_mail_enabled, load_watchlist_codes
+    from intraday_high_alert import build_alert, build_body, build_subject, intraday_mail_enabled, load_watchlist_codes, status_mail_on_no_new_enabled
 
     df = pd.DataFrame([
         {"code": "7203", "name": "トヨタ", "market": "東証プライム", "rank": "S", "score": 90,
@@ -1439,7 +1439,7 @@ def _test_intraday_watchlist() -> None:
     subject = build_subject([alert])
     assert subject.startswith("[GitHub][Intraday][v2026-07-06]"), subject
 
-    old_env = {key: os.environ.get(key) for key in ("GITHUB_SHA", "GITHUB_RUN_ID", "ENABLE_INTRADAY_MAIL")}
+    old_env = {key: os.environ.get(key) for key in ("GITHUB_SHA", "GITHUB_RUN_ID", "ENABLE_INTRADAY_MAIL", "INTRADAY_STATUS_MAIL_ON_NO_NEW")}
     try:
         os.environ["GITHUB_SHA"] = "abc123"
         os.environ["GITHUB_RUN_ID"] = "98765"
@@ -1451,10 +1451,19 @@ def _test_intraday_watchlist() -> None:
             "run_id: 98765",
             "version: 2026-07-06",
         ], body
+        assert "検出アラート: 1件" in body
+        status_body = build_body([], detected_count=19, status_note="手動確認")
+        assert "検出アラート: 19件" in status_body
+        assert "新規アラート: 0件" in status_body
+        assert "手動確認" in status_body
         os.environ["ENABLE_INTRADAY_MAIL"] = "false"
         assert intraday_mail_enabled() is False
         os.environ["ENABLE_INTRADAY_MAIL"] = "true"
         assert intraday_mail_enabled() is True
+        os.environ["INTRADAY_STATUS_MAIL_ON_NO_NEW"] = "true"
+        assert status_mail_on_no_new_enabled() is True
+        os.environ["INTRADAY_STATUS_MAIL_ON_NO_NEW"] = "false"
+        assert status_mail_on_no_new_enabled() is False
     finally:
         for key, value in old_env.items():
             if value is None:
@@ -1468,6 +1477,8 @@ def _test_intraday_cloud_workflow_contract() -> None:
     workflow = (Path(__file__).resolve().parent / ".github" / "workflows" / "intraday_high_alert.yml").read_text(encoding="utf-8")
     assert 'ENABLE_INTRADAY_MAIL: "false"' not in workflow
     assert "send_mail:" in workflow
+    assert "status_mail_on_no_new:" in workflow
+    assert "INTRADAY_STATUS_MAIL_ON_NO_NEW" in workflow
     assert "github.event_name == 'schedule' && 'true'" in workflow
     assert "actions/cache/restore@v4" in workflow
     assert "actions/cache/save@v4" in workflow
