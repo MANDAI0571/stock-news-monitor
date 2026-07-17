@@ -1453,6 +1453,7 @@ def _test_intraday_watchlist() -> None:
             "version: 2026-07-06",
         ], body
         assert "検出アラート: 1件" in body
+        assert "https://finance.yahoo.co.jp/quote/7011.T/chart" in body
         status_body = build_body([], detected_count=19, status_note="手動確認")
         assert "検出アラート: 19件" in status_body
         assert "新規アラート: 0件" in status_body
@@ -1506,15 +1507,25 @@ def _test_cloud_digest_mail() -> None:
         (out / "note_claude.md").write_text("# Claude案\n\nWATCH なし\n", encoding="utf-8")
         (out / "metron_kpi_report.md").write_text("# メトロンKPI\n\n- note4本: OK\n", encoding="utf-8")
         (out / "screening_pullback_20260621_132309.csv").write_text("code,name\n1111,古い候補\n", encoding="utf-8")
-        (out / "screening_pullback_20260716_160000.csv").write_text("code,name\n7011,三菱重工\n", encoding="utf-8")
+        (out / "screening_pullback_20260716_160000.csv").write_text(
+            "code,name,current_price,ma25,ma200,ma240,dist_25ma_pct,dist_200ma_pct,dist_52w_high_pct,turnover_20d,ma25_touch,ma200_touch\n"
+            "7011,三菱重工,4380,4310,3900,3880,1.6,12.3,4.5,123456789,true,false\n"
+            "1333,Ｕｍｉｏｓ,1307,1274,1291,1248,2.6,1.3,16.0,629260612,true,true\n",
+            encoding="utf-8",
+        )
 
         digest = build_digest(out, now=datetime(2026, 7, 16, 18, 40, tzinfo=ZoneInfo("Asia/Tokyo")))
-        assert digest.subject == "【DUKEクラウド】本日のスクリーニング結果 2026-07-16"
+        assert digest.subject == "【DUKEクラウド】25MA/200MA・本日のスクリーニング結果 2026-07-16"
         assert "25MA/押し目" in digest.body
         assert "25MAタッチ候補" in digest.body
+        assert "## 25MA/200MA候補（本文で確認）" in digest.body
+        assert "25MAタッチ（2件）" in digest.body
+        assert "200MAタッチ（1件）" in digest.body
+        assert "https://finance.yahoo.co.jp/quote/1333.T/chart" in digest.body
         assert "52週新高値" in digest.body
         assert "メトロンKPI" in digest.body
-        assert "nan" not in digest.body.lower()
+        assert "| nan" not in digest.body.lower()
+        assert "nan |" not in digest.body.lower()
         assert any(path.name == "screening_pullback_20260716_160000.csv" for path in collect_attachments(out))
         assert not any(path.name == "screening_pullback_20260621_132309.csv" for path in collect_attachments(out))
 
@@ -1522,16 +1533,23 @@ def _test_cloud_digest_mail() -> None:
     note_workflow = (project_root / ".github" / "workflows" / "note_draft_cloud.yml").read_text(encoding="utf-8")
     daily_workflow = (project_root / ".github" / "workflows" / "daily-discipline.yml").read_text(encoding="utf-8")
     resend_workflow = (project_root / ".github" / "workflows" / "cloud_digest_mail.yml").read_text(encoding="utf-8")
-    assert "Send cloud digest mail" in note_workflow
+    assert "send_mail:" in note_workflow
+    assert "SEND_CLOUD_DIGEST" in note_workflow
+    assert "Build or send cloud digest mail" in note_workflow
     assert "cloud_mail_digest.py --output-dir outputs" in note_workflow
+    assert "cloud_mail_digest.py --output-dir outputs --dry-run" in note_workflow
     assert "outputs/screening_pullback_*.csv" in note_workflow
+    assert "send_mail:" in daily_workflow
+    assert "SEND_GMAIL" in daily_workflow
     assert "python daily_discipline_run.py --send-gmail" in daily_workflow
     assert "GMAIL_USER secret is missing" in daily_workflow
     assert "workflow_dispatch:" in resend_workflow
+    assert "send_mail:" in resend_workflow
     assert "rm -rf outputs" in resend_workflow
     assert "daily-discipline.yml" in resend_workflow
     assert "note_draft_cloud.yml" in resend_workflow
     assert "cloud_mail_digest.py --output-dir outputs" in resend_workflow
+    assert "cloud_mail_digest.py --output-dir outputs --dry-run" in resend_workflow
     print("self-test: cloud_digest_mail(25MAメール・手動再送) OK")
 
 

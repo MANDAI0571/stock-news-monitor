@@ -2,6 +2,11 @@ name: Daily Discipline Screening
 
 on:
   workflow_dispatch:
+    inputs:
+      send_mail:
+        description: "手動実行でメールを送る（通常のテストではOFF）"
+        type: boolean
+        default: false
   schedule:
     # 07:30 JST, Monday-Friday. GitHub Actions uses UTC.
     - cron: "30 22 * * 0-4"
@@ -10,6 +15,8 @@ jobs:
   daily-discipline:
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    env:
+      SEND_GMAIL: ${{ github.event_name == 'schedule' && 'true' || (github.event.inputs.send_mail == 'true' && 'true' || 'false') }}
 
     steps:
       - name: Checkout
@@ -36,6 +43,7 @@ jobs:
           end=$(date +%s); echo "[TIMER] install_dependencies elapsed=$((end-start))s"
 
       - name: Check Gmail secrets
+        if: env.SEND_GMAIL == 'true'
         env:
           GMAIL_USER: ${{ secrets.GMAIL_USER }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
@@ -54,7 +62,11 @@ jobs:
           MAIL_TO: ${{ secrets.MAIL_TO }}
         run: |
           start=$(date +%s)
-          python daily_discipline_run.py --send-gmail
+          if [ "$SEND_GMAIL" = "true" ]; then
+            python daily_discipline_run.py --send-gmail
+          else
+            python daily_discipline_run.py
+          fi
           end=$(date +%s); echo "[TIMER] daily_discipline_run elapsed=$((end-start))s"
 
       - name: Run decision engine

@@ -339,8 +339,17 @@ def _format_alert(alert: Alert) -> list[str]:
         f"  🗓 決算予定日:{alert.earnings_date}",
         f"  👥 OpenWork評価:{alert.openwork_score}",
         f"  理由:{alert.reason}",
+        f"  📈 チャート:{_chart_url(alert.code)}",
         "",
     ]
+
+
+def _chart_url(code: str) -> str:
+    return (
+        f"https://finance.yahoo.co.jp/quote/{code}.T/chart"
+        "?frm=dly&trm=6m&scl=stndrd&styl=cndl&evnts=volume"
+        "&ovrIndctr=sma%2Cmma%2Clma&addIndctr=&compare="
+    )
 
 
 # --------------------------------------------------------------------------
