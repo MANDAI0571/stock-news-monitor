@@ -53,7 +53,12 @@ def classify_high_profile(history: pd.DataFrame) -> dict[str, object]:
 
     chosen = _choose_profile(wide, recent)
     base = _as_dict(chosen or HighProfile())
-    if swing.get("swing_high_break"):
+    # T-K修正(2026-07-16): 52週/直近高値の判定が付いた銘柄を SWING_HIGH_BREAK で
+    # 上書きしない。52週新高値を付けた銘柄は定義上ほぼ必ず30日スイング高値も
+    # ブレイクするため、旧実装では「到達」銘柄が全員 SWING_HIGH_BREAK に化けて
+    # 52週リスト(_collect_highs_row)の入口で弾かれ、到達が常に0件になっていた。
+    # スイング情報自体は swing_* 列として全行に残る（情報は失わない）。
+    if swing.get("swing_high_break") and base.get("high_type") in ("", None, "OTHER"):
         base |= _swing_as_high_profile(swing)
     return base | swing
 
