@@ -477,7 +477,12 @@ def _test_swing_high_break_9256_style() -> None:
     assert swing["swing_high_break"] is True
 
     profile = classify_high_profile(history)
-    assert profile["high_type"] == "SWING_HIGH_BREAK"
+    # T-K修正(2026-07-16): このケースは当日High 3560 が過去最高High 3520 も上回って
+    # おり「52週新高値」でもある。旧実装は SWING_HIGH_BREAK で上書きしていたため
+    # 52週リストの到達が常に0件になっていた。正しくは 52W_NEW_HIGH を優先し、
+    # スイング情報は swing_* 列として保持する。
+    assert profile["high_type"] == "52W_NEW_HIGH", profile["high_type"]
+    assert profile["swing_high_break"] is True
     assert profile["swing_high_label"] == "直近スイング高値ブレイク"
 
     mail_df = pd.DataFrame(
@@ -500,9 +505,18 @@ def _test_swing_high_break_9256_style() -> None:
         ]
     )
     body = build_candidate_body(mail_df, "NORMAL")
-    assert "## 【直近高値ブレイク】" in body
+    # T-K修正(2026-07-16): 52週新高値を兼ねるため【52週高値更新】セクションに載る。
+    assert "## 【52週高値更新】" in body
     assert "9256" in body
-    assert "3520" in body
+    # 純スイングブレイク（52週高値は未更新）は従来どおり【直近高値ブレイク】に載る。
+    pure_profile = dict(profile)
+    pure_profile["high_type"] = "SWING_HIGH_BREAK"
+    pure_df = mail_df.copy()
+    for k, v in pure_profile.items():
+        pure_df[k] = [v]
+    pure_body = build_candidate_body(pure_df, "NORMAL")
+    assert "## 【直近高値ブレイク】" in pure_body
+    assert "3520" in pure_body
 
 
 def _test_openwork_display_only() -> None:
@@ -900,10 +914,36 @@ def _test_kabutan_high_and_quality_flags() -> None:
     assert float(profile2["dist_to_high_pct"]) <= 3
 
     # 3) 上場1年未満（120営業日）でも上場来ベースで新高値判定できる。
+    #    T-K修正(2026-07-16): SWING_HIGH_BREAK の許容を撤廃。52W判定が最優先。
     short_dates = pd.bdate_range("2026-01-01", periods=120)
     close3 = pd.Series(range(500, 620), index=short_dates, dtype=float)
     profile3 = classify_high_profile(_hist(close3))
-    assert profile3["high_type"] in {"52W_NEW_HIGH", "SWING_HIGH_BREAK"}, profile3["high_type"]
+    assert profile3["high_type"] == "52W_NEW_HIGH", profile3["high_type"]
+
+    # 3b) 回帰テスト（到達0件バグ）: 52週新高値とスイング高値ブレイクが同日に起きても
+    #     high_type は 52W_NEW_HIGH のまま（SWING_HIGH_BREAK で上書きされない）。
+    #     スイング情報は swing_* 列として保持される。
+    close3b = pd.Series(range(700, 1000), index=dates, dtype=float)
+    high3b = close3b + 3.0
+    high3b.iloc[-10] = 990.0   # 直近5-30日に明確なスイング高値
+    close3b.iloc[-1], high3b.iloc[-1] = 1000.0, 1010.0  # 当日: 52週高値もスイング高値も更新
+    profile3b = classify_high_profile(_hist(close3b, high3b))
+    assert profile3b["high_type"] == "52W_NEW_HIGH", (
+        "52週新高値がSWING_HIGH_BREAKに上書きされている（到達0件バグの再発）: "
+        + str(profile3b["high_type"])
+    )
+    assert "swing_high_break" in profile3b  # スイング情報自体は失わない
+
+    # 3c) 52週高値から3%超・60日高値からも3%超だがスイング高値だけ更新
+    #     → SWING_HIGH_BREAK は従来どおり付く（純スイングブレイクの後方互換）。
+    close3c = pd.Series(1000.0, index=dates)
+    high3c = pd.Series(1005.0, index=dates)
+    high3c.iloc[100] = 1400.0                     # 52週高値（遠い過去・乖離大）
+    high3c.iloc[-50] = 1200.0                     # 60日窓内の高値（乖離>3%）
+    high3c.iloc[-10] = 1050.0                     # 5-30日前の明確なスイング高値
+    close3c.iloc[-1], high3c.iloc[-1] = 1058.0, 1060.0  # 当日スイング高値のみ更新
+    profile3c = classify_high_profile(_hist(close3c, high3c))
+    assert profile3c["high_type"] == "SWING_HIGH_BREAK", profile3c["high_type"]
 
     # 4) 鮮度: 毎日更新の右肩上がり → breaks_20d=20・初回ブレイクではない。
     fresh_up = analyze_high_freshness(_hist(pd.Series(range(700, 1000), index=dates, dtype=float)))
