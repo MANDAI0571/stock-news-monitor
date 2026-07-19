@@ -1,0 +1,6 @@
+{
+  "_note": "動作確認用のサンプル設定です。signup_base_url と note_url を実際のURLに置き換えてください。秘密情報（パスワード・APIキー等）はここに書かないこと。",
+  "signup_base_url": "https://example.com/signup",
+  "note_url": "https://note.com/example/n/xxxxxxxx",
+  "campaign": ""
+}
