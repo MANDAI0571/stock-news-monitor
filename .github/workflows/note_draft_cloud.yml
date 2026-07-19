@@ -142,6 +142,60 @@ jobs:
             python3 note_autosave.py --cloud-article --note-url-file note_draft_url_cloud.txt
           fi
 
+      - name: Build Phase 1 distribution drafts (no external posting)
+        env:
+          PHASE1_SIGNUP_BASE_URL: ${{ secrets.PHASE1_SIGNUP_BASE_URL }}
+        run: |
+          mkdir -p outputs/phase1_distribution
+          status_file="outputs/phase1_distribution/status.txt"
+          if [ -z "$PHASE1_SIGNUP_BASE_URL" ]; then
+            echo "disabled: PHASE1_SIGNUP_BASE_URL is not configured" | tee "$status_file"
+            exit 0
+          fi
+          if [ ! -s outputs/note_highs.md ]; then
+            echo "failed: outputs/note_highs.md is missing" | tee "$status_file"
+            exit 1
+          fi
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          note_url = ""
+          for path in (Path("outputs/note_draft_url_cloud.txt"), Path("note_draft_url_cloud.txt")):
+              if path.exists():
+                  note_url = path.read_text(encoding="utf-8").strip()
+                  break
+          config = {
+              "signup_base_url": os.environ["PHASE1_SIGNUP_BASE_URL"],
+              "note_url": note_url,
+              "campaign": "",
+          }
+          Path("/tmp/phase1_distribution_config.json").write_text(
+              json.dumps(config, ensure_ascii=False), encoding="utf-8"
+          )
+          PY
+          python3 phase1/tools/generate_distribution_drafts.py \
+            --note outputs/note_highs.md \
+            --config /tmp/phase1_distribution_config.json \
+            --content morning \
+            --out-dir outputs/phase1_distribution \
+            --check
+          echo "ready: drafts generated and compliance passed; external posting disabled" | tee "$status_file"
+
+      - name: Build Phase 1 Metron daily summary when real data exists
+        if: always()
+        run: |
+          mkdir -p outputs/phase1_distribution
+          if [ ! -s data/metron_daily.csv ]; then
+            echo "disabled: data/metron_daily.csv is not configured" > outputs/phase1_distribution/metron_status.txt
+            exit 0
+          fi
+          python3 phase1/tools/generate_metron_summary.py \
+            --csv data/metron_daily.csv \
+            --out outputs/phase1_distribution/metron_daily.md
+          echo "ready: real CSV summary generated" > outputs/phase1_distribution/metron_status.txt
+
       - name: Show summary
         if: always()
         run: |
@@ -233,6 +287,8 @@ jobs:
             outputs/track_record.json
             outputs/metron_kpi_report.md
             outputs/metron_kpi.json
+            outputs/phase1_distribution/*.md
+            outputs/phase1_distribution/*.txt
             outputs/screening_result.csv
             outputs/screening_result_*.csv
             outputs/screening_pullback_*.csv
