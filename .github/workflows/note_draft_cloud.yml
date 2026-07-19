@@ -42,6 +42,10 @@ jobs:
       QUICK_MODE: ${{ github.event_name == 'schedule' && 'false' || (github.event.inputs.quick_mode == 'false' && 'false' || 'true') }}
       MAX_SYMBOLS: ${{ github.event.inputs.max_symbols || '30' }}
       PROGRESS_EVERY: "25"
+      # v10(2026-07-19): カードのPER/PBR/ROE等と決算予定日をYahoo Financeから補完
+      # （表示対象の銘柄のみ・失敗しても記事生成は止めない・取得できない項目は未取得表示）
+      NOTE_FETCH_FUNDAMENTALS: "1"
+      NOTE_FETCH_EARNINGS: "1"
       SEND_CLOUD_DIGEST: ${{ github.event_name == 'schedule' && 'true' || (github.event.inputs.send_mail == 'true' && 'true' || 'false') }}
 
     steps:
@@ -142,11 +146,12 @@ jobs:
             python3 note_autosave.py --cloud-article --note-url-file note_draft_url_cloud.txt
           fi
 
-      # v8(2026-07-19): 4本Note（①52週新高値/②押し目/③ChatGPT/④Claude）の下書き保存。
-      # 従来はクラウド記事1本のみ保存で、manifest駆動の4本保存モード（note_autosave.py
-      # を--cloud-articleなしで実行）がどのスケジュールにも配線されていなかった。
-      # 4本すべて保存されない場合はこのステップを失敗させ、気付けるようにする。
-      - name: Save 4-note drafts in note.com (manifest)
+      # v8(2026-07-19): manifest駆動のNote下書き保存を定時実行に配線し、
+      # 保存本数をゲートで検知（保存漏れの静かな失敗を防止）。
+      # v10(2026-07-19): ③ChatGPT版はCodexの独自便（chatgpt-300man-note.yml・16:45）に分離したため、
+      # ここで保存するのは①52週新高値/②押し目/④Claudeの3本（ゲート3/3）。
+      # ③は chatgpt-300man-note.yml（Codex担当）が16:45に生成・保存する（2重保存防止）。
+      - name: Save 3-note drafts in note.com (manifest)
         env:
           NOTE_STORAGE_STATE: ${{ secrets.NOTE_STORAGE_STATE }}
           NOTE_EMAIL: ${{ secrets.NOTE_EMAIL }}
@@ -161,7 +166,7 @@ jobs:
             echo "休場日スキップ（正常）"
             exit 0
           fi
-          grep -q "note_draft_saved=4/4" note_autosave_multi.log || { echo "::error::4本のnote下書き保存が未完了（note_draft_savedを確認）"; exit 1; }
+          grep -q "note_draft_saved=3/3" note_autosave_multi.log || { echo "::error::3本のnote下書き保存が未完了（note_draft_savedを確認）"; exit 1; }
 
       - name: Show summary
         if: always()
