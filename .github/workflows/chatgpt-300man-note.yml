@@ -1,0 +1,123 @@
+name: ChatGPT 300man Note
+
+on:
+  workflow_dispatch:
+    inputs:
+      send_mail:
+        description: "ChatGPT 300万円運用メールを送る"
+        type: boolean
+        default: true
+      save_note:
+        description: "note.com下書きを保存する"
+        type: boolean
+        default: true
+  schedule:
+    # 16:45 JST, Monday-Friday. Generates only the ChatGPT 300万円運用 note.
+    - cron: "45 7 * * 1-5"
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: chatgpt-300man-note
+  cancel-in-progress: false
+
+jobs:
+  chatgpt-300man-note:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    env:
+      SEND_CHATGPT_300MAN_MAIL: ${{ github.event_name == 'schedule' && 'true' || (github.event.inputs.send_mail == 'true' && 'true' || 'false') }}
+      SAVE_CHATGPT_300MAN_NOTE: ${{ github.event_name == 'schedule' && 'true' || (github.event.inputs.save_note == 'true' && 'true' || 'false') }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          python -m playwright install --with-deps chromium
+
+      - name: Fetch latest morning candidates
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p outputs
+          run_id=$(gh run list --workflow daily-discipline.yml --branch "${GITHUB_REF_NAME}" --status success --limit 1 --json databaseId --jq '.[0].databaseId' 2>/dev/null || true)
+          if [ -z "$run_id" ]; then
+            echo "::warning::successful daily-discipline run was not found"
+            exit 0
+          fi
+          gh run download "$run_id" -n stock-news-monitor-outputs -D outputs
+
+      - name: Build ChatGPT 300万円 operation note
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+          SEND_CHATGPT_300MAN_MAIL: ${{ env.SEND_CHATGPT_300MAN_MAIL }}
+        run: |
+          if [ "$SEND_CHATGPT_300MAN_MAIL" = "true" ]; then
+            python3 chatgpt_300man_note.py --output-dir outputs --journal data/chatgpt_300man_journal.csv --send-mail
+          else
+            python3 chatgpt_300man_note.py --output-dir outputs --journal data/chatgpt_300man_journal.csv
+          fi
+
+      - name: Persist ChatGPT 300万円 journal
+        run: |
+          if git diff --quiet -- data/chatgpt_300man_journal.csv; then
+            echo "chatgpt_300man_journal=unchanged"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/chatgpt_300man_journal.csv
+          git commit -m "Update ChatGPT 300man journal"
+          git push
+
+      - name: Save ChatGPT 300万円 note draft in note.com
+        if: env.SAVE_CHATGPT_300MAN_NOTE == 'true'
+        env:
+          NOTE_STORAGE_STATE: ${{ secrets.NOTE_STORAGE_STATE }}
+          NOTE_EMAIL: ${{ secrets.NOTE_EMAIL }}
+          NOTE_PASSWORD: ${{ secrets.NOTE_PASSWORD }}
+        run: |
+          if [ ! -f outputs/note_drafts_manifest.json ]; then
+            echo "note_autosave_skipped=no_chatgpt_300man_manifest"
+            exit 0
+          fi
+          if command -v xvfb-run >/dev/null 2>&1; then
+            xvfb-run -a python3 note_autosave.py --output-dir outputs --no-headless | tee note_autosave_chatgpt_300man.log
+          else
+            python3 note_autosave.py --output-dir outputs | tee note_autosave_chatgpt_300man.log
+          fi
+          if grep -q "note_autosave_skipped=holiday_no_new_data" note_autosave_chatgpt_300man.log; then
+            echo "休場日スキップ（正常）"
+            exit 0
+          fi
+          grep -q "note_draft_saved=1/1" note_autosave_chatgpt_300man.log || { echo "::error::ChatGPT 300万円運用note下書き保存が未完了"; exit 1; }
+
+      - name: Upload ChatGPT 300万円 artifact
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: chatgpt-300man-note
+          path: |
+            outputs/note_chatgpt_300man.md
+            outputs/note_chatgpt_300man.html
+            outputs/note_chatgpt_300man_title.txt
+            outputs/note_drafts_manifest.json
+            outputs/note_draft_url_chatgpt_300man.txt
+            outputs/chatgpt_300man_mail_subject.txt
+            outputs/chatgpt_300man_mail_body.md
+            outputs/chatgpt_300man_portfolio.csv
+          if-no-files-found: warn
