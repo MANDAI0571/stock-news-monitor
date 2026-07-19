@@ -248,6 +248,11 @@ def fill_open_entries(
 
     open_positions = _open_positions(journal)
     open_codes = {normalize_code(code) for code in open_positions.get("code", pd.Series(dtype=str)).tolist()}
+    today_codes = {
+        normalize_code(row.get("code", ""))
+        for _, row in journal.iterrows()
+        if _text(row.get("entry_date", "")) == trading_date.isoformat()
+    }
     free_slots = max(0, MAX_POSITIONS - len(open_positions))
     if free_slots <= 0:
         return journal, [{"status": "SKIP", "reason": "already fully invested"}]
@@ -264,7 +269,7 @@ def fill_open_entries(
         if len(new_rows) >= free_slots:
             break
         code = normalize_code(row.get("code", ""))
-        if not code or code in open_codes:
+        if not code or code in open_codes or code in today_codes:
             continue
         ticker = ticker_for(row)
         open_price = price_fetcher(ticker, trading_date)
@@ -306,6 +311,7 @@ def fill_open_entries(
         new_rows.append(item)
         fills.append({**item, "status": "FILLED"})
         open_codes.add(code)
+        today_codes.add(code)
         next_slot += 1
 
     if new_rows:
@@ -342,6 +348,55 @@ def mark_to_market(journal: pd.DataFrame, screening: pd.DataFrame) -> pd.DataFra
         out.at[idx, "unrealized_pnl"] = int(round(pnl))
         out.at[idx, "unrealized_pnl_pct"] = round((current - entry) / entry * 100, 2)
     return out.reindex(columns=JOURNAL_COLUMNS)
+
+
+def apply_exit_rules(journal: pd.DataFrame, trading_date: date) -> tuple[pd.DataFrame, int]:
+    """Close paper positions using the recorded end-of-day price and fixed rules."""
+    if journal.empty:
+        return journal, 0
+    out = journal.copy().astype(object)
+    closed = 0
+    for idx, row in out.iterrows():
+        if _text(row.get("status")).upper() != "OPEN":
+            continue
+        current = _positive_float(row.get("current_price"))
+        stop = _positive_float(row.get("stop_loss"))
+        take = _positive_float(row.get("take_profit"))
+        timeout_text = _text(row.get("timeout_date"))
+        if current is None:
+            continue
+
+        reason = ""
+        if stop is not None and current <= stop:
+            reason = "損切り"
+        elif take is not None and current >= take:
+            reason = "利確"
+        elif timeout_text:
+            try:
+                if trading_date >= date.fromisoformat(timeout_text):
+                    reason = "10営業日タイムアウト"
+            except ValueError:
+                pass
+        if not reason:
+            continue
+
+        out.at[idx, "status"] = "CLOSED"
+        out.at[idx, "exit_date"] = trading_date.isoformat()
+        out.at[idx, "exit_price"] = round(current, 2)
+        out.at[idx, "exit_reason"] = reason
+        closed += 1
+    return out.reindex(columns=JOURNAL_COLUMNS), closed
+
+
+def update_evening_journal(output_dir: Path, journal_path: Path, trading_date: date) -> int:
+    screening_path = _latest_path(output_dir, "screening_result.csv", "screening_result_*.csv")
+    screening = _read_csv(screening_path)
+    journal = load_journal(journal_path)
+    journal = mark_to_market(journal, screening)
+    journal, closed = apply_exit_rules(journal, trading_date)
+    if not journal.empty:
+        save_journal(journal, journal_path)
+    return closed
 
 
 def portfolio_view_for_note(
@@ -796,6 +851,7 @@ def main() -> None:
         record_open_fill(output_dir, journal_path, target_date)
         return
 
+    closed = update_evening_journal(output_dir, journal_path, today)
     title, body, portfolio = build_note(output_dir, journal_path)
     write_outputs(output_dir, title, body, portfolio)
     maybe_send_mail(
@@ -806,6 +862,7 @@ def main() -> None:
     )
     print("chatgpt_300man_note=generated")
     print(f"chatgpt_300man_open_journal={_uses_open_journal(portfolio)}")
+    print(f"chatgpt_300man_closed_positions={closed}")
 
 
 if __name__ == "__main__":

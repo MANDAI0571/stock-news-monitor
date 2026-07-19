@@ -17,7 +17,7 @@ on:
 
 permissions:
   actions: read
-  contents: read
+  contents: write
 
 concurrency:
   group: chatgpt-300man-note
@@ -71,6 +71,18 @@ jobs:
           else
             python3 chatgpt_300man_note.py --output-dir outputs --journal data/chatgpt_300man_journal.csv
           fi
+
+      - name: Persist ChatGPT 300万円 journal
+        run: |
+          if git diff --quiet -- data/chatgpt_300man_journal.csv; then
+            echo "chatgpt_300man_journal=unchanged"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/chatgpt_300man_journal.csv
+          git commit -m "Update ChatGPT 300man journal"
+          git push
 
       - name: Save ChatGPT 300万円 note draft in note.com
         if: env.SAVE_CHATGPT_300MAN_NOTE == 'true'
