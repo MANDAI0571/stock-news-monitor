@@ -142,6 +142,27 @@ jobs:
             python3 note_autosave.py --cloud-article --note-url-file note_draft_url_cloud.txt
           fi
 
+      # v8(2026-07-19): 4本Note（①52週新高値/②押し目/③ChatGPT/④Claude）の下書き保存。
+      # 従来はクラウド記事1本のみ保存で、manifest駆動の4本保存モード（note_autosave.py
+      # を--cloud-articleなしで実行）がどのスケジュールにも配線されていなかった。
+      # 4本すべて保存されない場合はこのステップを失敗させ、気付けるようにする。
+      - name: Save 4-note drafts in note.com (manifest)
+        env:
+          NOTE_STORAGE_STATE: ${{ secrets.NOTE_STORAGE_STATE }}
+          NOTE_EMAIL: ${{ secrets.NOTE_EMAIL }}
+          NOTE_PASSWORD: ${{ secrets.NOTE_PASSWORD }}
+        run: |
+          if command -v xvfb-run >/dev/null 2>&1; then
+            xvfb-run -a python3 note_autosave.py --no-headless | tee note_autosave_multi.log
+          else
+            python3 note_autosave.py | tee note_autosave_multi.log
+          fi
+          if grep -q "note_autosave_skipped=holiday_no_new_data" note_autosave_multi.log; then
+            echo "休場日スキップ（正常）"
+            exit 0
+          fi
+          grep -q "note_draft_saved=4/4" note_autosave_multi.log || { echo "::error::4本のnote下書き保存が未完了（note_draft_savedを確認）"; exit 1; }
+
       - name: Show summary
         if: always()
         run: |
@@ -224,6 +245,7 @@ jobs:
             outputs/note_drafts_manifest.json
             outputs/note_cloud_artifact_manifest.json
             outputs/note_draft_url_cloud.txt
+            outputs/note_draft_url_*.txt
             outputs/cloud_digest_mail_subject.txt
             outputs/cloud_digest_mail_body.md
             outputs/note_autosave_verify_cloud.json
