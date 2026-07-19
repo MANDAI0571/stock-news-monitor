@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import os
+import html
 import mimetypes
+import re
 import smtplib
 from dataclasses import dataclass
 from datetime import date
@@ -121,6 +123,7 @@ def send_gmail(
     message["Importance"] = "high"
     message["X-Priority"] = "1"
     message.set_content(body)
+    message.add_alternative(_body_to_html(body), subtype="html")
 
     for attachment in _expand_attachments(attachments):
         path = Path(attachment)
@@ -216,9 +219,10 @@ def _format_candidate(row: pd.Series) -> list[str]:
     lot = _text(row, "lot_value_100")
     openwork = format_openwork_score(row.get("openwork_score"))
     return [
-        f"{code} {name}",
+        f"[{code} {name}]({_chart_url(code)})",
         f"  株価:{price}円 / 点数:{score} / 100株:{lot}円 / OpenWork: {openwork}",
         f"  52週高値差:{dist}% / 出来高比:{vol}",
+        f"  📈 チャート:{_chart_url(code)}",
         f"  理由:{reason}",
         "",
     ]
@@ -228,4 +232,36 @@ def _text(row: pd.Series, key: str) -> str:
     value = row.get(key, "")
     if pd.isna(value):
         return ""
-    return str(value)
+    text = str(value)
+    return text[:-2] if key == "code" and text.endswith(".0") else text
+
+
+def _chart_url(code: str) -> str:
+    return (
+        f"https://finance.yahoo.co.jp/quote/{code}.T/chart"
+        "?frm=dly&trm=6m&scl=stndrd&styl=cndl&evnts=volume"
+        "&ovrIndctr=sma%2Cmma%2Clma&addIndctr=&compare="
+    )
+
+
+def _body_to_html(body: str) -> str:
+    escaped = html.escape(body)
+
+    def markdown_link(match: re.Match[str]) -> str:
+        label = match.group(1)
+        url = match.group(2)
+        return f'<a href="{url}" target="_blank" rel="noopener noreferrer">{label}</a>'
+
+    linked = re.sub(r"\[([^\]\n]+)\]\((https?://[^)\s]+)\)", markdown_link, escaped)
+    linked = re.sub(
+        r"(?<![\"'=])\bhttps?://[^\s<>()]+",
+        lambda match: f'<a href="{match.group(0)}" target="_blank" rel="noopener noreferrer">{match.group(0)}</a>',
+        linked,
+    )
+    return (
+        "<html><body>"
+        "<pre style=\"font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;"
+        "white-space:pre-wrap;line-height:1.5\">"
+        f"{linked}"
+        "</pre></body></html>"
+    )

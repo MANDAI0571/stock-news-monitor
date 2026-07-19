@@ -247,11 +247,12 @@ def _ma_touch_table(title: str, rows: list[dict[str, str]], dist_col: str, limit
     ])
     for row in rows[:limit]:
         code = _normalize_code(_cell(row, "code"))
+        code_link = f"[{code}]({_chart_url(code)})" if code != "-" else "-"
         lines.append(
             "| "
             + " | ".join(
                 [
-                    code,
+                    code_link,
                     _cell(row, "name"),
                     _cell(row, "current_price"),
                     _cell(row, "ma25"),

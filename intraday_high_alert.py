@@ -332,7 +332,7 @@ def _format_alert(alert: Alert) -> list[str]:
     else:
         dist_text = f"あと{alert.dist_pct:.1f}%"
     return [
-        f"{alert.code} {alert.name}",
+        f"[{alert.code} {alert.name}]({_chart_url(alert.code)})",
         f"  現在値:{alert.current_price:,.1f}円 / 種別:{alert.alert_type}",
         f"  {alert.line_label}ライン:{alert.line_price:,.1f}円 / ラインまで:{dist_text}",
         f"  出来高比:{alert.volume_ratio:.2f}倍 / 売買代金:{alert.turnover_20d / 100_000_000:.1f}億円",

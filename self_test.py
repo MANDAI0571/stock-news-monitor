@@ -7,7 +7,7 @@ from tempfile import TemporaryDirectory
 
 import pandas as pd
 
-from gmail_notify import DISCLAIMER, build_candidate_body, build_subject
+from gmail_notify import DISCLAIMER, _body_to_html, build_candidate_body, build_subject
 from fetch_market import build_market_snapshot
 from market_regime import Regime, fetch_regime
 from paper_portfolio_discipline import build_discipline_portfolio
@@ -427,6 +427,9 @@ def _test_gmail_body() -> None:
     body = build_candidate_body(screening, "NORMAL")
     assert "■ Sランク" in body
     assert "7735" in body
+    assert "[7735 ＳＣＲＥＥＮホールディングス](https://finance.yahoo.co.jp/quote/7735.T/chart" in body
+    assert "📈 チャート:https://finance.yahoo.co.jp/quote/7735.T/chart" in body
+    assert '<a href="https://finance.yahoo.co.jp/quote/7735.T/chart' in _body_to_html(body)
     assert DISCLAIMER in body
 
     no_s_body = build_candidate_body(screening.assign(rank="A"), "NORMAL")
@@ -1453,6 +1456,7 @@ def _test_intraday_watchlist() -> None:
             "version: 2026-07-06",
         ], body
         assert "検出アラート: 1件" in body
+        assert "[7011 三菱重工](https://finance.yahoo.co.jp/quote/7011.T/chart" in body
         assert "https://finance.yahoo.co.jp/quote/7011.T/chart" in body
         status_body = build_body([], detected_count=19, status_note="手動確認")
         assert "検出アラート: 19件" in status_body
@@ -1521,6 +1525,7 @@ def _test_cloud_digest_mail() -> None:
         assert "## 25MA/200MA候補（本文で確認）" in digest.body
         assert "25MAタッチ（2件）" in digest.body
         assert "200MAタッチ（1件）" in digest.body
+        assert "[1333](https://finance.yahoo.co.jp/quote/1333.T/chart" in digest.body
         assert "https://finance.yahoo.co.jp/quote/1333.T/chart" in digest.body
         assert "52週新高値" in digest.body
         assert "メトロンKPI" in digest.body
@@ -1535,6 +1540,9 @@ def _test_cloud_digest_mail() -> None:
     resend_workflow = (project_root / ".github" / "workflows" / "cloud_digest_mail.yml").read_text(encoding="utf-8")
     assert "send_mail:" in note_workflow
     assert "SEND_CLOUD_DIGEST" in note_workflow
+    assert "Save cloud Note draft in note.com" in note_workflow
+    assert "outputs/note_body.md" in note_workflow
+    assert "note_draft_url_cloud.txt" in note_workflow
     assert "Build or send cloud digest mail" in note_workflow
     assert "cloud_mail_digest.py --output-dir outputs" in note_workflow
     assert "cloud_mail_digest.py --output-dir outputs --dry-run" in note_workflow
