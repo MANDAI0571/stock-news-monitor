@@ -14,6 +14,7 @@ import pandas as pd
 from scanner.highs import build_high_sections_markdown
 from scanner.openwork import add_openwork_scores, format_openwork_score
 from scanner.prices import fetch_next_earnings_date
+from paper_open_fill import portfolio_view_for_note
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -197,6 +198,7 @@ def build_candidates_table(df: pd.DataFrame, title: str, max_rows: int = 10) -> 
 
 
 def build_note_body(screening: pd.DataFrame, discipline: pd.DataFrame, backtest: dict | None, sources: SourceFiles) -> str:
+    discipline = portfolio_view_for_note(discipline, screening)
     top10 = top_buy_candidates(screening, 10)
     today = datetime.now().strftime("%Y-%m-%d")
 
@@ -797,19 +799,20 @@ def build_chatgpt_note(discipline: pd.DataFrame, screening: pd.DataFrame, source
     """①ChatGPT版。Claudeは意見を書かず、両AI共通の事実データ(300万保有・候補)だけを枠として用意する。
     本文の相場観・売買コメントは高重さんがChatGPTに書かせる（Claudeが捏造しない）。"""
     today = datetime.now().strftime("%Y-%m-%d")
+    portfolio = portfolio_view_for_note(discipline, screening)
     lines = [f"# {NOTE4_TITLES['chatgpt']} {today}", ""]
     lines.append("> この記事の相場コメントはChatGPTが執筆します。以下はClaude側スクリーニングの共通素材データ（事実）です。")
     lines.append("")
     lines.append("## 本日の300万円運用（規律版データ）")
     lines.append("")
-    lines.extend(summarize_discipline(discipline))
+    lines.extend(summarize_discipline(portfolio))
     lines.append("")
-    lines.extend(_portfolio_status_block(discipline))
-    buys = discipline[discipline.get("action", pd.Series(dtype=str)).astype(str).str.upper() == "BUY"] if not discipline.empty else discipline
+    lines.extend(_portfolio_status_block(portfolio))
+    buys = portfolio[portfolio.get("action", pd.Series(dtype=str)).astype(str).str.upper() == "BUY"] if not portfolio.empty else portfolio
     lines.extend(["## 300万円運用BUY候補カード", ""])
     lines.extend(build_stock_cards(buys, None))
     lines.extend(["", "## 300万円運用BUY候補（表）", ""])
-    lines.extend(_discipline_holdings_table(discipline))
+    lines.extend(_discipline_holdings_table(portfolio))
     lines.extend(["", "## 買い候補TOP10カード（共通素材）", ""])
     lines.extend(build_stock_cards(top_buy_candidates(screening, 10), 10))
     lines.extend(["", "## 買い候補TOP10（表）", ""])
@@ -826,7 +829,8 @@ def build_chatgpt_note(discipline: pd.DataFrame, screening: pd.DataFrame, source
 
 def build_claude_note(screening: pd.DataFrame, discipline: pd.DataFrame, backtest: dict | None, sources: SourceFiles) -> str:
     """②Claude版。既存の本文をそのまま使い、タイトルだけ4本構成に合わせる。"""
-    body = build_note_body(screening, discipline, backtest, sources)
+    portfolio = portfolio_view_for_note(discipline, screening)
+    body = build_note_body(screening, portfolio, backtest, sources)
     out_lines = body.splitlines()
     if out_lines and out_lines[0].startswith("# "):
         today = datetime.now().strftime("%Y-%m-%d")
@@ -837,7 +841,7 @@ def build_claude_note(screening: pd.DataFrame, discipline: pd.DataFrame, backtes
         out_lines[1:1] = card_lines
     if not any(line.startswith(PORTFOLIO_SECTION_HOLDINGS) for line in out_lines):
         out_lines.append("")
-        out_lines.extend(_portfolio_status_block(discipline))
+        out_lines.extend(_portfolio_status_block(portfolio))
     return "\n".join(out_lines)
 
 
@@ -847,7 +851,7 @@ def _discipline_holdings_table(discipline: pd.DataFrame) -> list[str]:
     buys = discipline[discipline.get("action", pd.Series(dtype=str)).astype(str).str.upper() == "BUY"]
     if buys.empty:
         return ["- 本日は新規買い建てなし（現金保有）"]
-    lines = ["| 枠 | コード | 銘柄 | ランク | 株数 | 取得想定 | 投資額 |", "|---|---|---|---:|---:|---:|---:|"]
+    lines = ["| 枠 | コード | 銘柄 | ランク | 株数 | 取得価格 | 投資額 |", "|---|---|---|---:|---:|---:|---:|"]
     for _, row in buys.iterrows():
         lines.append(
             f"| {_val(row,'slot')} | {_val(row,'code')} | {_val(row,'name')} | {_val(row,'rank')} | "
@@ -901,9 +905,11 @@ def _portfolio_status_block(discipline: pd.DataFrame) -> list[str]:
         lines.append(f"- 本日は新規買いなし → CASH判断（現金維持 / CASH枠 {len(cashes)}件）")
     else:
         for _, row in buys.iterrows():
+            current = _val(row, "current_price")
+            current_text = f" / 現在値 {current}円" if current not in ("", "未取得") else ""
             lines.append(
                 f"- 枠{_val(row,'slot')}: {_val(row,'code')} {_val(row,'name')} "
-                f"{_val(row,'shares')}株 @ {_val(row,'entry_price')}円（投資額 {_val(row,'position_value')}円）"
+                f"{_val(row,'shares')}株 @ {_val(row,'entry_price')}円（投資額 {_val(row,'position_value')}円{current_text}）"
             )
         if not cashes.empty:
             lines.append(f"- 残り {len(cashes)}枠はCASH（現金）")
@@ -936,15 +942,23 @@ def _portfolio_status_block(discipline: pd.DataFrame) -> list[str]:
     invested = None
     if not empty and "position_value" in discipline.columns:
         invested = int(pd.to_numeric(discipline["position_value"], errors="coerce").fillna(0).sum())
+    market_value = None
+    if not empty and "market_value" in discipline.columns:
+        market_value = int(pd.to_numeric(discipline["market_value"], errors="coerce").fillna(0).sum())
     if invested is None:
         lines.append("- データ不足：position_value 列が未出力のため、評価額・現金比率を算出できません。")
     else:
         cash = PORTFOLIO_CAPITAL - invested
         cash_pct = cash / PORTFOLIO_CAPITAL * 100
         lines.append(f"- 運用資金: {PORTFOLIO_CAPITAL:,}円")
-        lines.append(f"- 投資額合計（取得想定）: {invested:,}円")
+        lines.append(f"- 投資額合計（寄り付き約定）: {invested:,}円")
         lines.append(f"- 現金: {cash:,}円（現金比率 {cash_pct:.1f}%）")
-        lines.append(f"- 想定評価額: {PORTFOLIO_CAPITAL:,}円（当日取得想定のため取得額ベース）")
+        if market_value is not None and market_value > 0:
+            total_value = cash + market_value
+            lines.append(f"- 保有評価額: {market_value:,}円")
+            lines.append(f"- 運用総額: {total_value:,}円")
+        else:
+            lines.append(f"- 想定評価額: {PORTFOLIO_CAPITAL:,}円（寄り付き約定直後の取得額ベース）")
     lines.append("")
 
     # ④ 損益（未実現損益）
@@ -952,10 +966,12 @@ def _portfolio_status_block(discipline: pd.DataFrame) -> list[str]:
     pnl_col = next((c for c in ("unrealized_pnl", "pnl", "profit_loss") if not empty and c in discipline.columns), None)
     if pnl_col:
         pnl = pd.to_numeric(discipline[pnl_col], errors="coerce").fillna(0).sum()
-        lines.append(f"- 未実現損益合計: {pnl:+,.0f}円")
+        invested_for_pct = pd.to_numeric(discipline.get("position_value", pd.Series(dtype=float)), errors="coerce").fillna(0).sum()
+        pct = pnl / invested_for_pct * 100 if invested_for_pct else 0
+        lines.append(f"- 未実現損益合計: {pnl:+,.0f}円（{pct:+.2f}%）")
     elif not empty and not buys.empty:
-        lines.append("- 未実現損益: 0円（本日取得想定＝エントリー直後のため）")
-        lines.append("- データ不足：現値ベースの未実現損益列（unrealized_pnl）は本CSVに未出力です。翌日以降はMac側の検証で更新されます。")
+        lines.append("- 未実現損益: 0円（寄り付き約定直後のため）")
+        lines.append("- データ不足：現値ベースの未実現損益列（unrealized_pnl）は本CSVに未出力です。クラウドの寄り付き記録と終値データで更新します。")
     else:
         lines.append("- 未実現損益: 0円（保有なし・現金のみ）")
     lines.append("")

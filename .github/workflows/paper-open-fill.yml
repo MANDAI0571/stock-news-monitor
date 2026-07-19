@@ -1,0 +1,79 @@
+name: Paper Open Fill
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 09:40 JST, Monday-Friday. Uses the morning discipline output and records the day's opening price.
+    - cron: "40 0 * * 1-5"
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: paper-open-fill
+  cancel-in-progress: false
+
+jobs:
+  paper-open-fill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Fetch latest morning candidates
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p outputs
+          run_id=$(gh run list --workflow daily-discipline.yml --branch "${GITHUB_REF_NAME}" --status success --limit 1 --json databaseId --jq '.[0].databaseId' 2>/dev/null || true)
+          if [ -z "$run_id" ]; then
+            echo "::warning::successful daily-discipline run was not found"
+            exit 0
+          fi
+          gh run download "$run_id" -n stock-news-monitor-outputs -D outputs
+
+      - name: Record opening fills
+        run: python3 paper_open_fill.py --output-dir outputs --journal data/paper_trade_journal.csv
+
+      - name: Show opening fill report
+        if: always()
+        run: |
+          cat outputs/paper_open_fill_report.md 2>/dev/null || true
+          tail -n 10 data/paper_trade_journal.csv 2>/dev/null || true
+
+      - name: Commit paper trade journal
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/paper_trade_journal.csv
+          if git diff --cached --quiet; then
+            echo "paper_open_fill: changes not found"
+            exit 0
+          fi
+          git commit -m "chore: record paper open fills [skip ci]"
+          git pull --rebase origin "${GITHUB_REF_NAME}" || true
+          git push origin HEAD:"${GITHUB_REF_NAME}" || echo "paper_open_fill: push failed"
+
+      - name: Upload paper open artifact
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: paper-open-fill
+          path: |
+            data/paper_trade_journal.csv
+            outputs/paper_open_portfolio.csv
+            outputs/paper_open_fill_report.md
+          if-no-files-found: warn

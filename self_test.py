@@ -57,6 +57,7 @@ def main() -> None:
     _test_intraday_cloud_workflow_contract()
     _test_cloud_digest_mail()
     _test_metron_kpi()
+    _test_paper_open_fill()
     _test_learning_log()
     _test_csv_schema_contract()
     _test_decision_engine()
@@ -1700,6 +1701,61 @@ def _test_learning_log() -> None:
         assert third.appended_rows == 2 and third.total_rows == 4
         saved = pd.read_csv(out, dtype={"code": str})
         assert {"date", "code", "strategy", "current", "volume_ratio"}.issubset(saved.columns)
+
+
+def _test_paper_open_fill() -> None:
+    from datetime import date
+
+    from paper_open_fill import fill_open_entries, is_jpx_business_day, mark_to_market, portfolio_view_for_note
+
+    assert not is_jpx_business_day(date(2026, 7, 20))
+    assert is_jpx_business_day(date(2026, 7, 21))
+
+    discipline = pd.DataFrame(
+        [
+            {
+                "slot": 1,
+                "action": "BUY",
+                "regime": "NORMAL",
+                "code": "7453",
+                "ticker": "7453.T",
+                "name": "良品計画",
+                "rank": "S",
+                "score": 100,
+                "entry_price": 4259,
+                "rule": "Sランクのみ",
+            }
+        ]
+    )
+    journal, fills = fill_open_entries(
+        discipline,
+        pd.DataFrame(),
+        date(2026, 7, 21),
+        price_fetcher=lambda ticker, trading_date: 4300.0,
+        fill_time_jst="2026-07-21T09:40:00+09:00",
+    )
+    assert fills[0]["status"] == "FILLED"
+    assert float(journal.iloc[0]["entry_price"]) == 4300.0
+    assert int(journal.iloc[0]["shares"]) == 200
+
+    screening = pd.DataFrame([{"code": "7453", "current_price": 4400.0}])
+    marked = mark_to_market(journal, screening)
+    assert int(marked.iloc[0]["unrealized_pnl"]) == 20000
+
+    with TemporaryDirectory() as tmp:
+        path = Path(tmp) / "paper_trade_journal.csv"
+        marked.to_csv(path, index=False)
+        view = portfolio_view_for_note(discipline, screening, path)
+        assert int(view.iloc[0]["market_value"]) == 880000
+        assert int(view.iloc[0]["unrealized_pnl"]) == 20000
+
+    project_root = Path(__file__).resolve().parent
+    workflow = (project_root / ".github" / "workflows" / "paper-open-fill.yml").read_text(encoding="utf-8")
+    note_workflow = (project_root / ".github" / "workflows" / "note_draft_cloud.yml").read_text(encoding="utf-8")
+    assert 'cron: "40 0 * * 1-5"' in workflow
+    assert "paper_open_fill.py --output-dir outputs --journal data/paper_trade_journal.csv" in workflow
+    assert "Reflect paper open portfolio" in note_workflow
+    print("self-test: paper_open_fill(寄り付き約定) OK")
 
 
 def _test_decision_engine() -> None:

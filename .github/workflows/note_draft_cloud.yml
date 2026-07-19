@@ -86,6 +86,11 @@ jobs:
           python3 daily_discipline_run.py --include-rejected
           end=$(date +%s); echo "[TIMER] daily_discipline_run elapsed=$((end-start))s"
 
+      - name: Reflect paper open portfolio
+        continue-on-error: true
+        run: |
+          python3 paper_open_fill.py --output-dir outputs --journal data/paper_trade_journal.csv --mark-only --dry-run
+
       # T-I(2026-07-10): バックテスト博士。screening_highs を data/ に追記し、
       # 過去掲載銘柄の +1/+5/+20営業日の実績を outputs/track_record.json に集計する。
       # note生成（build_note_assets）より前に実行することで、記事の実績セクションに反映される。
@@ -245,6 +250,8 @@ jobs:
             outputs/decision_report.md
             outputs/discipline_result.csv
             outputs/paper_portfolio_decision.csv
+            outputs/paper_open_portfolio.csv
+            outputs/paper_open_fill_report.md
             outputs/eyecatch.png
             outputs/market_status.png
             outputs/funnel.png
