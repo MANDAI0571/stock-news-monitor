@@ -2,6 +2,11 @@ name: Cloud Digest Mail
 
 on:
   workflow_dispatch:
+    inputs:
+      send_mail:
+        description: "メールを実際に送る（テスト確認だけならOFF）"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -55,6 +60,7 @@ jobs:
           find outputs -maxdepth 1 -type f | sort
 
       - name: Check Gmail secrets
+        if: github.event.inputs.send_mail == 'true'
         env:
           GMAIL_USER: ${{ secrets.GMAIL_USER }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
@@ -66,12 +72,17 @@ jobs:
           [ -n "$MAIL_TO" ] || { echo "::error::MAIL_TO secret is missing"; missing=1; }
           exit "$missing"
 
-      - name: Send cloud digest mail
+      - name: Build or send cloud digest mail
         env:
           GMAIL_USER: ${{ secrets.GMAIL_USER }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           MAIL_TO: ${{ secrets.MAIL_TO }}
-        run: python3 cloud_mail_digest.py --output-dir outputs
+        run: |
+          if [ "${{ github.event.inputs.send_mail }}" = "true" ]; then
+            python3 cloud_mail_digest.py --output-dir outputs
+          else
+            python3 cloud_mail_digest.py --output-dir outputs --dry-run
+          fi
 
       - name: Upload digest mail artifact
         if: always()

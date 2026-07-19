@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import re
 from dataclasses import dataclass
 from datetime import datetime
@@ -74,7 +75,7 @@ def parse_args() -> argparse.Namespace:
 
 def build_digest(output_dir: Path, now: datetime | None = None) -> DigestMail:
     now = now or datetime.now(JST)
-    subject = f"【DUKEクラウド】本日のスクリーニング結果 {now.date().isoformat()}"
+    subject = f"【DUKEクラウド】25MA/200MA・本日のスクリーニング結果 {now.date().isoformat()}"
     attachments = collect_attachments(output_dir)
 
     lines: list[str] = [
@@ -89,6 +90,9 @@ def build_digest(output_dir: Path, now: datetime | None = None) -> DigestMail:
     note_url = _read_optional(output_dir / "note_draft_url_cloud.txt")
     if note_url:
         lines.extend(["Note下書きURL:", note_url, ""])
+
+    lines.extend(_ma_touch_summary(output_dir))
+    lines.append("")
 
     lines.append("## 本文プレビュー")
     for key, label in NOTE_SECTIONS:
@@ -200,6 +204,93 @@ def _attachment_lines(attachments: list[Path]) -> list[str]:
     if not attachments:
         return ["- 添付なし（出力ファイルが見つかりません）"]
     return [f"- {path.name}" for path in attachments]
+
+
+def _ma_touch_summary(output_dir: Path) -> list[str]:
+    source = _latest(output_dir, "screening_pullback_*.csv")
+    rows = _read_csv_dicts(source) if source else []
+    lines = [
+        "## 25MA/200MA候補（本文で確認）",
+        "",
+        f"元データ: {source.name if source else 'screening_pullback未取得'}",
+        "",
+    ]
+    for flag, title, dist_col in (
+        ("ma25_touch", "25MAタッチ", "dist_25ma_pct"),
+        ("ma200_touch", "200MAタッチ", "dist_200ma_pct"),
+    ):
+        bucket = [row for row in rows if _truthy(row.get(flag))]
+        lines.extend(_ma_touch_table(title, bucket, dist_col))
+        lines.append("")
+    return lines
+
+
+def _read_csv_dicts(path: Path | None) -> list[dict[str, str]]:
+    if path is None or not path.exists():
+        return []
+    try:
+        with path.open("r", encoding="utf-8-sig", newline="") as fh:
+            return list(csv.DictReader(fh))
+    except Exception:
+        return []
+
+
+def _ma_touch_table(title: str, rows: list[dict[str, str]], dist_col: str, limit: int = 20) -> list[str]:
+    lines = [f"### {title}（{len(rows)}件）", ""]
+    if not rows:
+        lines.append("- 該当なし")
+        return lines
+
+    lines.extend([
+        "| コード | 銘柄 | 現在値 | MA25 | MA200 | MA240 | MA乖離% | 52週高値乖離% | 売買代金 | チャート |",
+        "|---|---|---:|---:|---:|---:|---:|---:|---:|---|",
+    ])
+    for row in rows[:limit]:
+        code = _normalize_code(_cell(row, "code"))
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    code,
+                    _cell(row, "name"),
+                    _cell(row, "current_price"),
+                    _cell(row, "ma25"),
+                    _cell(row, "ma200"),
+                    _cell(row, "ma240"),
+                    _cell(row, dist_col),
+                    _cell(row, "dist_52w_high_pct"),
+                    _cell(row, "turnover_20d"),
+                    f"[開く]({_chart_url(code)})" if code != "-" else "-",
+                ]
+            )
+            + " |"
+        )
+    if len(rows) > limit:
+        lines.append(f"- ほか{len(rows) - limit}件は添付CSVに入っています。")
+    return lines
+
+
+def _truthy(value: object) -> bool:
+    return _clean_text(value).strip().lower() in {"true", "1", "1.0", "yes", "y"}
+
+
+def _cell(row: dict[str, str], key: str) -> str:
+    text = _clean_text(row.get(key, "")).strip()
+    if not text:
+        return "-"
+    return text.replace("|", "/").replace("\n", " ")
+
+
+def _normalize_code(code: str) -> str:
+    return code[:-2] if code.endswith(".0") else code
+
+
+def _chart_url(code: str) -> str:
+    return (
+        f"https://finance.yahoo.co.jp/quote/{code}.T/chart"
+        "?frm=dly&trm=6m&scl=stndrd&styl=cndl&evnts=volume"
+        "&ovrIndctr=sma%2Cmma%2Clma&addIndctr=&compare="
+    )
 
 
 def main() -> None:

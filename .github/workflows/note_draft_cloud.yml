@@ -11,6 +11,10 @@ on:
         description: "QUICK_MODE 時に処理する銘柄数"
         type: string
         default: "30"
+      send_mail:
+        description: "手動実行で25MA/200MAまとめメールを送る（通常のテストではOFF）"
+        type: boolean
+        default: false
   schedule:
     # T-J(2026-07-10): 平日16:30 JST に自動実行（cron は UTC なので 7:30）。
     # 大引け15:30 → カブタンのリスト確定16:00頃 → 16:10 trade-verification →
@@ -38,6 +42,7 @@ jobs:
       QUICK_MODE: ${{ github.event_name == 'schedule' && 'false' || (github.event.inputs.quick_mode == 'false' && 'false' || 'true') }}
       MAX_SYMBOLS: ${{ github.event.inputs.max_symbols || '30' }}
       PROGRESS_EVERY: "25"
+      SEND_CLOUD_DIGEST: ${{ github.event_name == 'schedule' && 'true' || (github.event.inputs.send_mail == 'true' && 'true' || 'false') }}
 
     steps:
       - name: Checkout
@@ -168,7 +173,7 @@ jobs:
 
       - name: Check Gmail secrets for cloud digest
         id: gmail_secrets
-        if: always()
+        if: always() && env.SEND_CLOUD_DIGEST == 'true'
         env:
           GMAIL_USER: ${{ secrets.GMAIL_USER }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
@@ -180,13 +185,18 @@ jobs:
           [ -n "$MAIL_TO" ] || { echo "::error::MAIL_TO secret is missing"; missing=1; }
           exit "$missing"
 
-      - name: Send cloud digest mail
-        if: always() && steps.gmail_secrets.outcome == 'success'
+      - name: Build or send cloud digest mail
+        if: always()
         env:
           GMAIL_USER: ${{ secrets.GMAIL_USER }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           MAIL_TO: ${{ secrets.MAIL_TO }}
-        run: python3 cloud_mail_digest.py --output-dir outputs
+        run: |
+          if [ "$SEND_CLOUD_DIGEST" = "true" ]; then
+            python3 cloud_mail_digest.py --output-dir outputs
+          else
+            python3 cloud_mail_digest.py --output-dir outputs --dry-run
+          fi
 
       - name: Upload Note draft artifact
         if: always()
