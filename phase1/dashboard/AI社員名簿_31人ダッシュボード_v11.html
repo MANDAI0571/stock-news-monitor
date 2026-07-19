@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI投資研究所株式会社｜AI社員名簿（全31役割）v11</title>
+<style>
+  :root{
+    --bg:#0d1220; --panel:#161d31; --panel2:#1c2440; --line:#2a3558;
+    --txt:#e8ecf7; --sub:#9aa6c8; --accent:#5b8cff;
+    --ok:#33d17a; --part:#f5b750; --none:#7a86a8;
+    --claude:#5b8cff; --codex:#b57bff; --joint:#33c6d1; --unassigned:#7a86a8;
+  }
+  *{box-sizing:border-box; margin:0; padding:0;}
+  body{font-family:"Hiragino Sans","Yu Gothic UI","Meiryo",sans-serif; background:var(--bg); color:var(--txt); padding:24px;}
+  header{max-width:1200px; margin:0 auto 20px;}
+  h1{font-size:24px; letter-spacing:.02em;}
+  h1 small{display:block; font-size:12px; color:var(--sub); font-weight:normal; margin-top:6px;}
+  .stats{display:flex; gap:12px; flex-wrap:wrap; margin:16px 0;}
+  .stat{background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:10px 16px; font-size:13px;}
+  .stat b{font-size:20px; margin-right:4px;}
+  .stat.ok b{color:var(--ok);} .stat.part b{color:var(--part);} .stat.none b{color:var(--none);} .stat.all b{color:var(--accent);}
+  .stat.claude b{color:var(--claude);} .stat.codex b{color:var(--codex);} .stat.joint b{color:var(--joint);}
+  .filterlabel{font-size:11px; color:var(--sub); margin:10px 0 4px;}
+  .filters{display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px;}
+  .filters button{background:var(--panel); color:var(--sub); border:1px solid var(--line); border-radius:999px; padding:6px 14px; font-size:13px; cursor:pointer;}
+  .filters button.active{background:var(--accent); color:#fff; border-color:var(--accent);}
+  main{max-width:1200px; margin:0 auto;}
+  .dept{margin:26px 0 10px;}
+  .dept h2{font-size:16px; color:var(--accent); border-left:4px solid var(--accent); padding-left:10px; margin-bottom:12px;}
+  .dept h2 span{color:var(--sub); font-size:12px; font-weight:normal; margin-left:8px;}
+  .grid{display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:12px;}
+  .card{background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:14px 16px; cursor:pointer; transition:transform .12s, border-color .12s; position:relative;}
+  .card:hover{transform:translateY(-3px); border-color:var(--accent);}
+  .card .name{font-size:17px; font-weight:bold;}
+  .card .title{font-size:12px; color:var(--sub); margin-top:2px;}
+  .card .mission{font-size:12px; color:var(--txt); margin-top:8px; opacity:.85; line-height:1.5;}
+  .badge{position:absolute; top:12px; right:12px; font-size:11px; padding:3px 9px; border-radius:999px; font-weight:bold;}
+  .b-ok{background:rgba(51,209,122,.15); color:var(--ok);}
+  .b-part{background:rgba(245,183,80,.15); color:var(--part);}
+  .b-none{background:rgba(122,134,168,.18); color:var(--none);}
+  .chips{display:flex; gap:6px; flex-wrap:wrap; margin-top:10px;}
+  .chip{font-size:10px; padding:2px 8px; border-radius:6px; font-weight:bold; letter-spacing:.02em;}
+  .ai-claude{background:rgba(91,140,255,.18); color:var(--claude);}
+  .ai-codex{background:rgba(181,123,255,.18); color:var(--codex);}
+  .ai-joint{background:rgba(51,198,209,.18); color:var(--joint);}
+  .ai-unassigned{background:rgba(122,134,168,.16); color:var(--unassigned);}
+  .chip-run{background:rgba(232,236,247,.08); color:var(--sub);}
+  .tag-new{display:inline-block; font-size:10px; background:rgba(91,140,255,.2); color:var(--accent); border-radius:6px; padding:1px 6px; margin-top:8px;}
+  .hidden{display:none;}
+  /* modal */
+  #overlay{position:fixed; inset:0; background:rgba(5,8,16,.7); display:none; align-items:center; justify-content:center; padding:20px; z-index:10;}
+  #overlay.show{display:flex;}
+  #modal{background:var(--panel2); border:1px solid var(--line); border-radius:16px; max-width:560px; width:100%; max-height:85vh; overflow:auto; padding:24px;}
+  #modal .name{font-size:22px; font-weight:bold;}
+  #modal .title{color:var(--sub); font-size:13px; margin:4px 0 14px;}
+  #modal dl{font-size:13px; line-height:1.7;}
+  #modal dt{color:var(--sub); margin-top:12px; font-size:12px;}
+  #modal dd{margin-top:2px;}
+  #modal .ops{margin-top:16px; border:1px solid var(--line); border-radius:12px; padding:12px 14px; background:var(--panel);}
+  #modal .ops h4{font-size:12px; color:var(--accent); margin-bottom:8px;}
+  #modal .ops table{width:100%; border-collapse:collapse; font-size:12px;}
+  #modal .ops td{padding:4px 0; vertical-align:top;}
+  #modal .ops td.k{color:var(--sub); width:110px;}
+  #modal .close{margin-top:18px; background:var(--accent); color:#fff; border:none; border-radius:10px; padding:8px 18px; font-size:13px; cursor:pointer;}
+  footer{max-width:1200px; margin:30px auto 10px; color:var(--sub); font-size:11px; line-height:1.7; border-top:1px solid var(--line); padding-top:14px;}
+  .legend{display:flex; gap:14px; flex-wrap:wrap; margin:8px 0 0; font-size:11px; color:var(--sub);}
+  .legend span b{font-weight:bold;}
+</style>
+</head>
+<body>
+<header>
+  <h1>AI投資研究所株式会社　AI社員名簿
+    <small>会社OS Ver 3.0（全31役割・追加/削除/改名なし）｜v11：Claude×Codex 役割分担を反映｜最終更新 2026-07-20｜カードをクリックで詳細</small>
+  </h1>
+  <div class="stats">
+    <div class="stat all"><b id="cAll">-</b>全役割</div>
+    <div class="stat ok"><b id="cOk">-</b>● 実装済み</div>
+    <div class="stat part"><b id="cPart">-</b>△ 部分実装</div>
+    <div class="stat none"><b id="cNone">-</b>× 未実装（設計のみ）</div>
+    <div class="stat claude"><b id="cClaude">-</b>Claude担当</div>
+    <div class="stat codex"><b id="cCodex">-</b>Codex担当</div>
+    <div class="stat joint"><b id="cJoint">-</b>共同</div>
+  </div>
+  <div class="filterlabel">状態でしぼり込む</div>
+  <div class="filters" id="fStatus">
+    <button class="active" data-f="all">すべて</button>
+    <button data-f="ok">● 実装済み</button>
+    <button data-f="part">△ 部分実装</button>
+    <button data-f="none">× 未実装</button>
+  </div>
+  <div class="filterlabel">担当AIでしぼり込む</div>
+  <div class="filters" id="fAi">
+    <button class="active" data-a="all">すべて</button>
+    <button data-a="Claude">Claude</button>
+    <button data-a="Codex">Codex</button>
+    <button data-a="共同">共同</button>
+    <button data-a="未割当">未割当</button>
+  </div>
+</header>
+<main id="main"></main>
+<div id="overlay"><div id="modal"></div></div>
+<footer>
+  <div class="legend">
+    <span><b style="color:var(--claude)">■</b> Claude担当</span>
+    <span><b style="color:var(--codex)">■</b> Codex担当</span>
+    <span><b style="color:var(--joint)">■</b> 共同</span>
+    <span><b style="color:var(--unassigned)">■</b> 未割当</span>
+    <span>稼働状態：設計中／半自動／クラウド稼働／停止</span>
+    <span>配信権限：下書きのみ／人の承認後／自動</span>
+  </div>
+  <br>
+  大原則：会社OSは変更しない／AI社員31役割を勝手に追加・削除・改名しない／noteは必ず4本（①52週新高値 ②押し目 ③300万円ChatGPT ④300万円Claude）／捏造しない（データ不足は「取得できず・未公表・算出不可・未記録」と明記、NaN/None/null/inf禁止）／高重さん確認前にGitHubへ直接pushしない／カブタンはスクレイピング禁止・答え合わせ相手のみ／<b>秘密情報（メールアドレス・パスワード・APIキー等）はHTML・Markdown・CSVに書かない</b>。<br>
+  v11の追加：各役割に「担当AI（Claude／Codex／共同／未割当）・稼働状態・配信権限・最終成功日時・次の実行予定・エラー状態」を表示。実測のない項目は「未記録」と正直に表示（値は捏造しない）。担当割り当ての正本は phase1/docs/phase1_collaboration.md。<br>
+  注記：上部の状態件数は名簿の表（●5／△8／×18）からの自動集計。担当AIの割り当ては2026-07-20の高重さん指示（ツイート・LINE・メトロン＝Claude／ポスト・300万円運用・シールド＝Codex／協働仕様・投稿前チェック＝共同）に基づく。未指示の役割は「未割当」。
+</footer>
+<script>
+// op: 運用（フェーズ1）情報。値が無い項目は "未記録" 表示（捏造しない）。ai未指定は "未割当"。
+const DATA = [
+ {dept:"AI役員（4）", members:[
+  {n:"ソロモン", t:"COO・全社統括", m:"全社統括・招集・社長報告", k:"毎日", s:"part",
+   j:"GitHub Actionsが実体。note生成まで連結。平日16:30 JST自動実行・祝日ガード。",
+   u:"v8(07/16)で4本下書き保存が初成功。v10(07/19)で①②④の3本保存＋③はCodexの16:45便に分離（二重保存防止）。",
+   op:{next:"平日 16:30 JST（GitHub Actions）"}},
+  {n:"アテナ", t:"CSO・戦略", m:"戦略・資源配分", k:"週1+月次", s:"none", j:"対応コード無し（設計のみ）", u:""},
+  {n:"バランス", t:"CFO・財務", m:"財務・投資", k:"週1+月次", s:"none", j:"対応コード無し（設計のみ）", u:""},
+  {n:"ミューズ", t:"CBO・ブランド", m:"ブランド・物語・カテゴリ創造", k:"必要時", s:"none", j:"対応コード無し（設計のみ）", u:""}
+ ]},
+ {dept:"リサーチ部（3）", members:[
+  {n:"スキャナー", t:"グローバル株式スキャナー", m:"日本株・米国株を単一仕様でスクリーニング", k:"毎日", s:"ok", j:"run_screening.py / scanner/（米国未実装）", u:""},
+  {n:"フクロウ", t:"マクロ/ニュース", m:"マクロ・ニュース監視", k:"毎日", s:"part", j:"market_regime.py（日経/VIX等。指数のみ）", u:""},
+  {n:"ミネルバ", t:"ファンダ分析", m:"深掘りファンダメンタルズ", k:"必要時", s:"part",
+   j:"research.py / fundamentals.py（PER/PBR/配当/ROE/利益率/成長率/時価総額＋異常値検証）",
+   u:"v10(07/19)で note_fundamentals.py 新設。掲載銘柄のカード数値をyfinanceで自動補完し「未取得」をほぼ解消。"}
+ ]},
+ {dept:"運用部（2）", members:[
+  {n:"ウォーレン", t:"ファンドマネージャー", m:"ペーパートレードで実績生成（300万円運用）", k:"毎日", s:"ok",
+   j:"decision_engine.py / paper_portfolio_discipline.py（300万円）／track_record.py（+1/+5/+20営業日実績）",
+   u:"v10(07/19)で trade_history.csv の確定21トレードから PF・DD・採用数を記事に自動記載。",
+   op:{ai:"Codex", run:"クラウド稼働", next:"平日（GitHub Actionsクラウド実行）"}},
+  {n:"イージス", t:"リスク管理", m:"リスク監視・ドローダウン制御", k:"必要時", s:"part", j:"discipline内に制御あり", u:""}
+ ]},
+ {dept:"編集部（6）", members:[
+  {n:"編集長", t:"note編集長", m:"日本株・米国株の両デスクを統括", k:"毎日", s:"ok",
+   j:"note_draft.py（regime/BUY/52W/免責/チャート枠）。52週新高値記事の全面改修済み。",
+   u:"v10(07/19)でカード数値の未取得ゼロ化・決算予定日取得ON・実運用実績フォールバックを実装。③ChatGPT版はCodexパイプライン担当。",
+   op:{next:"平日 16:30 JST（note生成）"}},
+  {n:"クロニクル", t:"週次レポート", m:"週次まとめ", k:"週1", s:"part", j:"swing_break_report.py（週次ループ未整備）", u:""},
+  {n:"サーチ", t:"SEO編集", m:"検索流入設計", k:"週1", s:"none", j:"無し", u:""},
+  {n:"ディレクター", t:"YouTubeプロデューサー", m:"動画企画・台本", k:"週1", s:"none", j:"無し", u:""},
+  {n:"フラッシュ", t:"動画/ショート", m:"ショート量産", k:"毎日", s:"none", j:"無し", u:""},
+  {n:"ハブ", t:"コミュニティ運営", m:"会員・熱量管理", k:"毎日", s:"none", j:"無し", u:""}
+ ]},
+ {dept:"マーケ・グロース部（2）", members:[
+  {n:"ツイート/ライン", t:"分配（X+LINE）", m:"拡散・登録導線", k:"毎日", s:"none",
+   j:"X/LINE配信コード無し（sns_promo.pyで下書きテキストのみ生成）。フェーズ1でClaudeが配信文生成を担当。",
+   u:"2026-07-20: フェーズ1でClaude担当に。X（ツイート）＝半自動・人の承認後／LINE＝設計中・下書きのみ。配信文テンプレは phase1/templates/distribution_templates.md。",
+   op:{ai:"Claude", run:"半自動", perm:"人の承認後",
+       note:"X（ツイート）＝半自動・人の承認後／LINE＝設計中・下書きのみ",
+       next:"配信文をClaudeが生成→校閲→承認後に手動投稿"}},
+  {n:"ポスト", t:"メール/CRM", m:"育成・再訪", k:"週1", s:"part",
+   j:"daily_note_mail.py / gmail_notify.py（メールのみ）",
+   u:"Codexの③便が毎営業日16:45にメール送信（高重さん承認済み・そのまま運用）。フェーズ1でCodex担当・クラウド稼働。",
+   op:{ai:"Codex", run:"クラウド稼働", next:"平日 16:45 JST（メール便）"}}
+ ]},
+ {dept:"収益化・事業開発部（6）", members:[
+  {n:"マネタイズ", t:"CRO", m:"オファー設計・購買検証", k:"必要時+月次", s:"none", j:"無し（設計のみ）", u:""},
+  {n:"サブスク", t:"サブスク運営", m:"継続課金", k:"週1", s:"none", j:"無し（設計のみ）", u:""},
+  {n:"アカデミー", t:"オンラインスクール", m:"教育商品", k:"必要時", s:"none", j:"無し（設計のみ）", u:""},
+  {n:"プロダクト", t:"データ+AIツール販売", m:"商品化", k:"必要時", s:"none", j:"無し（設計のみ）", u:""},
+  {n:"ブリッジ", t:"アフィリ/アライアンス", m:"接種収益", k:"必要時", s:"none", j:"無し（設計のみ）", u:""},
+  {n:"PR", t:"広報/クライシス", m:"露出・危機対応", k:"必要時", s:"none", j:"無し（設計のみ）", u:""}
+ ]},
+ {dept:"KPI管理部（2）★Ver3.0新設", members:[
+  {n:"メトロン", t:"経営ダッシュボード管理官", m:"全KPIを毎日自動集計し役員に提示", k:"毎日", s:"none",
+   j:"KPI集計スクリプト無し（Ver 3.0の目玉が未稼働）。metron_kpi.pyは骨組みのみ。フェーズ1でClaudeが最小版を設計。",
+   u:"2026-07-20: フェーズ1でClaude担当・半自動。主要3指標（登録数／クリック数・率／note閲覧→登録転換数）。項目定義は phase1/metron/kpi_min_schema.md。",
+   op:{ai:"Claude", run:"半自動", next:"日次KPI集計（最小版・手動記録から開始）"}},
+  {n:"アナリスト", t:"分析/アトリビューション", m:"SNS分析+利益寄与配分", k:"週1", s:"none", j:"無し（設計のみ）", u:""}
+ ]},
+ {dept:"R&D部・実験部（1）★Ver3.0新設", members:[
+  {n:"エジソン", t:"R&D/実験責任者", m:"新スクリーニング・新AI・新収益を独立実験", k:"週1+必要時", s:"part", j:"pattern_learn.py / learning_log.py（本採用フロー未整備）", u:""}
+ ]},
+ {dept:"品質・基盤部（5）", members:[
+  {n:"ガーディアン", t:"QA/監視", m:"ゴールデンセット照合・監視", k:"毎日", s:"ok",
+   j:"self_test.py（テスト33本）／kabutan_check.py（カブタン照合診断・答え合わせのみ）",
+   u:"v10(07/19)で validate_note_artifact.py を3本保存ゲート（③はmanifest除外）に更新。"},
+  {n:"シールド", t:"コンプラ/校閲", m:"金商法・表現チェック", k:"毎日", s:"part",
+   j:"noteに免責内蔵＋公開前校閲ゲート phase1/tools/compliance_check.py（Claudeが作成、Codexが運用）。",
+   u:"2026-07-20: 校閲ツールをClaudeが整備。現在は手動実行で、クラウド配信前ゲートへの接続は未完了。投稿前チェックは phase1/docs/pre_publish_checklist.md。",
+   op:{ai:"Codex", run:"半自動", note:"校閲ツールはClaude作成・Codexが接続準備中", next:"配信・公開前に毎回（exit 0 必須）"}},
+  {n:"パイプ", t:"データ基盤", m:"データレイク・パイプライン", k:"毎日", s:"ok",
+   j:"data/ / .github/workflows（日次更新）／jptime.py JPX営業日カレンダー",
+   u:"データ基盤は規約遵守の手動フローを含む運用。"},
+  {n:"テミス", t:"法務/レギュラトリー", m:"規制対応", k:"月1+必要時", s:"none", j:"無し（設計のみ）", u:""},
+  {n:"アドヴォカトゥス", t:"常設レッドチーム", m:"反証・脆弱性検証", k:"月1", s:"none", j:"無し（Fable/ChatGPT外部監査が代替）", u:""}
+ ]}
+];
+
+const LBL={ok:"● 実装済み", part:"△ 部分実装", none:"× 未実装"};
+const AICLASS={"Claude":"ai-claude","Codex":"ai-codex","共同":"ai-joint","未割当":"ai-unassigned"};
+function aiOf(m){ return (m.op&&m.op.ai) ? m.op.ai : "未割当"; }
+function val(x){ return (x===undefined||x===null||x==="") ? "未記録" : x; }
+
+const main=document.getElementById("main");
+DATA.forEach(d=>{
+  const sec=document.createElement("section"); sec.className="dept";
+  sec.innerHTML=`<h2>${d.dept}</h2>`;
+  const g=document.createElement("div"); g.className="grid";
+  d.members.forEach(m=>{
+    const ai=aiOf(m);
+    const run=(m.op&&m.op.run)?m.op.run:"";
+    const c=document.createElement("div"); c.className="card"; c.dataset.s=m.s; c.dataset.ai=ai;
+    c.innerHTML=`<span class="badge b-${m.s}">${LBL[m.s]}</span>
+      <div class="name">${m.n}</div><div class="title">${m.t}</div>
+      <div class="mission">${m.m}<br><span style="color:var(--sub)">起動: ${m.k}</span></div>
+      <div class="chips">
+        <span class="chip ${AICLASS[ai]}">${ai}</span>
+        ${run?`<span class="chip chip-run">${run}</span>`:""}
+      </div>
+      ${m.u?'<span class="tag-new">更新あり</span>':""}`;
+    c.onclick=()=>showModal(m,d.dept);
+    g.appendChild(c);
+  });
+  sec.appendChild(g); main.appendChild(sec);
+});
+
+function showModal(m,dept){
+  const md=document.getElementById("modal");
+  const ai=aiOf(m); const op=m.op||{};
+  const opsRows=`
+    <tr><td class="k">担当AI</td><td>${ai}</td></tr>
+    <tr><td class="k">稼働状態</td><td>${val(op.run)}</td></tr>
+    <tr><td class="k">配信権限</td><td>${val(op.perm)}</td></tr>
+    <tr><td class="k">最終成功日時</td><td>${val(op.last)}</td></tr>
+    <tr><td class="k">次の実行予定</td><td>${val(op.next)}</td></tr>
+    <tr><td class="k">エラー状態</td><td>${val(op.err)}</td></tr>
+    ${op.note?`<tr><td class="k">補足</td><td>${op.note}</td></tr>`:""}`;
+  md.innerHTML=`<span class="badge b-${m.s}" style="position:static">${LBL[m.s]}</span>
+    <span class="chip ${AICLASS[ai]}" style="margin-left:8px">${ai}</span>
+    <div class="name" style="margin-top:10px">${m.n}</div>
+    <div class="title">${dept}｜${m.t}</div>
+    <dl>
+      <dt>使命</dt><dd>${m.m}</dd>
+      <dt>起動頻度</dt><dd>${m.k}</dd>
+      <dt>実体（システム上の対応）</dt><dd>${m.j||"—"}</dd>
+      ${m.u?`<dt>最近の更新</dt><dd>${m.u}</dd>`:""}
+    </dl>
+    <div class="ops">
+      <h4>運用（フェーズ1）</h4>
+      <table>${opsRows}</table>
+    </div>
+    <button class="close" onclick="document.getElementById('overlay').classList.remove('show')">閉じる</button>`;
+  document.getElementById("overlay").classList.add("show");
+}
+document.getElementById("overlay").onclick=e=>{ if(e.target.id==="overlay") e.currentTarget.classList.remove("show"); };
+
+const all=DATA.flatMap(d=>d.members);
+document.getElementById("cAll").textContent=all.length;
+document.getElementById("cOk").textContent=all.filter(m=>m.s==="ok").length;
+document.getElementById("cPart").textContent=all.filter(m=>m.s==="part").length;
+document.getElementById("cNone").textContent=all.filter(m=>m.s==="none").length;
+document.getElementById("cClaude").textContent=all.filter(m=>aiOf(m)==="Claude").length;
+document.getElementById("cCodex").textContent=all.filter(m=>aiOf(m)==="Codex").length;
+document.getElementById("cJoint").textContent=all.filter(m=>aiOf(m)==="共同").length;
+
+let curStatus="all", curAi="all";
+function applyFilters(){
+  document.querySelectorAll(".card").forEach(c=>{
+    const okS=(curStatus==="all"||c.dataset.s===curStatus);
+    const okA=(curAi==="all"||c.dataset.ai===curAi);
+    c.classList.toggle("hidden", !(okS&&okA));
+  });
+  document.querySelectorAll(".dept").forEach(s=>{
+    const vis=[...s.querySelectorAll(".card")].some(c=>!c.classList.contains("hidden"));
+    s.classList.toggle("hidden",!vis);
+  });
+}
+document.querySelectorAll("#fStatus button").forEach(b=>{
+  b.onclick=()=>{
+    document.querySelectorAll("#fStatus button").forEach(x=>x.classList.remove("active"));
+    b.classList.add("active"); curStatus=b.dataset.f; applyFilters();
+  };
+});
+document.querySelectorAll("#fAi button").forEach(b=>{
+  b.onclick=()=>{
+    document.querySelectorAll("#fAi button").forEach(x=>x.classList.remove("active"));
+    b.classList.add("active"); curAi=b.dataset.a; applyFilters();
+  };
+});
+</script>
+</body>
+</html>
