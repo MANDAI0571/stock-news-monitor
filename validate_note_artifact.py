@@ -386,7 +386,10 @@ def _validate_note4(result: ArtifactValidation) -> None:
             result.fail("note_drafts_manifest.json: JSONとして読めません")
     for key in NOTE4_KEYS:
         label = NOTE4_LABELS[key]
-        if manifest_path.exists() and key not in manifest_keys:
+        # v10(2026-07-19): ③chatgptは日次autosaveのmanifestから除外
+        # （Codexの独自便 chatgpt-300man-note.yml が16:45に生成・保存する運用）。
+        # 記事ファイル自体（note_chatgpt.md）の生成チェックは引き続き必須。
+        if manifest_path.exists() and key not in manifest_keys and key != "chatgpt":
             result.fail(f"note_drafts_manifest.json: {label}（{key}）がありません")
         md_path = result.artifact_dir / f"note_{key}.md"
         if not md_path.exists() or md_path.stat().st_size == 0:

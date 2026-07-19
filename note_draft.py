@@ -152,8 +152,52 @@ def top_buy_candidates(screening: pd.DataFrame, max_rows: int = 10) -> pd.DataFr
     return candidate.head(max_rows)
 
 
+def _trade_history_metrics() -> dict | None:
+    """v10(2026-07-19): バックテストレポートが無い日のための実運用実績フォールバック。
+    data/trade_history.csv のCLOSEDトレード（exit_return_pct）から事実のみを算出する。
+    データが無い・全て未決済なら None（記事は未取得表示のまま）。捏造はしない。"""
+    path = PROJECT_ROOT / "data" / "trade_history.csv"
+    if not path.exists():
+        return None
+    try:
+        df = pd.read_csv(path)
+        closed = df[df["status"].astype(str).str.upper() == "CLOSED"].copy()
+        closed["exit_return_pct"] = pd.to_numeric(closed["exit_return_pct"], errors="coerce")
+        closed = closed.dropna(subset=["exit_return_pct"])
+        if closed.empty:
+            return None
+        if "exit_date" in closed.columns:
+            closed = closed.sort_values("exit_date")
+        returns = closed["exit_return_pct"].astype(float)
+        gains = returns[returns > 0].sum()
+        losses = abs(returns[returns < 0].sum())
+        pf = (gains / losses) if losses > 0 else None
+        equity = returns.cumsum()
+        drawdown = (equity - equity.cummax()).min()
+        return {
+            "profit_factor": pf,
+            "max_drawdown_pct": abs(float(drawdown)) if drawdown == drawdown else None,
+            "n_trades": int(len(closed)),
+        }
+    except Exception:
+        return None
+
+
 def build_backtest_section(report: dict | None) -> list[str]:
     if report is None:
+        # バックテスト未実施日は実運用トレード実績（事実）で代替。出所を明記する。
+        actual = _trade_history_metrics()
+        if actual is not None:
+            pf = actual.get("profit_factor")
+            return [
+                "## バックテスト指標",
+                "",
+                "※本日はバックテスト未実施のため、実運用トレードの確定実績（trade_history）を記載します。",
+                "",
+                f"- PF（実運用・確定分）: {fmt_num(pf, 3) if pf is not None else '損失トレードなしのため算出不可'}",
+                f"- DD（実運用・確定分の累積リターン最大下落）: {fmt_num(actual.get('max_drawdown_pct'), 2)}%",
+                f"- 採用数（決済済みトレード数）: {actual.get('n_trades')}",
+            ]
         return [
             "## バックテスト指標",
             "",
@@ -738,6 +782,13 @@ def build_stock_cards(df: pd.DataFrame, max_rows: int | None = None) -> list[str
     data = _enrich_openwork(df)
     if max_rows is not None:
         data = data.head(max_rows)
+    # v10(2026-07-19): 表示行だけyfinanceでPER/PBR/ROE等を補完（失敗時は未取得のまま）
+    try:
+        from note_fundamentals import enrich_fundamentals
+
+        data = enrich_fundamentals(data)
+    except Exception:
+        pass
     lines: list[str] = []
     for _, row in data.iterrows():
         code = _code_text(row)
@@ -1662,8 +1713,13 @@ def build_note4(sources: SourceFiles, screening: pd.DataFrame, discipline: pd.Da
     status_lines = _market_status_block()
     notes = {key: _insert_market_status(body, status_lines) for key, body in notes.items()}
     manifest = [write_one_note(key, body, chart_rel_path(key)) for key, body in notes.items()]
-    NOTE4_MANIFEST_PATH.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    # v10(2026-07-19): ③ChatGPT版はCodexの独自ワークフロー
+    # （chatgpt-300man-note.yml・毎営業日16:45）が生成・保存するため、
+    # 日次autosaveのmanifestからは chatgpt を除外して3本保存にする（2重保存防止）。
+    autosave_manifest = [e for e in manifest if e.get("key") != "chatgpt"]
+    NOTE4_MANIFEST_PATH.write_text(json.dumps(autosave_manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"saved={NOTE4_MANIFEST_PATH}")
+    print(f"note_manifest_keys={','.join(str(e.get('key')) for e in autosave_manifest)}")
     # 完成条件: 4本すべて生成され、各冒頭に市場ステータスが入っていなければ失敗扱い
     broken: list[str] = []
     for key in NOTE4_TITLES:
