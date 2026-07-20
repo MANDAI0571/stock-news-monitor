@@ -7,6 +7,7 @@ import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
+from datetime import date, timedelta
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 
@@ -33,6 +34,37 @@ class NewsItem:
     link: str
     source: str
     published: str
+
+
+def load_weekly_new_highs(record_path: Path, today: date | None = None) -> pd.DataFrame:
+    """Aggregate this week's recorded 52-week highs after code deduplication."""
+    today = today or jst_today()
+    monday = today - timedelta(days=today.weekday())
+    empty = pd.DataFrame(columns=["sector", "count", "examples"])
+    if not record_path.exists():
+        return empty
+    try:
+        records = pd.read_csv(record_path, dtype={"code": str})
+    except Exception:
+        return empty
+    required = {"date", "code", "name", "sector", "high_type"}
+    if records.empty or not required.issubset(records.columns):
+        return empty
+    dates = pd.to_datetime(records["date"], errors="coerce").dt.date
+    valid = (
+        dates.ge(monday)
+        & dates.lt(today)
+        & records["high_type"].astype(str).eq("52W_NEW_HIGH")
+        & records["sector"].fillna("").astype(str).str.strip().ne("")
+    )
+    weekly = records.loc[valid].drop_duplicates(subset=["code"], keep="last")
+    if weekly.empty:
+        return empty
+    rows = []
+    for sector, group in weekly.groupby("sector", sort=False):
+        names = [str(value).strip() for value in group["name"] if str(value).strip()]
+        rows.append({"sector": str(sector), "count": len(group), "examples": "、".join(names[:3])})
+    return pd.DataFrame(rows).sort_values(["count", "sector"], ascending=[False, True]).reset_index(drop=True)
 
 
 def fetch_sector_returns() -> pd.DataFrame:
@@ -65,7 +97,11 @@ def fetch_news(max_items: int = 5) -> list[NewsItem]:
     return items
 
 
-def build_digest(sectors: pd.DataFrame, news: list[NewsItem]) -> tuple[str, str]:
+def build_digest(
+    sectors: pd.DataFrame,
+    news: list[NewsItem],
+    new_highs: pd.DataFrame | None = None,
+) -> tuple[str, str]:
     today = jst_today()
     if sectors.empty:
         raise RuntimeError("セクター騰落率を取得できませんでした")
@@ -75,12 +111,18 @@ def build_digest(sectors: pd.DataFrame, news: list[NewsItem]) -> tuple[str, str]
     subject = f"【週刊日本株】強い{top.iloc[0]['sector']}、弱い{bottom.iloc[0]['sector']}｜{today:%m/%d}"
     lines = [
         "3分で分かる 今週の日本株", "",
-        f"17セクター中、上昇は{positive}、下落は{len(sectors) - positive}。今週の主役と逆風を数字で確認します。", "",
+        f"取得できた{len(sectors)}セクター中、上昇は{positive}、下落は{len(sectors) - positive}。今週の主役と逆風を数字で確認します。", "",
         "■ 好調セクター TOP3",
     ]
     lines += [f"{i}. {row.sector}: {row.weekly_return_pct:+.2f}%" for i, row in enumerate(top.itertuples(), 1)]
     lines += ["", "■ 不調セクター BOTTOM3"]
     lines += [f"{i}. {row.sector}: {row.weekly_return_pct:+.2f}%" for i, row in enumerate(bottom.itertuples(), 1)]
+    if new_highs is not None and not new_highs.empty:
+        total = int(new_highs["count"].sum())
+        lines += ["", f"■ 今週の52週新高値（重複除外 {total}銘柄）"]
+        for row in new_highs.head(5).itertuples():
+            example = f"（{row.examples}）" if row.examples else ""
+            lines.append(f"・{row.sector}: {row.count}銘柄{example}")
     lines += ["", "■ 来週のチェックポイント", "・上位セクターの強さが続くか", "・下位セクターに反発や資金回帰が出るか", "・指数上昇が一部銘柄だけに偏っていないか"]
     if news:
         lines += ["", "■ 今週話題になった記事"]
@@ -109,7 +151,8 @@ def main() -> None:
     except Exception as exc:
         print(f"weekly_news=omitted reason={type(exc).__name__}")
         news = []
-    subject, body = build_digest(sectors, news)
+    new_highs = load_weekly_new_highs(Path("data/highs_track_record.csv"))
+    subject, body = build_digest(sectors, news, new_highs)
     output_dir = Path(args.output_dir)
     write_outputs(output_dir, subject, body, sectors)
     if not args.send_mail:
