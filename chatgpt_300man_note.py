@@ -823,7 +823,9 @@ def maybe_send_mail(subject: str, body: str, attachments: list[Path], enabled: b
     if config is None:
         print("chatgpt_300man_mail=skipped reason=missing_secrets")
         return False
-    send_gmail(subject, body, config, attachments=attachments)
+    if not send_gmail(subject, body, config, attachments=attachments):
+        print("chatgpt_300man_mail=skipped reason=jpx_holiday")
+        return False
     print(f"chatgpt_300man_mail=sent to={config.mail_to}")
     return True
 

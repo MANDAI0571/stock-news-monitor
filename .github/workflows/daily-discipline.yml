@@ -22,6 +22,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      - name: Disable mail outside JPX business days
+        if: env.SEND_GMAIL == 'true'
+        run: |
+          python - <<'PY'
+          import os
+          from jptime import is_jpx_business_day, jst_today
+          today = jst_today()
+          if not is_jpx_business_day(today):
+              print(f"JPX closed on {today}; disabling mail")
+              with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as f:
+                  f.write("SEND_GMAIL=false\n")
+          PY
+
       - name: Set up Python
         uses: actions/setup-python@v6
         with:

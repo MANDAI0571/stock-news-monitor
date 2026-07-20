@@ -476,7 +476,9 @@ def send_alert_mail(
         return False
     subject = build_subject(new_alerts)
     body = build_body(new_alerts, detected_count=detected_count, status_note=status_note)
-    send_gmail(subject, body, config)
+    if not send_gmail(subject, body, config):
+        print("intraday_alert_mail=skipped reason=jpx_holiday")
+        return False
     print(f"intraday_alert_mail=sent to={config.mail_to} subject={subject}")
     return True
 

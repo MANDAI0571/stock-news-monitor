@@ -309,7 +309,9 @@ def main() -> None:
     if config is None:
         raise RuntimeError("GMAIL_USER/GMAIL_APP_PASSWORD/MAIL_TO が未設定です")
 
-    send_gmail(digest.subject, digest.body, config, attachments=digest.attachments)
+    if not send_gmail(digest.subject, digest.body, config, attachments=digest.attachments):
+        print("cloud_digest_mail=skipped reason=jpx_holiday")
+        return
     print(f"cloud_digest_mail=sent attachments={len(digest.attachments)}")
 
 

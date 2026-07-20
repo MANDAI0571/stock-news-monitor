@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from jptime import jst_today
+from jptime import is_jpx_business_day, jst_today
 from scanner.highs import build_high_sections_markdown
 from scanner.openwork import format_openwork_score
 
@@ -113,7 +113,12 @@ def send_gmail(
     body: str,
     config: GmailConfig,
     attachments: list[Path] | None = None,
-) -> None:
+    allow_non_business_day: bool = False,
+) -> bool:
+    today = jst_today()
+    if not allow_non_business_day and not is_jpx_business_day(today):
+        print(f"gmail_delivery=skipped reason=jpx_holiday date={today.isoformat()}")
+        return False
     message = EmailMessage()
     message["Subject"] = subject
     message["From"] = f"DUKEクラウド通知 <{config.user}>"
@@ -141,6 +146,7 @@ def send_gmail(
     with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=30) as smtp:
         smtp.login(config.user, config.app_password)
         smtp.send_message(message)
+    return True
 
 
 def maybe_send_gmail(
@@ -152,6 +158,11 @@ def maybe_send_gmail(
 ) -> bool:
     if not enabled:
         print("gmail_notification=skipped reason=disabled")
+        return False
+
+    today = jst_today()
+    if not is_jpx_business_day(today):
+        print(f"gmail_notification=skipped reason=jpx_holiday date={today.isoformat()}")
         return False
 
     config = load_gmail_config()
@@ -173,7 +184,8 @@ def maybe_send_gmail(
                 "\n".join(path.name for path in expanded_attachments),
             ]
         )
-    send_gmail(subject, body, config, attachments=expanded_attachments)
+    if not send_gmail(subject, body, config, attachments=expanded_attachments):
+        return False
     print(f"gmail_notification=sent to={config.mail_to} subject={subject}")
     return True
 

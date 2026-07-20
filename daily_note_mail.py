@@ -123,7 +123,9 @@ def main() -> None:
 
     note_md_path = output_dir / "note_daily.md"
     attachments = [note_md_path] if note_md_path.exists() else None
-    send_gmail(build_subject(), body, config, attachments=attachments)
+    if not send_gmail(build_subject(), body, config, attachments=attachments):
+        print("gmail_notification=skipped reason=jpx_holiday")
+        return
     print(f"gmail_notification=sent to={config.mail_to} subject={build_subject()} note_url={note_url or 'missing'}")
 
 

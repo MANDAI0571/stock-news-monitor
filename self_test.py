@@ -46,6 +46,7 @@ def main() -> None:
     _test_fundamentals_contract()
     _test_openwork_cache_contract()
     _test_jpx_business_day_calendar()
+    _test_gmail_holiday_guard()
     _test_holiday_target_date_and_skip_guard()
     _test_openwork_manual_reflection_contract()
     _test_previous_52w_high_line_retest()
@@ -2021,6 +2022,20 @@ def _test_jpx_business_day_calendar() -> None:
     assert prev_jpx_business_day(date(2027, 1, 3)) == date(2026, 12, 30)   # 年始→大納会
     assert prev_jpx_business_day(date(2026, 5, 6)) == date(2026, 5, 1)     # GW連休→5/1
     print("self-test: jpx_business_day(祝日・年末年始カレンダー) OK")
+
+
+def _test_gmail_holiday_guard() -> None:
+    from datetime import date
+    from unittest.mock import patch
+    from gmail_notify import GmailConfig, send_gmail
+
+    config = GmailConfig("sender@example.com", "secret", "to@example.com")
+    with patch("gmail_notify.jst_today", return_value=date(2026, 7, 20)), patch(
+        "gmail_notify.smtplib.SMTP_SSL"
+    ) as smtp:
+        assert send_gmail("subject", "body", config) is False
+        smtp.assert_not_called()
+    print("self-test: gmail_holiday_guard OK")
 
 
 def _test_holiday_target_date_and_skip_guard() -> None:

@@ -1,0 +1,45 @@
+name: Weekly Market Digest
+
+on:
+  workflow_dispatch:
+    inputs:
+      send_mail:
+        description: "手動実行でメールを送る（通常の確認ではOFF）"
+        type: boolean
+        default: false
+  schedule:
+    # Saturday 10:00 JST. GitHub Actions uses UTC.
+    - cron: "0 1 * * 6"
+
+jobs:
+  weekly-market-digest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Build Saturday digest
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+          SEND_MAIL: ${{ github.event_name == 'schedule' && 'true' || (github.event.inputs.send_mail == 'true' && 'true' || 'false') }}
+        run: |
+          if [ "$SEND_MAIL" = "true" ]; then
+            python weekly_market_digest.py --send-mail
+          else
+            python weekly_market_digest.py
+          fi
+      - name: Upload weekly digest
+        uses: actions/upload-artifact@v7
+        with:
+          name: weekly-market-digest
+          path: |
+            outputs/weekly_market_subject.txt
+            outputs/weekly_market_digest.md
+            outputs/weekly_sector_returns.csv
+          if-no-files-found: error
