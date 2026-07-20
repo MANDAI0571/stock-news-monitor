@@ -1177,6 +1177,31 @@ def _highs_target_date(highs: pd.DataFrame):
     return _prev_jst_business_day()
 
 
+def _filter_highs_to_target_date(highs: pd.DataFrame) -> tuple[pd.DataFrame, object, int]:
+    """Keep only rows from the latest valid data_date.
+
+    Empty candidate data remains a valid "no candidates" article. Non-empty data
+    without any valid data_date is treated as broken input and must not publish.
+    """
+    if highs.empty:
+        return highs.copy(), _prev_jst_business_day(), 0
+    if "data_date" not in highs.columns:
+        raise ValueError("screening_highs has rows but no data_date column")
+    parsed = pd.to_datetime(highs["data_date"], errors="coerce").dt.date
+    valid = parsed.dropna()
+    if valid.empty:
+        raise ValueError("screening_highs has rows but all data_date values are missing or invalid")
+    target = max(valid)
+    keep = parsed.eq(target)
+    filtered = highs.loc[keep].copy()
+    excluded = int((~keep).sum())
+    print(
+        f"note_highs_data_date={target.isoformat()} kept={len(filtered)} excluded_mixed_or_missing={excluded}",
+        flush=True,
+    )
+    return filtered, target, excluded
+
+
 def _highs_num(row, key) -> float | None:
     try:
         value = float(row.get(key))
@@ -1366,9 +1391,9 @@ def _highs_comment(row, ref, is_new: bool) -> str:
     dist = _highs_num(row, "dist_to_high_pct")
     if is_new:
         openers = [
-            "本日、52週新高値を更新しました。",
+            f"対象営業日（{ref.isoformat()}）に52週新高値を更新しました。",
             "1年分の高値を上抜け、52週新高値を付けました。",
-            "本日の高値で52週レンジの上限を更新しています。",
+            f"対象営業日（{ref.isoformat()}）の高値で52週レンジの上限を更新しています。",
         ]
         parts.append(openers[code_seed % len(openers)])
         if fb:
@@ -1387,7 +1412,7 @@ def _highs_comment(row, ref, is_new: bool) -> str:
             parts.append(f"業種は{sector}。売買代金は大型株ほど厚くないため、出来高の変化に注意が必要です。")
     vr = _highs_num(row, "volume_ratio_today")
     if vr is not None and vr >= 2:
-        parts.append(f"本日は出来高が平常時の{vr:.1f}倍に膨らみ、需給に変化が出ています。")
+        parts.append(f"対象営業日は出来高が平常時の{vr:.1f}倍に膨らみ、需給に変化が出ています。")
     growth = _highs_num(row, "sales_growth_pct")
     if growth is not None:
         parts.append(f"直近の売上高は前年同期比{growth:+.1f}%（yfinance集計）と、業績面の裏付けも確認できます。" if growth > 0 else f"直近の売上高は前年同期比{growth:+.1f}%（yfinance集計）で、株価先行の面があります。")
@@ -1448,7 +1473,7 @@ def _stock_detail_block(row, rank: int, ref, ow_cache, is_new: bool) -> list[str
     code = str(row.get("code", "")).strip()
     name = safe_text(row.get("name"))
     dist = _highs_num(row, "dist_to_high_pct")
-    status = "本日52週新高値を更新" if is_new else (f"新高値まであと{dist:.2f}%" if dist is not None else "新高値接近")
+    status = f"対象営業日（{ref.isoformat()}）に52週新高値を更新" if is_new else (f"新高値まであと{dist:.2f}%" if dist is not None else "新高値接近")
     lines: list[str] = [f"### {rank}. {name}（{code}）　{status}", ""]
 
     def add(label: str, value: str | None) -> None:
@@ -1466,7 +1491,7 @@ def _stock_detail_block(row, rank: int, ref, ow_cache, is_new: bool) -> list[str
     if not is_new and dist is not None:
         add("52週高値までの距離：", f"{dist:.2f}%")
     elif is_new:
-        add("52週高値までの距離：", "本日更新")
+        add("52週高値までの距離：", f"対象営業日（{ref.isoformat()}）に更新")
     turnover = _highs_num(row, "turnover_20d")
     add("売買代金（20日平均）：", f"{turnover / 1e8:,.1f}億円" if turnover is not None and turnover > 0 else None)
     vr = _highs_num(row, "volume_ratio_today")
@@ -1545,7 +1570,7 @@ def _highs_footer_counts(all_df: pd.DataFrame, new_df: pd.DataFrame, near_df: pd
             if 0 <= (d - ref).days <= 7:
                 earnings7 += 1
     return [
-        "## 本日の集計",
+        "## 対象営業日の集計",
         "",
         f"- 候補数（合計）：{len(all_df)}銘柄",
         f"- 52週新高値 到達：{len(new_df)}銘柄",
@@ -1567,8 +1592,12 @@ def build_highs_note(highs: pd.DataFrame, source: Path | None) -> str:
     """
     from jptime import jst_today
 
-    ref = _highs_target_date(highs)
+    highs, ref, excluded = _filter_highs_to_target_date(highs)
     lines = [f"# {_jp_date_text(ref)} {_HIGHS_TITLE_SUFFIX}", ""]
+    lines.append(f"※ 基準日（価格データ最終日 data_as_of）：**{ref.isoformat()}**")
+    if excluded:
+        lines.append(f"※ 基準日と異なる行・日付欠損行は{excluded}件除外しました。")
+    lines.append("")
     if jst_today() != ref:
         lines.append(f"※ 対象は直近取引日 **{_jp_date_text(ref)}** の日本株データです（生成日と異なります）。")
         lines.append("")
@@ -1603,7 +1632,7 @@ def build_highs_note(highs: pd.DataFrame, source: Path | None) -> str:
         ow_cache = None
 
     sections = (
-        ("## 【A】52週新高値に本日到達した銘柄", new_main, True, 15),
+        (f"## 【A】52週新高値に対象営業日（{ref.isoformat()}）に到達した銘柄", new_main, True, 15),
         ("## 【B】52週新高値まで3%以内に接近している銘柄", near_main, False, 10),
     )
     for header, df, is_new, detail_cap in sections:

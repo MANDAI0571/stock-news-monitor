@@ -1007,10 +1007,10 @@ def _test_kabutan_high_and_quality_flags() -> None:
         [
             {"code": "1111", "name": "健全", "high_type": "52W_NEW_HIGH", "current_price": 1000, "high_52w": 1000,
              "dist_to_high_pct": 0.0, "high_date": "2026-07-10", "turnover_20d": 500_000_000,
-             "inago_suspect": False, "tob_suspect": False, "note_flags": "初回ブレイク", "earnings_date": "2026-08-08"},
+             "inago_suspect": False, "tob_suspect": False, "note_flags": "初回ブレイク", "earnings_date": "2026-08-08", "data_date": "2026-07-10"},
             {"code": "2222", "name": "張付", "high_type": "52W_NEW_HIGH", "current_price": 1200, "high_52w": 1200,
              "dist_to_high_pct": 0.0, "high_date": "2026-07-10", "turnover_20d": 300_000_000,
-             "inago_suspect": False, "tob_suspect": True, "note_flags": "TOB疑い", "earnings_date": ""},
+             "inago_suspect": False, "tob_suspect": True, "note_flags": "TOB疑い", "earnings_date": "", "data_date": "2026-07-10"},
         ]
     )
     note_text = build_highs_note(highs_df, Path("screening_highs_test.csv"))
@@ -1227,7 +1227,7 @@ def _test_note_highs_v2() -> None:
         hits = re.findall(rf"(?<![A-Za-z0-9_]){token}(?![A-Za-z0-9_])", text)
         assert not hits, f"{token} が本文に残存: {hits}"
     # 3) 到達(A)と接近(B)が別セクションで表示される
-    assert "## 【A】52週新高値に本日到達した銘柄" in text
+    assert "## 【A】52週新高値に対象営業日（2026-07-10）に到達した銘柄" in text
     assert "## 【B】52週新高値まで3%以内に接近している銘柄" in text
     a_section = text.split("## 【A】")[1].split("## 【B】")[0]
     b_section = text.split("## 【B】")[1].split("## 【C】")[0]
@@ -1235,14 +1235,14 @@ def _test_note_highs_v2() -> None:
     assert "接近テスト" in b_section and "到達テスト" not in b_section
     # 4) TOB疑い・データ異常は参考掲載(C)へ。A/B本体には出ない
     assert "張付参考" not in a_section and "異常参考" not in b_section
-    c_section = text.split("## 【C】")[1].split("## 本日の集計")[0]
+    c_section = text.split("## 【C】")[1].split("## 対象営業日の集計")[0]
     assert "張付参考" in c_section and "異常参考" in c_section
     assert "データ異常のため参考掲載" in c_section
     # 5) 決算カウントダウン: 未来日は「あとN日」(2026-07-10→07-14=4日)、過去日は次回として出さない
     assert "2026年7月14日／あと4日" in text
     assert "2026年1月15日" not in text and "未公表" in b_section
     # 6) 実績セクション・集計・免責が末尾にある
-    assert "## 本日の集計" in text and "## 実績（過去に掲載した銘柄のその後）" in text
+    assert "## 対象営業日の集計" in text and "## 実績（過去に掲載した銘柄のその後）" in text
     assert "本記事は情報提供を目的としたもので、特定銘柄の売買を推奨するものではありません" in text
     # 7) 検索トレンドは取得していないので「急上昇」と書かない
     assert "急上昇" not in text
@@ -1258,6 +1258,25 @@ def _test_note_highs_v2() -> None:
     empty_text = build_highs_note(pd.DataFrame(), None)
     assert "データ不足" in empty_text and "該当なし" in empty_text
     assert "本記事は情報提供を目的としたもので" in empty_text
+
+    # 日付混在は最新data_dateだけを掲載し、欠損・旧日付を除外する。
+    mixed = pd.DataFrame([
+        rows[0],
+        {**rows[1], "code": "5555", "name": "旧日付", "data_date": "2026-07-09"},
+        {**rows[1], "code": "6666", "name": "日付欠損", "data_date": ""},
+    ])
+    mixed_text = build_highs_note(mixed, Path("screening_highs_test.csv"))
+    assert "到達テスト" in mixed_text
+    assert "5555" not in mixed_text and "6666" not in mixed_text
+    assert "基準日と異なる行・日付欠損行は2件除外" in mixed_text
+
+    # 銘柄行があるのにdata_dateが全件欠損なら、推定日で公開しない。
+    try:
+        build_highs_note(pd.DataFrame([{"code": "7777", "name": "日付破損"}]), Path("screening_highs_test.csv"))
+    except ValueError as exc:
+        assert "data_date" in str(exc)
+    else:
+        raise AssertionError("all-missing data_date must stop note generation")
     print("self-test: note_highs_v2(52週新高値 記事新形式) OK")
 
 
