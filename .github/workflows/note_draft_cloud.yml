@@ -170,6 +170,7 @@ jobs:
             exit 0
           fi
           grep -q "note_draft_saved=3/3" note_autosave_multi.log || { echo "::error::3本のnote下書き保存が未完了（note_draft_savedを確認）"; exit 1; }
+          grep -q "note_draft_image_uploaded=3/3" note_autosave_multi.log || { echo "::error::3本の見出し画像アップロードが未完了"; exit 1; }
 
       - name: Build Phase 1 distribution drafts (no external posting)
         env:
