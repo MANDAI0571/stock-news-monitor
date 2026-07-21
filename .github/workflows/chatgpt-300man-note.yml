@@ -57,7 +57,22 @@ jobs:
             echo "::warning::successful daily-discipline run was not found"
             exit 0
           fi
-          gh run download "$run_id" -n stock-news-monitor-outputs -D outputs
+          artifact_dir="${RUNNER_TEMP}/daily-discipline-${run_id}"
+          mkdir -p "$artifact_dir"
+          downloaded=false
+          for attempt in 1 2 3; do
+            if gh run download "$run_id" -n stock-news-monitor-outputs -D "$artifact_dir"; then
+              downloaded=true
+              break
+            fi
+            echo "::warning::morning artifact download failed (attempt ${attempt}/3, run_id=${run_id})"
+            sleep $((attempt * 5))
+          done
+          if [ "$downloaded" != "true" ]; then
+            echo "::warning::morning artifact unavailable; continuing with the canonical journal so the note draft is still generated"
+            exit 0
+          fi
+          cp -R "$artifact_dir"/. outputs/
 
       - name: Build Codex 300万円 operation note
         env:
