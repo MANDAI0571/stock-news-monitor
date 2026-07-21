@@ -1,6 +1,9 @@
 name: Cloud Digest Mail
 
 on:
+  push:
+    paths:
+      - ".github/triggers/cloud-digest-mail"
   workflow_dispatch:
     inputs:
       send_mail:
@@ -60,7 +63,7 @@ jobs:
           find outputs -maxdepth 1 -type f | sort
 
       - name: Check Gmail secrets
-        if: github.event.inputs.send_mail == 'true'
+        if: github.event_name == 'push' || github.event.inputs.send_mail == 'true'
         env:
           GMAIL_USER: ${{ secrets.GMAIL_USER }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
@@ -78,7 +81,7 @@ jobs:
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           MAIL_TO: ${{ secrets.MAIL_TO }}
         run: |
-          if [ "${{ github.event.inputs.send_mail }}" = "true" ]; then
+          if [ "${{ github.event_name }}" = "push" ] || [ "${{ github.event.inputs.send_mail }}" = "true" ]; then
             python3 cloud_mail_digest.py --output-dir outputs
           else
             python3 cloud_mail_digest.py --output-dir outputs --dry-run
