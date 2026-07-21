@@ -19,7 +19,8 @@
 
 | 執行日 | 売買 | コード | 銘柄 | 宣言株数 | 判断時価格 | 理由 |
 |---|---|---|---|---:|---:|---|
-| 2026-07-22 | BUY | [7936](https://finance.yahoo.co.jp/quote/7936.T/chart?frm=dly&trm=6m&scl=stndrd&styl=cndl&evnts=volume&ovrIndctr=sma%2Cmma%2Clma&addIndctr=&compare=) | アシックス | 100株 | 4,895円 | Sランク・52週高値差1.63%・MA25/75/200上・52週高値更新3日以内・100株48万9500円で資金16.3% |
+| 2026-07-23 | BUY | [7453](https://finance.yahoo.co.jp/quote/7453.T/chart?frm=dly&trm=6m&scl=stndrd&styl=cndl&evnts=volume&ovrIndctr=sma%2Cmma%2Clma&addIndctr=&compare=) | 良品計画 | 200株 | 4,259円 | 300万円運用候補 |
+| 2026-07-23 | BUY | [7936](https://finance.yahoo.co.jp/quote/7936.T/chart?frm=dly&trm=6m&scl=stndrd&styl=cndl&evnts=volume&ovrIndctr=sma%2Cmma%2Clma&addIndctr=&compare=) | アシックス | 200株 | 4,895円 | 300万円運用候補 |
 
 ## 実現損益の履歴
 
