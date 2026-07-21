@@ -1547,6 +1547,8 @@ def _test_intraday_cloud_workflow_contract() -> None:
     assert "intraday-alert-state-${{ steps.holiday.outputs.jst_date }}" in workflow
     assert "Check Gmail secrets" in workflow
     assert "GMAIL_USER secret is missing" in workflow
+    assert 'cron: "*/5 0,1 * * 1-5"' in workflow
+    assert "find outputs -maxdepth 1 -name 'screening_result*.csv' -delete" in workflow
 
 
 def _test_cloud_digest_mail() -> None:
