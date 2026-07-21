@@ -568,6 +568,7 @@ def update_evening_journal(output_dir: Path, journal_path: Path, trading_date: d
     save_orders(orders, order_path)
     if not journal.empty:
         save_journal(journal, journal_path)
+    write_canonical_ledger(journal, orders)
     return len(orders)
 
 
@@ -755,6 +756,7 @@ def record_open_fill(output_dir: Path, journal_path: Path, trading_date: date | 
     journal, orders, fills = execute_declared_orders(orders, journal, trading_date)
     save_journal(journal, journal_path)
     save_orders(orders, order_path)
+    write_canonical_ledger(journal, orders)
     portfolio = portfolio_view_for_note(discipline, screening, journal_path)
     output_dir.mkdir(parents=True, exist_ok=True)
     portfolio.to_csv(output_dir / "chatgpt_300man_portfolio.csv", index=False, encoding="utf-8-sig")
@@ -881,6 +883,38 @@ def _realized_history_lines(journal: pd.DataFrame) -> list[str]:
             f"{shares}株 | {_yen(entry)} | {_yen(exit_price)} | {pnl:+,.0f}円 |"
         )
     return lines
+
+
+def write_canonical_ledger(
+    journal: pd.DataFrame,
+    orders: pd.DataFrame,
+    path: Path = PROJECT_ROOT / "docs" / "codex_300man_ledger.md",
+) -> Path:
+    open_positions = _open_positions(journal)
+    invested = pd.to_numeric(open_positions.get("position_value", pd.Series(dtype=float)), errors="coerce").fillna(0).sum()
+    realized = 0.0
+    if not journal.empty:
+        closed = journal[journal["status"].astype(str).str.upper().eq("CLOSED")]
+        for _, row in closed.iterrows():
+            entry = _positive_float(row.get("entry_price")) or 0
+            exit_price = _positive_float(row.get("exit_price")) or 0
+            shares = int(_positive_float(row.get("shares")) or 0)
+            realized += (exit_price - entry) * shares
+    lines = [
+        "# Codexが300万円運用 - 運用台帳（正本）", "",
+        "本台帳はCodexの300万円ペーパー運用の唯一の正本です。実データだけを記録し、取得できない値は作りません。Claudeは銘柄選定・判断・台帳更新に関与しません。", "",
+        "## スタート設定", "",
+        "- 開始日: 2026-07-21", "- 昨日までの旧記録: リセット",
+        f"- 初期資金: {CAPITAL:,}円", f"- 現金残: {CAPITAL - invested + realized:,.0f}円",
+        f"- 保有: {len(open_positions)}銘柄", f"- 実現損益（累計）: {realized:+,.0f}円", "",
+        "## 保有一覧（現在）", "", *_portfolio_table(portfolio_view_for_note(pd.DataFrame(), journal_path=DEFAULT_JOURNAL_PATH)), "",
+        "## 宣告ログ（前日宣告 -> 翌営業日の寄りで約定）", "", *_order_lines(orders), "",
+        "## 実現損益の履歴", "", *_realized_history_lines(journal), "",
+        "約定価格は各営業日の実始値で確定します。宣告時点で未確定の始値は「約定待ち」とし、推定値で埋めません。これは自社のペーパー運用記録であり、特定銘柄の売買を推奨・勧誘するものではありません。", "",
+    ]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines), encoding="utf-8")
+    return path
 
 
 def build_note(output_dir: Path, journal_path: Path) -> tuple[str, str, pd.DataFrame]:
