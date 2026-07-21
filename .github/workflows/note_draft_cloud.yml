@@ -1,6 +1,9 @@
 name: Note下書き（クラウド生成）
 
 on:
+  push:
+    paths:
+      - ".github/triggers/note-draft-cloud"
   workflow_dispatch:
     inputs:
       quick_mode:

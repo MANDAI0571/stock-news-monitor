@@ -832,6 +832,7 @@ def build_note_assets(output_dir: str | Path = OUTPUT_DIR) -> Path:
 
     note_draft.main()
     image_paths = _build_cloud_images(output_dir)
+    _attach_note_heading_images(output_dir)
     _build_warren_summary(output_dir)
     _write_cloud_article(output_dir)
 
@@ -864,6 +865,33 @@ def build_note_assets(output_dir: str | Path = OUTPUT_DIR) -> Path:
     for entry in files:
         print(f"note_asset={entry['path']} size={entry['size_bytes']}")
     return manifest_path
+
+
+def _attach_note_heading_images(output_dir: Path) -> None:
+    """3本の自動保存記事に、実在する見出し画像を割り当てる。
+
+    note_draft.py の銘柄チャート指定は固定銘柄で、当日のクラウド処理では画像が
+    生成されないことがある。生成済みのクラウド画像へ差し替え、画像なし保存を防ぐ。
+    """
+    manifest_path = output_dir / "note_drafts_manifest.json"
+    if not manifest_path.exists():
+        return
+    entries = json.loads(manifest_path.read_text(encoding="utf-8"))
+    heading_images = {
+        "claude": "outputs/eyecatch.png",
+        "pullback": "outputs/funnel.png",
+        "highs": "outputs/market_status.png",
+    }
+    changed = False
+    for entry in entries:
+        key = str(entry.get("key") or "")
+        rel = heading_images.get(key)
+        if rel and (output_dir / Path(rel).name).exists():
+            entry["chart_image"] = rel
+            changed = True
+    if changed:
+        manifest_path.write_text(json.dumps(entries, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        print("note_heading_images=claude:eyecatch,pullback:funnel,highs:market_status")
 
 
 def main() -> None:

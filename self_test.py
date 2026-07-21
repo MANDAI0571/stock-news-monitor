@@ -1567,6 +1567,7 @@ def _test_cloud_digest_mail() -> None:
         (out / "note_highs.md").write_text("# 52週新高値候補\n\n該当なし\n", encoding="utf-8")
         (out / "note_chatgpt.md").write_text("# ChatGPT案\n\nBUY なし\n", encoding="utf-8")
         (out / "note_claude.md").write_text("# Claude案\n\nWATCH なし\n", encoding="utf-8")
+        (out / "note_draft_url_claude.txt").write_text("https://editor.note.com/notes/claude123/edit/\n", encoding="utf-8")
         (out / "metron_kpi_report.md").write_text("# メトロンKPI\n\n- note4本: OK\n", encoding="utf-8")
         (out / "screening_pullback_20260621_132309.csv").write_text("code,name\n1111,古い候補\n", encoding="utf-8")
         (out / "screening_pullback_20260716_160000.csv").write_text(
@@ -1585,6 +1586,9 @@ def _test_cloud_digest_mail() -> None:
         assert "200MAタッチ（1件）" in digest.body
         assert "https://finance.yahoo.co.jp/quote/1333.T/chart" in digest.body
         assert "52週新高値" in digest.body
+        assert "## Note下書きURL（記事別）" in digest.body
+        assert "300万円 Claude版: https://editor.note.com/notes/claude123/edit/" in digest.body
+        assert any(path.name == "note_draft_url_claude.txt" for path in digest.attachments)
         assert "メトロンKPI" in digest.body
         assert "| nan" not in digest.body.lower()
         assert "nan |" not in digest.body.lower()

@@ -38,6 +38,9 @@ FIXED_ATTACHMENTS = (
     "note_drafts_manifest.json",
     "note_cloud_artifact_manifest.json",
     "note_draft_url_cloud.txt",
+    "note_draft_url_claude.txt",
+    "note_draft_url_pullback.txt",
+    "note_draft_url_highs.txt",
     "market_snapshot.json",
     "metron_kpi_report.md",
     "metron_kpi.json",
@@ -87,9 +90,18 @@ def build_digest(output_dir: Path, now: datetime | None = None) -> DigestMail:
         "",
     ]
 
-    note_url = _read_optional(output_dir / "note_draft_url_cloud.txt")
-    if note_url:
-        lines.extend(["Note下書きURL:", note_url, ""])
+    note_urls = (
+        ("統合版", "note_draft_url_cloud.txt"),
+        ("300万円 Claude版", "note_draft_url_claude.txt"),
+        ("押し目候補版", "note_draft_url_pullback.txt"),
+        ("52週新高値版", "note_draft_url_highs.txt"),
+    )
+    available_urls = [(label, _read_optional(output_dir / filename)) for label, filename in note_urls]
+    available_urls = [(label, url) for label, url in available_urls if url]
+    if available_urls:
+        lines.append("## Note下書きURL（記事別）")
+        lines.extend(f"- {label}: {url}" for label, url in available_urls)
+        lines.append("")
 
     lines.extend(_ma_touch_summary(output_dir))
     lines.append("")
