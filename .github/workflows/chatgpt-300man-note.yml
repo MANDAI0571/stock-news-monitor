@@ -1,10 +1,10 @@
-name: ChatGPT 300man Note
+name: Codex 300man Note
 
 on:
   workflow_dispatch:
     inputs:
       send_mail:
-        description: "ChatGPT 300万円運用メールを送る"
+        description: "Codex 300万円運用メールを送る"
         type: boolean
         default: true
       save_note:
@@ -12,7 +12,7 @@ on:
         type: boolean
         default: true
   schedule:
-    # 16:45 JST, Monday-Friday. Generates only the ChatGPT 300万円運用 note.
+    # 16:45 JST, Monday-Friday. Generates only the Codex 300万円運用 note.
     - cron: "45 7 * * 1-5"
 
 permissions:
@@ -59,7 +59,7 @@ jobs:
           fi
           gh run download "$run_id" -n stock-news-monitor-outputs -D outputs
 
-      - name: Build ChatGPT 300万円 operation note
+      - name: Build Codex 300万円 operation note
         env:
           GMAIL_USER: ${{ secrets.GMAIL_USER }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
@@ -72,19 +72,19 @@ jobs:
             python3 chatgpt_300man_note.py --output-dir outputs --journal data/chatgpt_300man_journal.csv
           fi
 
-      - name: Persist ChatGPT 300万円 journal
+      - name: Persist Codex 300万円 journal
         run: |
-          if git diff --quiet -- data/chatgpt_300man_journal.csv; then
+          if git diff --quiet -- data/chatgpt_300man_journal.csv data/chatgpt_300man_orders.csv; then
             echo "chatgpt_300man_journal=unchanged"
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data/chatgpt_300man_journal.csv
-          git commit -m "Update ChatGPT 300man journal"
+          git add data/chatgpt_300man_journal.csv data/chatgpt_300man_orders.csv
+          git commit -m "Update Codex 300man journal"
           git push
 
-      - name: Save ChatGPT 300万円 note draft in note.com
+      - name: Save Codex 300万円 note draft in note.com
         if: env.SAVE_CHATGPT_300MAN_NOTE == 'true'
         env:
           NOTE_STORAGE_STATE: ${{ secrets.NOTE_STORAGE_STATE }}
@@ -104,9 +104,9 @@ jobs:
             echo "休場日スキップ（正常）"
             exit 0
           fi
-          grep -q "note_draft_saved=1/1" note_autosave_chatgpt_300man.log || { echo "::error::ChatGPT 300万円運用note下書き保存が未完了"; exit 1; }
+          grep -q "note_draft_saved=1/1" note_autosave_chatgpt_300man.log || { echo "::error::Codex 300万円運用note下書き保存が未完了"; exit 1; }
 
-      - name: Upload ChatGPT 300万円 artifact
+      - name: Upload Codex 300万円 artifact
         if: always()
         uses: actions/upload-artifact@v7
         with:
@@ -120,4 +120,5 @@ jobs:
             outputs/chatgpt_300man_mail_subject.txt
             outputs/chatgpt_300man_mail_body.md
             outputs/chatgpt_300man_portfolio.csv
+            data/chatgpt_300man_orders.csv
           if-no-files-found: warn

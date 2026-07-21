@@ -1601,6 +1601,8 @@ def _test_cloud_digest_mail() -> None:
     assert "outputs/screening_pullback_*.csv" in note_workflow
     assert "send_mail:" in daily_workflow
     assert "SEND_GMAIL" in daily_workflow
+    assert "github.event_name == 'schedule' && 'true'" not in daily_workflow
+    assert "github.event_name == 'workflow_dispatch'" in daily_workflow
     assert "python daily_discipline_run.py --send-gmail" in daily_workflow
     assert "GMAIL_USER secret is missing" in daily_workflow
     assert "workflow_dispatch:" in resend_workflow

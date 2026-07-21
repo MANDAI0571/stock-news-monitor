@@ -26,6 +26,7 @@ from paper_portfolio_discipline import (
 PROJECT_ROOT = Path(__file__).resolve().parent
 OUTPUT_DIR = PROJECT_ROOT / "outputs"
 DEFAULT_JOURNAL_PATH = PROJECT_ROOT / "data" / "chatgpt_300man_journal.csv"
+DEFAULT_ORDER_PATH = PROJECT_ROOT / "data" / "chatgpt_300man_orders.csv"
 JST = ZoneInfo("Asia/Tokyo")
 CAPITAL = 3_000_000
 FALLBACK_MARKET_HOLIDAYS = {
@@ -99,6 +100,10 @@ JOURNAL_COLUMNS = [
     "exit_price",
     "exit_reason",
 ]
+ORDER_COLUMNS = [
+    "decision_date", "execution_date", "side", "code", "ticker", "name",
+    "shares", "decision_price", "reason", "status",
+]
 
 
 def is_jpx_business_day(day: date) -> bool:
@@ -146,6 +151,24 @@ def save_journal(journal: pd.DataFrame, path: str | Path = DEFAULT_JOURNAL_PATH)
     journal_path.parent.mkdir(parents=True, exist_ok=True)
     journal.reindex(columns=JOURNAL_COLUMNS).to_csv(journal_path, index=False, encoding="utf-8-sig")
     return journal_path
+
+
+def load_orders(path: str | Path = DEFAULT_ORDER_PATH) -> pd.DataFrame:
+    order_path = Path(path)
+    if not order_path.exists():
+        return pd.DataFrame(columns=ORDER_COLUMNS)
+    orders = pd.read_csv(order_path).astype(object)
+    for column in ORDER_COLUMNS:
+        if column not in orders.columns:
+            orders[column] = ""
+    return orders.reindex(columns=ORDER_COLUMNS)
+
+
+def save_orders(orders: pd.DataFrame, path: str | Path = DEFAULT_ORDER_PATH) -> Path:
+    order_path = Path(path)
+    order_path.parent.mkdir(parents=True, exist_ok=True)
+    orders.reindex(columns=ORDER_COLUMNS).to_csv(order_path, index=False, encoding="utf-8-sig")
+    return order_path
 
 
 def normalize_code(value: object) -> str:
@@ -302,7 +325,7 @@ def fill_open_entries(
             "entry_rank": row.get("rank", ""),
             "entry_score": row.get("score", ""),
             "entry_regime": row.get("regime", ""),
-            "rule": "ChatGPT 300万円運用 / 寄り付きペーパー約定",
+            "rule": "Codex 300万円運用 / 前日宣言・翌寄り付きペーパー約定",
             "source_decision_price": row.get("entry_price", row.get("current_price", "")),
             "exit_date": "",
             "exit_price": "",
@@ -388,15 +411,164 @@ def apply_exit_rules(journal: pd.DataFrame, trading_date: date) -> tuple[pd.Data
     return out.reindex(columns=JOURNAL_COLUMNS), closed
 
 
+def _exit_reason(row: pd.Series, decision_date: date) -> str:
+    current = _positive_float(row.get("current_price"))
+    if current is None:
+        return ""
+    stop = _positive_float(row.get("stop_loss"))
+    take = _positive_float(row.get("take_profit"))
+    if stop is not None and current <= stop:
+        return "損切り条件到達"
+    if take is not None and current >= take:
+        return "利確条件到達"
+    try:
+        if decision_date >= date.fromisoformat(_text(row.get("timeout_date"))):
+            return "10営業日タイムアウト"
+    except ValueError:
+        pass
+    return ""
+
+
+def build_next_open_orders(
+    discipline: pd.DataFrame,
+    journal: pd.DataFrame,
+    decision_date: date,
+) -> pd.DataFrame:
+    """前日に銘柄・売買区分・100株単位の株数を固定する。"""
+    execution_date = next_jpx_business_day(decision_date)
+    open_positions = _open_positions(journal)
+    rows: list[dict[str, object]] = []
+    sell_codes: set[str] = set()
+    for _, position in open_positions.iterrows():
+        reason = _exit_reason(position, decision_date)
+        shares = int(_positive_float(position.get("shares")) or 0)
+        code = normalize_code(position.get("code", ""))
+        if not reason or not code or shares <= 0:
+            continue
+        rows.append({
+            "decision_date": decision_date.isoformat(),
+            "execution_date": execution_date.isoformat(),
+            "side": "SELL",
+            "code": code,
+            "ticker": ticker_for(position),
+            "name": position.get("name", ""),
+            "shares": shares,
+            "decision_price": position.get("current_price", ""),
+            "reason": reason,
+            "status": "DECLARED",
+        })
+        sell_codes.add(code)
+
+    remaining_codes = {
+        normalize_code(code) for code in open_positions.get("code", pd.Series(dtype=str)).tolist()
+    } - sell_codes
+    free_slots = max(0, MAX_POSITIONS - len(remaining_codes))
+    if not discipline.empty and "action" in discipline.columns and free_slots:
+        buys = discipline[discipline["action"].astype(str).str.upper().eq("BUY")]
+        for _, candidate in buys.iterrows():
+            if sum(1 for item in rows if item["side"] == "BUY") >= free_slots:
+                break
+            code = normalize_code(candidate.get("code", ""))
+            if not code or code in remaining_codes or code in sell_codes:
+                continue
+            shares = int(_positive_float(candidate.get("shares")) or 0)
+            if shares <= 0 or shares % 100 != 0:
+                continue
+            rows.append({
+                "decision_date": decision_date.isoformat(),
+                "execution_date": execution_date.isoformat(),
+                "side": "BUY",
+                "code": code,
+                "ticker": ticker_for(candidate),
+                "name": candidate.get("name", ""),
+                "shares": shares,
+                "decision_price": candidate.get("entry_price", candidate.get("current_price", "")),
+                "reason": candidate.get("buy_reason", candidate.get("reason", "300万円運用候補")),
+                "status": "DECLARED",
+            })
+            remaining_codes.add(code)
+    return pd.DataFrame(rows, columns=ORDER_COLUMNS)
+
+
+def execute_declared_orders(
+    orders: pd.DataFrame,
+    journal: pd.DataFrame,
+    trading_date: date,
+    price_fetcher=fetch_open_price_yfinance,
+) -> tuple[pd.DataFrame, pd.DataFrame, list[dict[str, object]]]:
+    """前日に宣言済みの注文だけを翌営業日の寄り付きで約定する。"""
+    if orders.empty:
+        return journal, orders, [{"status": "SKIP", "reason": "declared orders not found"}]
+    out_orders = orders.copy().astype(object)
+    due = out_orders[
+        out_orders["execution_date"].astype(str).eq(trading_date.isoformat())
+        & out_orders["status"].astype(str).str.upper().eq("DECLARED")
+    ]
+    if due.empty:
+        return journal, out_orders, [{"status": "SKIP", "reason": "no orders due today"}]
+    out_journal = journal.copy().astype(object)
+    fills: list[dict[str, object]] = []
+
+    for side in ("SELL", "BUY"):
+        for order_idx, order in due[due["side"].astype(str).str.upper().eq(side)].iterrows():
+            code = normalize_code(order.get("code", ""))
+            shares = int(_positive_float(order.get("shares")) or 0)
+            price = price_fetcher(ticker_for(order), trading_date)
+            if not code or shares <= 0 or shares % 100 != 0 or price is None:
+                fills.append({"status": "SKIP", "side": side, "code": code, "reason": "invalid order or open price unavailable"})
+                continue
+            if side == "SELL":
+                positions = _open_positions(out_journal)
+                match = positions[positions["code"].map(normalize_code).eq(code)]
+                if match.empty or int(_positive_float(match.iloc[0].get("shares")) or 0) != shares:
+                    fills.append({"status": "SKIP", "side": side, "code": code, "reason": "matching open position not found"})
+                    continue
+                idx = match.index[0]
+                out_journal.at[idx, "status"] = "CLOSED"
+                out_journal.at[idx, "exit_date"] = trading_date.isoformat()
+                out_journal.at[idx, "exit_price"] = round(price, 2)
+                out_journal.at[idx, "exit_reason"] = _text(order.get("reason"))
+            else:
+                invested = pd.to_numeric(_open_positions(out_journal).get("position_value", pd.Series(dtype=float)), errors="coerce").fillna(0).sum()
+                value = int(round(price * shares))
+                if invested + value > CAPITAL:
+                    fills.append({"status": "SKIP", "side": side, "code": code, "reason": "capital limit exceeded at open"})
+                    continue
+                slot = len(_open_positions(out_journal)) + 1
+                item = {
+                    "entry_date": trading_date.isoformat(), "fill_time_jst": datetime.now(JST).isoformat(timespec="seconds"),
+                    "slot": slot, "status": "OPEN", "code": code, "ticker": ticker_for(order), "name": order.get("name", ""),
+                    "entry_price": round(price, 2), "shares": shares, "position_value": value,
+                    "current_price": round(price, 2), "market_value": value, "unrealized_pnl": 0, "unrealized_pnl_pct": 0,
+                    "stop_loss": round(price * (1 - STOP_LOSS_PCT), 2), "take_profit": round(price * (1 + TAKE_PROFIT_PCT), 2),
+                    "timeout_date": add_jpx_business_days(trading_date, TIMEOUT_BUSINESS_DAYS).isoformat(),
+                    "entry_rank": "", "entry_score": "", "entry_regime": "", "rule": "Codex 300万円運用 / 前日宣言・翌寄り付き約定",
+                    "source_decision_price": order.get("decision_price", ""), "exit_date": "", "exit_price": "", "exit_reason": "",
+                }
+                out_journal = pd.concat([out_journal, pd.DataFrame([item], columns=JOURNAL_COLUMNS)], ignore_index=True)
+            out_orders.at[order_idx, "status"] = "FILLED"
+            fills.append({"status": "FILLED", "side": side, "code": code, "name": order.get("name", ""), "shares": shares, "entry_price": price})
+    return out_journal.reindex(columns=JOURNAL_COLUMNS), out_orders.reindex(columns=ORDER_COLUMNS), fills
+
+
 def update_evening_journal(output_dir: Path, journal_path: Path, trading_date: date) -> int:
     screening_path = _latest_path(output_dir, "screening_result.csv", "screening_result_*.csv")
     screening = _read_csv(screening_path)
     journal = load_journal(journal_path)
     journal = mark_to_market(journal, screening)
-    journal, closed = apply_exit_rules(journal, trading_date)
+    discipline_path = _latest_path(output_dir, "discipline_result.csv", "discipline_portfolio_*.csv")
+    discipline = _read_csv(discipline_path)
+    order_path = journal_path.with_name("chatgpt_300man_orders.csv")
+    existing_orders = load_orders(order_path)
+    locked = existing_orders[
+        existing_orders["decision_date"].astype(str).eq(trading_date.isoformat())
+        & existing_orders["status"].astype(str).str.upper().eq("DECLARED")
+    ] if not existing_orders.empty else existing_orders
+    orders = locked if not locked.empty else build_next_open_orders(discipline, journal, trading_date)
+    save_orders(orders, order_path)
     if not journal.empty:
         save_journal(journal, journal_path)
-    return closed
+    return len(orders)
 
 
 def portfolio_view_for_note(
@@ -557,13 +729,14 @@ def _uses_open_journal(portfolio: pd.DataFrame) -> bool:
 
 def write_open_report(fills: list[dict[str, object]], output_dir: Path) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
-    lines = ["# ChatGPT 300万円運用 寄り付き記録", ""]
+    lines = ["# Codex 300万円運用 寄り付き記録", ""]
     for item in fills:
         status = _text(item.get("status"))
         code = _text(item.get("code"))
         name = _text(item.get("name"))
         if status == "FILLED":
-            lines.append(f"- FILLED {code} {name}: {_text(item.get('shares'))}株 @ {_yen(item.get('entry_price'))}")
+            side = _text(item.get("side"))
+            lines.append(f"- FILLED {side} {code} {name}: {_text(item.get('shares'))}株 @ {_yen(item.get('entry_price'))}")
         else:
             reason = _text(item.get("reason"))
             lines.append(f"- {status or 'SKIP'}: {code or '-'} {reason}")
@@ -574,15 +747,14 @@ def write_open_report(fills: list[dict[str, object]], output_dir: Path) -> Path:
 
 def record_open_fill(output_dir: Path, journal_path: Path, trading_date: date | None = None) -> None:
     trading_date = trading_date or jst_today()
-    discipline_path = _latest_path(output_dir, "discipline_result.csv", "discipline_portfolio_*.csv")
-    screening_path = _latest_path(output_dir, "screening_result.csv", "screening_result_*.csv")
-    discipline = _read_csv(discipline_path)
-    screening = _read_csv(screening_path)
+    discipline = pd.DataFrame()
+    screening = pd.DataFrame()
     journal = load_journal(journal_path)
-    journal, fills = fill_open_entries(discipline, journal, trading_date)
-    if not screening.empty:
-        journal = mark_to_market(journal, screening)
+    order_path = journal_path.with_name("chatgpt_300man_orders.csv")
+    orders = load_orders(order_path)
+    journal, orders, fills = execute_declared_orders(orders, journal, trading_date)
     save_journal(journal, journal_path)
+    save_orders(orders, order_path)
     portfolio = portfolio_view_for_note(discipline, screening, journal_path)
     output_dir.mkdir(parents=True, exist_ok=True)
     portfolio.to_csv(output_dir / "chatgpt_300man_portfolio.csv", index=False, encoding="utf-8-sig")
@@ -673,6 +845,44 @@ def _candidate_lines(screening: pd.DataFrame, limit: int = 10) -> list[str]:
     return lines
 
 
+def _order_lines(orders: pd.DataFrame) -> list[str]:
+    declared = orders[orders.get("status", pd.Series(dtype=str)).astype(str).str.upper().eq("DECLARED")] if not orders.empty else orders
+    if declared.empty:
+        return ["- 翌営業日の売買宣言なし（現金または保有を継続）"]
+    lines = [
+        "| 執行日 | 売買 | コード | 銘柄 | 宣言株数 | 判断時価格 | 理由 |",
+        "|---|---|---|---|---:|---:|---|",
+    ]
+    for _, row in declared.iterrows():
+        lines.append(
+            f"| {_text(row.get('execution_date'))} | {_text(row.get('side'))} | {_chart_link(row.get('code'))} | "
+            f"{_text(row.get('name'))} | {_text(row.get('shares'))}株 | {_yen(row.get('decision_price'))} | {_text(row.get('reason'))} |"
+        )
+    return lines
+
+
+def _realized_history_lines(journal: pd.DataFrame) -> list[str]:
+    if journal.empty or "status" not in journal.columns:
+        return ["- まだありません"]
+    closed = journal[journal["status"].astype(str).str.upper().eq("CLOSED")]
+    if closed.empty:
+        return ["- まだありません"]
+    lines = [
+        "| 決済日 | コード | 銘柄 | 株数 | 取得始値 | 売却始値 | 実現損益 |",
+        "|---|---|---|---:|---:|---:|---:|",
+    ]
+    for _, row in closed.iterrows():
+        entry = _positive_float(row.get("entry_price")) or 0
+        exit_price = _positive_float(row.get("exit_price")) or 0
+        shares = int(_positive_float(row.get("shares")) or 0)
+        pnl = (exit_price - entry) * shares
+        lines.append(
+            f"| {_text(row.get('exit_date'))} | {_chart_link(row.get('code'))} | {_text(row.get('name'))} | "
+            f"{shares}株 | {_yen(entry)} | {_yen(exit_price)} | {pnl:+,.0f}円 |"
+        )
+    return lines
+
+
 def build_note(output_dir: Path, journal_path: Path) -> tuple[str, str, pd.DataFrame]:
     today = jst_today()
     screening_path = _latest_path(output_dir, "screening_result.csv", "screening_result_*.csv")
@@ -680,17 +890,32 @@ def build_note(output_dir: Path, journal_path: Path) -> tuple[str, str, pd.DataF
     screening = _read_csv(screening_path)
     discipline = _read_csv(discipline_path)
     portfolio = portfolio_view_for_note(discipline, screening, journal_path)
-    title = f"ChatGPT 300万円運用｜本日の記録 {today.isoformat()}"
+    orders = load_orders(journal_path.with_name("chatgpt_300man_orders.csv"))
+    title = f"Codex 300万円運用｜本日の記録 {today.isoformat()}"
     lines: list[str] = [
         f"# {title}",
         "",
         "## 本日の状態",
         "",
+        "- 開始日: 2026-07-21",
+        "- 初期資金: 3,000,000円",
+        "- 昨日までの旧記録: リセット済み",
         *_summary_lines(portfolio),
         "",
         "## 保有・候補一覧",
         "",
         *_portfolio_table(portfolio),
+        "",
+        "## 翌営業日の売買宣言",
+        "",
+        "- 下表の銘柄・売買区分・株数を前日に固定し、翌営業日の寄り付きでペーパー約定します。",
+        "- 株数は100株単位です。売りは保有株と同数を反対売買します。",
+        "",
+        *_order_lines(orders),
+        "",
+        "## 実現損益の履歴",
+        "",
+        *_realized_history_lines(load_journal(journal_path)),
         "",
         "## 買い候補TOP10",
         "",
@@ -708,7 +933,7 @@ def build_note(output_dir: Path, journal_path: Path) -> tuple[str, str, pd.DataF
         "## 注意書き",
         "",
         "- これは投資助言ではありません。",
-        "- この記録はChatGPT 300万円運用のクラウド上のペーパー運用記録です。",
+        "- この記録はCodex単独の300万円ペーパー運用記録です。Claudeは選定・判断に関与しません。",
         "- 実際の売買判断は、最新の株価、出来高、決算予定、地合いを確認して行ってください。",
         "",
         f"source_screening={screening_path.name if screening_path else '未取得'}",
@@ -800,7 +1025,7 @@ def write_outputs(output_dir: Path, title: str, body: str, portfolio: pd.DataFra
     html.write_text(render_html(title, body), encoding="utf-8")
     title_file.write_text(title + "\n", encoding="utf-8")
     body_file.write_text(body, encoding="utf-8")
-    subject_file.write_text(f"【ChatGPT 300万円運用】本日の記録 {jst_today().isoformat()}\n", encoding="utf-8")
+    subject_file.write_text(f"【Codex 300万円運用】本日の記録 {jst_today().isoformat()}\n", encoding="utf-8")
     portfolio.to_csv(portfolio_file, index=False, encoding="utf-8-sig")
     manifest = [
         {
@@ -831,10 +1056,10 @@ def maybe_send_mail(subject: str, body: str, attachments: list[Path], enabled: b
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="ChatGPT 300万円運用専用のnote下書きとメールを作る")
+    parser = argparse.ArgumentParser(description="Codex 300万円運用専用のnote下書きとメールを作る")
     parser.add_argument("--output-dir", default=str(OUTPUT_DIR))
     parser.add_argument("--journal", default=str(DEFAULT_JOURNAL_PATH))
-    parser.add_argument("--record-open", action="store_true", help="朝の候補を寄り付き価格でペーパー約定して記録する")
+    parser.add_argument("--record-open", action="store_true", help="前日に宣言した注文を寄り付き価格でペーパー約定して記録する")
     parser.add_argument("--date", default=None, help="YYYY-MM-DD。省略時はJST今日")
     parser.add_argument("--send-mail", action="store_true")
     parser.add_argument("--allow-holiday", action="store_true")
@@ -853,18 +1078,18 @@ def main() -> None:
         record_open_fill(output_dir, journal_path, target_date)
         return
 
-    closed = update_evening_journal(output_dir, journal_path, today)
+    declared = update_evening_journal(output_dir, journal_path, today)
     title, body, portfolio = build_note(output_dir, journal_path)
     write_outputs(output_dir, title, body, portfolio)
     maybe_send_mail(
-        f"【ChatGPT 300万円運用】本日の記録 {today.isoformat()}",
+        f"【Codex 300万円運用】本日の記録 {today.isoformat()}",
         body,
         [output_dir / "chatgpt_300man_portfolio.csv"],
         enabled=args.send_mail and os.environ.get("SEND_CHATGPT_300MAN_MAIL", "true").lower() != "false",
     )
     print("chatgpt_300man_note=generated")
     print(f"chatgpt_300man_open_journal={_uses_open_journal(portfolio)}")
-    print(f"chatgpt_300man_closed_positions={closed}")
+    print(f"chatgpt_300man_declared_orders={declared}")
 
 
 if __name__ == "__main__":

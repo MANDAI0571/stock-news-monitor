@@ -1,9 +1,9 @@
-name: ChatGPT 300man Open Fill
+name: Codex 300man Open Fill
 
 on:
   workflow_dispatch:
   schedule:
-    # 09:40 JST, Monday-Friday. Records only the ChatGPT 300万円 paper fills.
+    # 09:40 JST, Monday-Friday. Records only the Codex 300万円 paper fills.
     - cron: "40 0 * * 1-5"
 
 permissions:
@@ -45,7 +45,7 @@ jobs:
           fi
           gh run download "$run_id" -n stock-news-monitor-outputs -D outputs
 
-      - name: Record ChatGPT 300万円 opening fills
+      - name: Record Codex 300万円 opening fills
         run: python3 chatgpt_300man_note.py --output-dir outputs --journal data/chatgpt_300man_journal.csv --record-open
 
       - name: Show opening fill report
@@ -54,26 +54,27 @@ jobs:
           cat outputs/chatgpt_300man_open_fill_report.md 2>/dev/null || true
           tail -n 10 data/chatgpt_300man_journal.csv 2>/dev/null || true
 
-      - name: Commit ChatGPT 300万円 paper journal
+      - name: Commit Codex 300万円 paper journal
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add data/chatgpt_300man_journal.csv
+          git add data/chatgpt_300man_journal.csv data/chatgpt_300man_orders.csv
           if git diff --cached --quiet; then
             echo "chatgpt_300man_open_fill: changes not found"
             exit 0
           fi
-          git commit -m "chore: record ChatGPT 300man open fills [skip ci]"
+          git commit -m "chore: record Codex 300man open fills [skip ci]"
           git pull --rebase origin "${GITHUB_REF_NAME}" || true
           git push origin HEAD:"${GITHUB_REF_NAME}" || echo "chatgpt_300man_open_fill: push failed"
 
-      - name: Upload ChatGPT 300万円 open-fill artifact
+      - name: Upload Codex 300万円 open-fill artifact
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: chatgpt-300man-open-fill
           path: |
             data/chatgpt_300man_journal.csv
+            data/chatgpt_300man_orders.csv
             outputs/chatgpt_300man_portfolio.csv
             outputs/chatgpt_300man_open_fill_report.md
           if-no-files-found: warn
