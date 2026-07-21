@@ -16,7 +16,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:
-      SEND_GMAIL: ${{ github.event_name == 'schedule' && 'true' || (github.event.inputs.send_mail == 'true' && 'true' || 'false') }}
+      # Scheduled runs generate artifacts only. Mail is sent solely by an explicit
+      # manual run with send_mail enabled.
+      SEND_GMAIL: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.send_mail == 'true' && 'true' || 'false' }}
 
     steps:
       - name: Checkout
