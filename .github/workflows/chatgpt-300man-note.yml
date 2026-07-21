@@ -1,6 +1,9 @@
 name: Codex 300man Note
 
 on:
+  push:
+    paths:
+      - ".github/triggers/chatgpt-300man-note"
   workflow_dispatch:
     inputs:
       send_mail:
@@ -30,7 +33,7 @@ jobs:
 
     env:
       SEND_CHATGPT_300MAN_MAIL: ${{ github.event_name == 'schedule' && 'true' || (github.event.inputs.send_mail == 'true' && 'true' || 'false') }}
-      SAVE_CHATGPT_300MAN_NOTE: ${{ github.event_name == 'schedule' && 'true' || (github.event.inputs.save_note == 'true' && 'true' || 'false') }}
+      SAVE_CHATGPT_300MAN_NOTE: ${{ (github.event_name == 'schedule' || github.event_name == 'push') && 'true' || (github.event.inputs.save_note == 'true' && 'true' || 'false') }}
 
     steps:
       - name: Checkout
