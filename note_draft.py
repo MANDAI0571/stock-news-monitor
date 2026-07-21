@@ -775,8 +775,42 @@ def _editor_comment(row) -> str:
     return "、".join(parts[:3]) + "。"
 
 
+def _candidate_intro(row) -> str:
+    """外部APIに依存せず、スクリーニング済みの事実から紹介文を作る。"""
+    name = safe_text(row.get("name"))
+    sector = _first_value(row, ("sector", "業種", "セクター"))
+    rank = _first_value(row, ("rank", "ランク"))
+    screen_type = _first_value(row, ("screen_type", "high_type", "signal_type"))
+    reason = _first_value(row, ("reason", "buy_reason", "selection_reason"))
+
+    lead = f"{name}は"
+    if not _is_missing(sector):
+        lead += f"{safe_text(sector)}に属する銘柄で、"
+    facts: list[str] = []
+    if not _is_missing(rank):
+        facts.append(f"スクリーニング評価は{safe_text(rank)}ランク")
+    comment = _editor_comment(row).rstrip("。")
+    if comment:
+        facts.append(comment)
+    if not _is_missing(screen_type):
+        labels = {
+            "52W_NEW_HIGH": "52週新高値の更新候補",
+            "52W_NEAR_HIGH": "52週高値圏の候補",
+            "MA25_PULLBACK": "25日移動平均線付近の押し目候補",
+            "MA200_TOUCH": "200日移動平均線付近の候補",
+        }
+        facts.append(labels.get(str(screen_type).upper(), safe_text(screen_type)))
+    if not _is_missing(reason):
+        reason_text = re.sub(r"\s+", " ", safe_text(reason)).strip()
+        if reason_text and reason_text.lower() not in {"nan", "none", "null", "未取得"}:
+            facts.append(reason_text[:90])
+    if not facts:
+        facts.append("300万円運用の資金・流動性条件を通過した監視候補")
+    return lead + "。".join(dict.fromkeys(facts[:3])) + "。"
+
+
 def build_stock_cards(df: pd.DataFrame, max_rows: int | None = None) -> list[str]:
-    """銘柄をnote向けカード型紹介にする。取得できない項目は未取得で続行。"""
+    """銘柄をnote向けカード型紹介にする。欠損項目は表示せず、事実ベースの紹介文で補う。"""
     if df.empty:
         return ["- 該当なし"]
     data = _enrich_openwork(df)
@@ -811,22 +845,63 @@ def build_stock_cards(df: pd.DataFrame, max_rows: int | None = None) -> list[str
         sector = _first_value(row, ("sector", "業種", "セクター"))
         openwork = format_openwork_score(row.get("openwork_score"))
         earnings = _format_earnings_date(row, code)
-        vr = _fmt_number(volume_ratio, 2) if not _is_missing(volume_ratio) else "未取得"
-        lines.extend([
-            f"{code} {name} ⚡出来高{vr}倍",
-            f"現在値: {_fmt_yen(price)} / 前日比: {_fmt_pct(change_pct, signed=True)}",
-            f"売買代金: {_fmt_oku(turnover)} / 出来高倍率: {vr}x / 値幅: {_fmt_pct(range_pct)}",
-            f"📊 PER {_fmt_number(per, 1)} / 予想PER {_fmt_number(forward_per, 1)} / PBR {_fmt_number(pbr, 2)} / 配当 {_fmt_pct(dividend, 2)}",
-            f"💪 ROE {_fmt_pct(roe, 1)} / 営業利益率 {_fmt_pct(op_margin, 1)} / 純利益率 {_fmt_pct(net_margin, 1)}",
-            f"🚀 売上 {_fmt_pct(sales_growth, 1, signed=True)} (前年比) / 利益 {_fmt_pct(profit_growth, 1, signed=True)} (前年比)",
-            f"🗓 決算予定日: {earnings}",
-            f"👥 OpenWork評価: {openwork if openwork != '未取得' else '未取得'}",
-            f"🏢 時価総額 {_fmt_market_cap(market_cap)} / セクター: {safe_text(sector)}",
-            f"[📈 チャートを見る]({_chart_url(code)})",
-        ])
-        comment = _editor_comment(row)
-        if comment:
-            lines.append(f"💬 {comment}")
+        vr = _fmt_number(volume_ratio, 2) if not _is_missing(volume_ratio) else ""
+        heading = f"{code} {name}" + (f" ⚡出来高{vr}倍" if vr else "")
+        lines.extend([heading, f"📝 紹介: {_candidate_intro(row)}"])
+
+        price_parts: list[str] = []
+        if not _is_missing(price):
+            price_parts.append(f"現在値: {_fmt_yen(price)}")
+        if not _is_missing(change_pct):
+            price_parts.append(f"前日比: {_fmt_pct(change_pct, signed=True)}")
+        if price_parts:
+            lines.append(" / ".join(price_parts))
+
+        trade_parts: list[str] = []
+        if not _is_missing(turnover):
+            trade_parts.append(f"売買代金: {_fmt_oku(turnover)}")
+        if vr:
+            trade_parts.append(f"出来高倍率: {vr}x")
+        if not _is_missing(range_pct):
+            trade_parts.append(f"値幅: {_fmt_pct(range_pct)}")
+        if trade_parts:
+            lines.append(" / ".join(trade_parts))
+
+        valuation_parts: list[str] = []
+        for label, value, digits in (("PER", per, 1), ("予想PER", forward_per, 1), ("PBR", pbr, 2)):
+            if not _is_missing(value):
+                valuation_parts.append(f"{label} {_fmt_number(value, digits)}")
+        if not _is_missing(dividend):
+            valuation_parts.append(f"配当 {_fmt_pct(dividend, 2)}")
+        if valuation_parts:
+            lines.append("📊 " + " / ".join(valuation_parts))
+
+        quality_parts: list[str] = []
+        for label, value in (("ROE", roe), ("営業利益率", op_margin), ("純利益率", net_margin)):
+            if not _is_missing(value):
+                quality_parts.append(f"{label} {_fmt_pct(value, 1)}")
+        if quality_parts:
+            lines.append("💪 " + " / ".join(quality_parts))
+
+        growth_parts: list[str] = []
+        if not _is_missing(sales_growth):
+            growth_parts.append(f"売上 {_fmt_pct(sales_growth, 1, signed=True)} (前年比)")
+        if not _is_missing(profit_growth):
+            growth_parts.append(f"利益 {_fmt_pct(profit_growth, 1, signed=True)} (前年比)")
+        if growth_parts:
+            lines.append("🚀 " + " / ".join(growth_parts))
+        if earnings != "未取得":
+            lines.append(f"🗓 決算予定日: {earnings}")
+        if openwork != "未取得":
+            lines.append(f"👥 OpenWork評価: {openwork}")
+        company_parts: list[str] = []
+        if not _is_missing(market_cap):
+            company_parts.append(f"時価総額 {_fmt_market_cap(market_cap)}")
+        if not _is_missing(sector):
+            company_parts.append(f"セクター: {safe_text(sector)}")
+        if company_parts:
+            lines.append("🏢 " + " / ".join(company_parts))
+        lines.append(f"[📈 チャートを見る]({_chart_url(code)})")
         lines.append("")
     return lines
 
