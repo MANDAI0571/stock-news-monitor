@@ -74,13 +74,13 @@ jobs:
 
       - name: Persist Codex 300万円 journal
         run: |
-          if git diff --quiet -- data/chatgpt_300man_journal.csv data/chatgpt_300man_orders.csv; then
+          if git diff --quiet -- data/chatgpt_300man_journal.csv data/chatgpt_300man_orders.csv docs/codex_300man_ledger.md; then
             echo "chatgpt_300man_journal=unchanged"
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data/chatgpt_300man_journal.csv data/chatgpt_300man_orders.csv
+          git add data/chatgpt_300man_journal.csv data/chatgpt_300man_orders.csv docs/codex_300man_ledger.md
           git commit -m "Update Codex 300man journal"
           git push
 
