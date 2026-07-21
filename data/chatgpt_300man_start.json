@@ -1,0 +1,8 @@
+{
+  "operation": "Codex 300万円運用",
+  "start_date": "2026-07-21",
+  "starting_capital_jpy": 3000000,
+  "mode": "paper",
+  "initial_positions": 0,
+  "rule": "前日に100株単位で売買を宣言し、次の東証営業日寄り付きで反対売買する"
+}
