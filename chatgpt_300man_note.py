@@ -558,8 +558,14 @@ def update_evening_journal(output_dir: Path, journal_path: Path, trading_date: d
     journal = mark_to_market(journal, screening)
     discipline_path = _latest_path(output_dir, "discipline_result.csv", "discipline_portfolio_*.csv")
     discipline = _read_csv(discipline_path)
-    orders = build_next_open_orders(discipline, journal, trading_date)
-    save_orders(orders, journal_path.with_name("chatgpt_300man_orders.csv"))
+    order_path = journal_path.with_name("chatgpt_300man_orders.csv")
+    existing_orders = load_orders(order_path)
+    locked = existing_orders[
+        existing_orders["decision_date"].astype(str).eq(trading_date.isoformat())
+        & existing_orders["status"].astype(str).str.upper().eq("DECLARED")
+    ] if not existing_orders.empty else existing_orders
+    orders = locked if not locked.empty else build_next_open_orders(discipline, journal, trading_date)
+    save_orders(orders, order_path)
     if not journal.empty:
         save_journal(journal, journal_path)
     return len(orders)
@@ -855,6 +861,28 @@ def _order_lines(orders: pd.DataFrame) -> list[str]:
     return lines
 
 
+def _realized_history_lines(journal: pd.DataFrame) -> list[str]:
+    if journal.empty or "status" not in journal.columns:
+        return ["- まだありません"]
+    closed = journal[journal["status"].astype(str).str.upper().eq("CLOSED")]
+    if closed.empty:
+        return ["- まだありません"]
+    lines = [
+        "| 決済日 | コード | 銘柄 | 株数 | 取得始値 | 売却始値 | 実現損益 |",
+        "|---|---|---|---:|---:|---:|---:|",
+    ]
+    for _, row in closed.iterrows():
+        entry = _positive_float(row.get("entry_price")) or 0
+        exit_price = _positive_float(row.get("exit_price")) or 0
+        shares = int(_positive_float(row.get("shares")) or 0)
+        pnl = (exit_price - entry) * shares
+        lines.append(
+            f"| {_text(row.get('exit_date'))} | {_chart_link(row.get('code'))} | {_text(row.get('name'))} | "
+            f"{shares}株 | {_yen(entry)} | {_yen(exit_price)} | {pnl:+,.0f}円 |"
+        )
+    return lines
+
+
 def build_note(output_dir: Path, journal_path: Path) -> tuple[str, str, pd.DataFrame]:
     today = jst_today()
     screening_path = _latest_path(output_dir, "screening_result.csv", "screening_result_*.csv")
@@ -869,6 +897,9 @@ def build_note(output_dir: Path, journal_path: Path) -> tuple[str, str, pd.DataF
         "",
         "## 本日の状態",
         "",
+        "- 開始日: 2026-07-21",
+        "- 初期資金: 3,000,000円",
+        "- 昨日までの旧記録: リセット済み",
         *_summary_lines(portfolio),
         "",
         "## 保有・候補一覧",
@@ -881,6 +912,10 @@ def build_note(output_dir: Path, journal_path: Path) -> tuple[str, str, pd.DataF
         "- 株数は100株単位です。売りは保有株と同数を反対売買します。",
         "",
         *_order_lines(orders),
+        "",
+        "## 実現損益の履歴",
+        "",
+        *_realized_history_lines(load_journal(journal_path)),
         "",
         "## 買い候補TOP10",
         "",
