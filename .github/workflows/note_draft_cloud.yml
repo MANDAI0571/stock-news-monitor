@@ -42,7 +42,7 @@ jobs:
 
     env:
       # 定時実行（schedule）は必ず全銘柄（QUICK_MODE=false）。手動実行は入力値を尊重。
-      QUICK_MODE: ${{ github.event_name == 'schedule' && 'false' || (github.event.inputs.quick_mode == 'false' && 'false' || 'true') }}
+      QUICK_MODE: ${{ (github.event_name == 'schedule' || github.event_name == 'push') && 'false' || (github.event.inputs.quick_mode == 'false' && 'false' || 'true') }}
       MAX_SYMBOLS: ${{ github.event.inputs.max_symbols || '30' }}
       PROGRESS_EVERY: "25"
       # v10(2026-07-19): カードのPER/PBR/ROE等と決算予定日をYahoo Financeから補完
