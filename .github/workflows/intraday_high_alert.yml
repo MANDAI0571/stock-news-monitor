@@ -3,14 +3,14 @@ name: Intraday High Alert
 # ザラ場中の直近高値接近・到達だけをGmail通知するリアルタイムアラート。
 # 52週高値、note下書き、300万円運用のメール通知はしない。日次note処理とは完全に独立。
 #
-# 実行: 日本時間(JST)のザラ場中だけ、15分ごと。
+# 実行: 日本時間(JST)のザラ場中だけ、5分ごと。
 #   前場 09:00〜11:30 JST  /  後場 12:30〜15:30 JST
 # GitHub Actions の cron は UTC。JST = UTC + 9h なので 9時間引く:
 #   09:00〜11:30 JST → 00:00〜02:30 UTC
 #   12:30〜15:30 JST → 03:30〜06:30 UTC
 # JSTの平日(月〜金)は、対応するUTC時刻でも同じ曜日(月〜金=1-5)になる
 # （00:00 UTC = 当日09:00 JST のため日付がまたがらない）。土日は実行しない。
-# 注: GitHub Actions の cron は分指定が単一値。15分刻みは */15 で表現する。
+# GitHub側で定時実行が遅延・欠落する場合に備え、5分刻みで発火機会を確保する。
 
 on:
   workflow_dispatch:
@@ -32,13 +32,13 @@ on:
         type: boolean
         default: true
   schedule:
-    # 前場: 00:00〜02:30 UTC（= 09:00〜11:30 JST）平日のみ、15分ごと
-    - cron: "0,15,30,45 0,1 * * 1-5"
-    - cron: "0,15,30 2 * * 1-5"
-    # 後場: 03:30〜06:30 UTC（= 12:30〜15:30 JST）平日のみ、15分ごと
-    - cron: "30,45 3 * * 1-5"
-    - cron: "0,15,30,45 4,5 * * 1-5"
-    - cron: "0,15,30 6 * * 1-5"
+    # 前場: 00:00〜02:30 UTC（= 09:00〜11:30 JST）平日のみ、5分ごと
+    - cron: "*/5 0,1 * * 1-5"
+    - cron: "0-30/5 2 * * 1-5"
+    # 後場: 03:30〜06:30 UTC（= 12:30〜15:30 JST）平日のみ、5分ごと
+    - cron: "30-55/5 3 * * 1-5"
+    - cron: "*/5 4,5 * * 1-5"
+    - cron: "0-30/5 6 * * 1-5"
 
 jobs:
   intraday-high-alert:
@@ -135,10 +135,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p outputs
+          # リポジトリに残る古い確認用CSVを消し、取得失敗時に古い銘柄を監視しない。
+          find outputs -maxdepth 1 -name 'screening_result*.csv' -delete
           run_id=$(gh run list --workflow daily-discipline.yml --status success --limit 1 --json databaseId --jq '.[0].databaseId' 2>/dev/null || true)
           if [ -n "$run_id" ]; then
             echo "download screening artifact from run_id=$run_id"
-            gh run download "$run_id" -n stock-news-monitor-outputs -D outputs 2>/dev/null || echo "artifact download skipped"
+            gh run download "$run_id" -n stock-news-monitor-outputs -D outputs || echo "artifact download skipped -> full universe fallback"
           else
             echo "no successful daily-discipline run found -> full universe fallback"
           fi
