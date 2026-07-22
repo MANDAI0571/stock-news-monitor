@@ -6,7 +6,6 @@ import os
 import re
 import shutil
 import subprocess
-from urllib.parse import quote
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -85,17 +84,6 @@ class DigestMail:
     body: str
     attachments: list[Path]
     html_body: str = ""
-
-
-def safari_note_url(note_url: str) -> str:
-    """Return an indirect URL so an iPhone tap stays in Safari.
-
-    Direct note/editor.note.com links are Universal Links and can be handed to
-    the note iOS app.  The app currently crashes for some browser-created
-    drafts, while the same draft remains readable in the web editor.  Starting
-    on a web redirect keeps the navigation in the browser.
-    """
-    return f"https://www.google.com/url?q={quote(note_url, safe='')}"
 
 
 def parse_args() -> argparse.Namespace:
@@ -348,9 +336,10 @@ def build_digest(output_dir: Path, now: datetime | None = None) -> DigestMail:
         for index, url in found:
             available_urls.append((label if total <= 1 else f"{label}（{index}/{total}）", url))
     if available_urls:
-        lines.append("## Note下書きURL（iPhone Safari用・記事別）")
-        lines.append("noteアプリが落ちる場合に備え、Safariを経由して開くリンクです。")
-        lines.extend(f"- {label}: {safari_note_url(url)}" for label, url in available_urls)
+        lines.append("## iPhoneでの表示方法")
+        lines.append("note iOSアプリの下書き読込不具合を回避するため、下書きリンクはメール本文に載せていません。")
+        lines.append("記事全文はこのメール本文、または添付の note_*.html で確認できます。")
+        lines.append("PC編集用の下書きURLは添付の note_draft_url_*.txt に保存しています。")
         lines.append("")
     if missing_parts:
         lines.append("## note下書きの保存に失敗した本")
@@ -369,7 +358,7 @@ def build_digest(output_dir: Path, now: datetime | None = None) -> DigestMail:
     lines.append("## 本文プレビュー")
     for key, label in NOTE_SECTIONS:
         title = _section_title(output_dir, key, label)
-        preview = _preview_markdown(output_dir / f"note_{key}.md")
+        preview = _preview_markdown(output_dir / f"note_{key}.md", max_lines=10_000, max_chars=20_000)
         lines.extend(["", f"### {label}", title, "", preview])
 
     metron = _preview_markdown(output_dir / "metron_kpi_report.md", max_lines=14, max_chars=1200)
