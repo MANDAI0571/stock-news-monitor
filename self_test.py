@@ -1557,7 +1557,7 @@ def _test_cloud_digest_mail() -> None:
     from datetime import datetime
     from zoneinfo import ZoneInfo
 
-    from cloud_mail_digest import build_digest, collect_attachments
+    from cloud_mail_digest import build_digest, collect_attachments, safari_note_url
 
     with tempfile.TemporaryDirectory() as tmp:
         out = Path(tmp)
@@ -1586,8 +1586,10 @@ def _test_cloud_digest_mail() -> None:
         assert "200MAタッチ（1件）" in digest.body
         assert "https://finance.yahoo.co.jp/quote/1333.T/chart" in digest.body
         assert "52週新高値" in digest.body
-        assert "## Note下書きURL（記事別）" in digest.body
-        assert "300万円 Claude版: https://editor.note.com/notes/claude123/edit/" in digest.body
+        assert "## Note下書きURL（iPhone Safari用・記事別）" in digest.body
+        assert safari_note_url("https://editor.note.com/notes/claude123/edit/") in digest.body
+        assert "https%3A%2F%2Feditor.note.com%2Fnotes%2Fclaude123%2Fedit%2F" in digest.body
+        assert f"300万円 Claude版: {safari_note_url('https://editor.note.com/notes/claude123/edit/')}" in digest.body
         assert any(path.name == "note_draft_url_claude.txt" for path in digest.attachments)
         assert "メトロンKPI" in digest.body
         assert "| nan" not in digest.body.lower()

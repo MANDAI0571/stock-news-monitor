@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import csv
 import re
+from urllib.parse import quote
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -69,6 +70,17 @@ class DigestMail:
     attachments: list[Path]
 
 
+def safari_note_url(note_url: str) -> str:
+    """Return an indirect URL so an iPhone tap stays in Safari.
+
+    Direct note/editor.note.com links are Universal Links and can be handed to
+    the note iOS app.  The app currently crashes for some browser-created
+    drafts, while the same draft remains readable in the web editor.  Starting
+    on a web redirect keeps the navigation in the browser.
+    """
+    return f"https://www.google.com/url?q={quote(note_url, safe='')}"
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="クラウド生成済みのスクリーニング結果をGmailで送る")
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR))
@@ -99,8 +111,9 @@ def build_digest(output_dir: Path, now: datetime | None = None) -> DigestMail:
     available_urls = [(label, _read_optional(output_dir / filename)) for label, filename in note_urls]
     available_urls = [(label, url) for label, url in available_urls if url]
     if available_urls:
-        lines.append("## Note下書きURL（記事別）")
-        lines.extend(f"- {label}: {url}" for label, url in available_urls)
+        lines.append("## Note下書きURL（iPhone Safari用・記事別）")
+        lines.append("noteアプリが落ちる場合に備え、Safariを経由して開くリンクです。")
+        lines.extend(f"- {label}: {safari_note_url(url)}" for label, url in available_urls)
         lines.append("")
 
     lines.extend(_ma_touch_summary(output_dir))
