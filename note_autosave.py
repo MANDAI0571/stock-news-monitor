@@ -555,6 +555,12 @@ def save_note_drafts(
             for key, payload in payloads:
                 try:
                     url, image_status = _save_one(context, payload, error_key=key)
+                    verification = _verify_saved_draft(context, url, payload, image_status, key=key)
+                    verification["draft_list"] = _verify_draft_list(context, payload.title, key=key)
+                    verification["ok"] = _cloud_verify_ok(verification, url)
+                    print(f"note_draft_reopen_verified[{key}]={verification['ok']}")
+                    if not verification["ok"]:
+                        raise RuntimeError(f"保存後に編集画面を開き直せませんでした: {verification}")
                     results.append((key, url, None, image_status))
                 except Exception as exc:  # noqa: BLE001 - 1本失敗で全体を止めない
                     results.append((key, None, str(exc), "none"))

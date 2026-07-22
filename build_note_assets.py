@@ -832,7 +832,6 @@ def build_note_assets(output_dir: str | Path = OUTPUT_DIR) -> Path:
 
     note_draft.main()
     image_paths = _build_cloud_images(output_dir)
-    _attach_note_heading_images(output_dir)
     _build_warren_summary(output_dir)
     _write_cloud_article(output_dir)
 

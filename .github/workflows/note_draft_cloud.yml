@@ -170,7 +170,9 @@ jobs:
             exit 0
           fi
           grep -q "note_draft_saved=3/3" note_autosave_multi.log || { echo "::error::3本のnote下書き保存が未完了（note_draft_savedを確認）"; exit 1; }
-          grep -q "note_draft_image_uploaded=3/3" note_autosave_multi.log || { echo "::error::3本の見出し画像アップロードが未完了"; exit 1; }
+          grep -q "note_draft_reopen_verified\[claude\]=True" note_autosave_multi.log || { echo "::error::Claude版を保存後に開き直せません"; exit 1; }
+          grep -q "note_draft_reopen_verified\[pullback\]=True" note_autosave_multi.log || { echo "::error::押し目版を保存後に開き直せません"; exit 1; }
+          grep -q "note_draft_reopen_verified\[highs\]=True" note_autosave_multi.log || { echo "::error::52週新高値版を保存後に開き直せません"; exit 1; }
 
       - name: Build Phase 1 distribution drafts (no external posting)
         env:
