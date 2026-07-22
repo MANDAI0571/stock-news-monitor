@@ -13,6 +13,9 @@ name: Intraday High Alert
 # GitHub側で定時実行が遅延・欠落する場合に備え、5分刻みで発火機会を確保する。
 
 on:
+  push:
+    paths:
+      - ".github/triggers/intraday-high-alert"
   workflow_dispatch:
     inputs:
       quick_mode:
@@ -32,13 +35,13 @@ on:
         type: boolean
         default: true
   schedule:
-    # 前場: 00:00〜02:30 UTC（= 09:00〜11:30 JST）平日のみ、5分ごと
-    - cron: "*/5 0,1 * * 1-5"
-    - cron: "0-30/5 2 * * 1-5"
-    # 後場: 03:30〜06:30 UTC（= 12:30〜15:30 JST）平日のみ、5分ごと
-    - cron: "30-55/5 3 * * 1-5"
-    - cron: "*/5 4,5 * * 1-5"
-    - cron: "0-30/5 6 * * 1-5"
+    # GitHub Actionsは毎時00分付近に混雑してscheduleを欠落させることがあるため、
+    # 3分始まりへずらす。前場09:03〜11:28、後場12:33〜15:28 JST。
+    - cron: "3-58/5 0,1 * * 1-5"
+    - cron: "3-28/5 2 * * 1-5"
+    - cron: "33-58/5 3 * * 1-5"
+    - cron: "3-58/5 4,5 * * 1-5"
+    - cron: "3-28/5 6 * * 1-5"
 
 jobs:
   intraday-high-alert:
@@ -51,10 +54,10 @@ jobs:
     # 本番(schedule)は必ず全銘柄が母集団だが、intraday_watchlist.csv があれば200〜500銘柄に絞る。
     # QUICK_MODE は手動実行(workflow_dispatch)のテスト時だけ有効。
     env:
-      QUICK_MODE: ${{ github.event_name == 'schedule' && 'false' || (github.event.inputs.quick_mode == 'false' && 'false' || 'true') }}
+      QUICK_MODE: ${{ (github.event_name == 'schedule' || github.event_name == 'push') && 'false' || (github.event.inputs.quick_mode == 'false' && 'false' || 'true') }}
       MAX_SYMBOLS: ${{ github.event.inputs.max_symbols || '30' }}
-      ENABLE_INTRADAY_MAIL: ${{ github.event_name == 'schedule' && 'true' || (github.event.inputs.send_mail == 'true' && 'true' || 'false') }}
-      INTRADAY_STATUS_MAIL_ON_NO_NEW: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.send_mail == 'true' && github.event.inputs.status_mail_on_no_new != 'false' && 'true' || 'false' }}
+      ENABLE_INTRADAY_MAIL: ${{ (github.event_name == 'schedule' || github.event_name == 'push') && 'true' || (github.event.inputs.send_mail == 'true' && 'true' || 'false') }}
+      INTRADAY_STATUS_MAIL_ON_NO_NEW: ${{ github.event_name == 'push' && 'true' || (github.event_name == 'workflow_dispatch' && github.event.inputs.send_mail == 'true' && github.event.inputs.status_mail_on_no_new != 'false' && 'true' || 'false') }}
 
     steps:
       - name: Checkout

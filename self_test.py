@@ -1541,13 +1541,15 @@ def _test_intraday_cloud_workflow_contract() -> None:
     assert "send_mail:" in workflow
     assert "status_mail_on_no_new:" in workflow
     assert "INTRADAY_STATUS_MAIL_ON_NO_NEW" in workflow
-    assert "github.event_name == 'schedule' && 'true'" in workflow
+    assert "(github.event_name == 'schedule' || github.event_name == 'push') && 'true'" in workflow
     assert "actions/cache/restore@v4" in workflow
     assert "actions/cache/save@v4" in workflow
     assert "intraday-alert-state-${{ steps.holiday.outputs.jst_date }}" in workflow
     assert "Check Gmail secrets" in workflow
     assert "GMAIL_USER secret is missing" in workflow
-    assert 'cron: "*/5 0,1 * * 1-5"' in workflow
+    assert 'cron: "3-58/5 0,1 * * 1-5"' in workflow
+    assert '".github/triggers/intraday-high-alert"' in workflow
+    assert "github.event_name == 'push'" in workflow
     assert "find outputs -maxdepth 1 -name 'screening_result*.csv' -delete" in workflow
 
 
