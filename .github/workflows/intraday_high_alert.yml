@@ -3,14 +3,14 @@ name: Intraday High Alert
 # ザラ場中の直近高値接近・到達だけをGmail通知するリアルタイムアラート。
 # 52週高値、note下書き、300万円運用のメール通知はしない。日次note処理とは完全に独立。
 #
-# 実行: 日本時間(JST)のザラ場中だけ、5分ごと。
+# 実行: 日本時間(JST)の前場・後場の開始時に起動し、ジョブ内で5分ごとに継続監視。
 #   前場 09:00〜11:30 JST  /  後場 12:30〜15:30 JST
 # GitHub Actions の cron は UTC。JST = UTC + 9h なので 9時間引く:
 #   09:00〜11:30 JST → 00:00〜02:30 UTC
 #   12:30〜15:30 JST → 03:30〜06:30 UTC
 # JSTの平日(月〜金)は、対応するUTC時刻でも同じ曜日(月〜金=1-5)になる
 # （00:00 UTC = 当日09:00 JST のため日付がまたがらない）。土日は実行しない。
-# GitHub側で定時実行が遅延・欠落する場合に備え、5分刻みで発火機会を確保する。
+# GitHub側の5分cron欠落を避けるため、セッション中は同じジョブを継続させる。
 
 on:
   push:
@@ -35,18 +35,14 @@ on:
         type: boolean
         default: true
   schedule:
-    # GitHub Actionsは毎時00分付近に混雑してscheduleを欠落させることがあるため、
-    # 3分始まりへずらす。前場09:03〜11:28、後場12:33〜15:28 JST。
-    - cron: "3-58/5 0,1 * * 1-5"
-    - cron: "3-28/5 2 * * 1-5"
-    - cron: "33-58/5 3 * * 1-5"
-    - cron: "3-58/5 4,5 * * 1-5"
-    - cron: "3-28/5 6 * * 1-5"
+    # 毎時00分付近の混雑を避ける。09:07と12:37 JSTに開始。
+    - cron: "7 0 * * 1-5"
+    - cron: "37 3 * * 1-5"
 
 jobs:
   intraday-high-alert:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 240
     # 前日EODのスクリーニング結果アーティファクトを読むため read 権限が要る。
     permissions:
       contents: read
@@ -165,11 +161,26 @@ jobs:
           INTRADAY_USE_WATCHLIST: "1"
         run: |
           start=$(date +%s)
-          if [ "${QUICK_MODE}" = "true" ]; then
-            python3 intraday_high_alert.py --limit "${MAX_SYMBOLS}"
-          else
-            python3 intraday_high_alert.py
-          fi
+          while true; do
+            echo "[SESSION] scan started jst=$(TZ=Asia/Tokyo date '+%H:%M:%S')"
+            if [ "${QUICK_MODE}" = "true" ]; then
+              python3 intraday_high_alert.py --limit "${MAX_SYMBOLS}"
+            else
+              python3 intraday_high_alert.py
+            fi
+            # pushによる復旧確認メールは最初の1回だけ。以後は新規検知時のみ送信。
+            export INTRADAY_STATUS_MAIL_ON_NO_NEW=false
+            hm=$(TZ=Asia/Tokyo date +%H%M)
+            now=$((10#$hm))
+            if { [ "$now" -ge 900 ] && [ "$now" -lt 1130 ]; } || \
+               { [ "$now" -ge 1230 ] && [ "$now" -lt 1530 ]; }; then
+              echo "[SESSION] next scan in 300s"
+              sleep 300
+            else
+              echo "[SESSION] market session ended jst=$hm"
+              break
+            fi
+          done
           end=$(date +%s); echo "[TIMER] intraday_high_alert elapsed=$((end-start))s"
 
       - name: Check intraday state file

@@ -1547,7 +1547,10 @@ def _test_intraday_cloud_workflow_contract() -> None:
     assert "intraday-alert-state-${{ steps.holiday.outputs.jst_date }}" in workflow
     assert "Check Gmail secrets" in workflow
     assert "GMAIL_USER secret is missing" in workflow
-    assert 'cron: "3-58/5 0,1 * * 1-5"' in workflow
+    assert 'cron: "7 0 * * 1-5"' in workflow
+    assert 'cron: "37 3 * * 1-5"' in workflow
+    assert "sleep 300" in workflow
+    assert "timeout-minutes: 240" in workflow
     assert '".github/triggers/intraday-high-alert"' in workflow
     assert "github.event_name == 'push'" in workflow
     assert "find outputs -maxdepth 1 -name 'screening_result*.csv' -delete" in workflow
