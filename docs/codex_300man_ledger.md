@@ -17,7 +17,9 @@
 
 ## 宣告ログ（前日宣告 -> 翌営業日の寄りで約定）
 
-- 翌営業日の売買宣言なし（現金または保有を継続）
+| 執行日 | 売買 | コード | 銘柄 | 宣言株数 | 判断時価格 | 理由 |
+|---|---|---|---|---:|---:|---|
+| 2026-07-27 | BUY | [7581](https://finance.yahoo.co.jp/quote/7581.T/chart?frm=dly&trm=6m&scl=stndrd&styl=cndl&evnts=volume&ovrIndctr=sma%2Cmma%2Clma&addIndctr=&compare=) | サイゼリヤ | 100株 | 7,420円 | 300万円運用候補 |
 
 ## 実現損益の履歴
 
