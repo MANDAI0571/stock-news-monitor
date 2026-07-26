@@ -1,10 +1,13 @@
 """ザラ場中のリアルタイム高値アラート（Gmail通知）。
 
-目的: ザラ場中に「直近高値の接近・ブレイク」に該当した
-個別株だけを Gmail で即通知する。52週高値メール、note下書き通知、300万円運用通知は送らない。
+目的: ザラ場中に「52週高値の更新（一時更新含む）」と「直近高値の接近・ブレイク」に該当した
+個別株だけを Gmail で即通知する。note下書き通知、300万円運用通知は送らない。
 日次note処理（daily_discipline_run.py / note_draft.py / note_autosave.py）とは完全に独立。投稿・公開は一切しない。
 
 通知する対象（high_type）:
+  - 52W_NEW_HIGH → 「52週高値更新」（カブタン/みんかぶの「52週来高値更新・一時更新含む」に対応。
+    当日ザラ場のHighが過去52週の高値を上抜けた瞬間タッチも detect_intraday_52w_touch で拾う）
+  - 52W_NEAR_HIGH → 「52週高値接近」（52週高値まで3%以内）
   - SWING_HIGH_BREAK / RECENT_NEW_HIGH → 「直近高値ブレイク」
   - RECENT_NEAR_HIGH → 「直近高値接近」（直近スイング高値まで3%以内）
 
@@ -44,8 +47,6 @@ from scanner.universe import UniverseConfig, load_jpx_listed
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "outputs"
-ALERT_MAIL_VERSION = "2026-07-06"
-SUBJECT_PREFIX = f"[GitHub][Intraday][v{ALERT_MAIL_VERSION}]"
 
 # 日中監視の軽量ウォッチリスト（前日EODから build_intraday_watchlist.py が生成）。
 # これがあれば全銘柄ではなく200〜500銘柄だけを監視する。無ければ全銘柄にフォールバック。
@@ -57,16 +58,6 @@ DISCLAIMER = "※これは投資助言ではなく、スクリーニング通知
 def _watchlist_enabled() -> bool:
     """INTRADAY_USE_WATCHLIST（既定 1=有効）。0/false でウォッチリストを無視し全銘柄に戻す。"""
     return os.environ.get("INTRADAY_USE_WATCHLIST", "1").strip().lower() not in ("0", "false", "no", "off")
-
-
-def intraday_mail_enabled() -> bool:
-    """ENABLE_INTRADAY_MAIL=false ならメール送信しない。既定は送信可。"""
-    return os.environ.get("ENABLE_INTRADAY_MAIL", "true").strip().lower() not in ("0", "false", "no", "off")
-
-
-def status_mail_on_no_new_enabled() -> bool:
-    """手動確認時だけ、新規0件でも到達確認メールを送れるようにする。"""
-    return os.environ.get("INTRADAY_STATUS_MAIL_ON_NO_NEW", "false").strip().lower() in ("1", "true", "yes", "on")
 
 
 def load_watchlist_codes(path: Path) -> set[str] | None:
@@ -99,18 +90,21 @@ def load_watchlist_codes(path: Path) -> set[str] | None:
 MIN_TURNOVER = float(os.environ.get("IH_MIN_TURNOVER", "100000000"))  # 1億円
 
 # 通知対象の high_type → アラート種別（日本語）。
-# Gmail通知は「直近高値接近・到達」だけ。52週高値系、MAタッチ、リテスト、note通知は対象外。
+# Gmail通知は「52週高値更新（一時更新含む）・接近」と「直近高値ブレイク・接近」。
+# MAタッチ、リテスト、note通知は対象外。
 ALERT_TYPE_BY_HIGH_TYPE: dict[str, str] = {
+    "52W_NEW_HIGH": "52週高値更新",
+    "52W_NEAR_HIGH": "52週高値接近",
     "SWING_HIGH_BREAK": "直近高値ブレイク",
     "RECENT_NEW_HIGH": "直近高値ブレイク",
     "RECENT_NEAR_HIGH": "直近高値接近",
 }
 
 # 「更新・ブレイク」系（接近ではなく既に達成）の high_type。
-BREAK_HIGH_TYPES = {"SWING_HIGH_BREAK", "RECENT_NEW_HIGH"}
+BREAK_HIGH_TYPES = {"52W_NEW_HIGH", "SWING_HIGH_BREAK", "RECENT_NEW_HIGH"}
 
-# 52週系はメール通知しないため空。
-FIFTYTWO_HIGH_TYPES: set[str] = set()
+# 52週系（高値ライン表示に indicators の high_52w / dist_52w_high_pct を使う）。
+FIFTYTWO_HIGH_TYPES: set[str] = {"52W_NEW_HIGH", "52W_NEAR_HIGH"}
 
 
 @dataclass
@@ -265,12 +259,36 @@ def _to_float(value: object) -> float:
         return 0.0
 
 
+def detect_intraday_52w_touch(history: pd.DataFrame, window_days: int = 252) -> dict[str, object] | None:
+    """当日の高値(High)が「前日までの過去52週の高値」を上抜けたか（＝一時更新も含む52週高値更新）。
+
+    scanner.highs.classify_high_profile は終値(Close)ベースのため、ザラ場中に高値タッチして
+    押し戻された銘柄（カブタン/みんかぶの「52週来高値更新・一時更新も含む」）を拾えない。
+    ここでは当日バーのHighと、当日を除く直近 window_days 本のHighの最大値を比べる。
+    純関数・通信なし。データ不足（上場1年未満など）は None＝判定しない（捏造しない）。"""
+    if history is None or history.empty or "High" not in history.columns:
+        return None
+    if len(history) < window_days + 1:
+        return None
+    high = history["High"].astype(float)
+    prior_max = float(high.iloc[-(window_days + 1):-1].max())
+    today_high = float(high.iloc[-1])
+    if prior_max <= 0 or today_high <= prior_max:
+        return None
+    return {
+        "high_type": "52W_NEW_HIGH",
+        "high_label": "52週新高値（一時更新含む）",
+        "high_price": round(prior_max, 1),
+        "dist_to_high_pct": 0.0,
+    }
+
+
 # --------------------------------------------------------------------------
 # 件名・本文（純粋）
 # --------------------------------------------------------------------------
 def build_subject(new_alerts: list[Alert]) -> str:
     if not new_alerts:
-        return f"{SUBJECT_PREFIX} 【高値アラート】新規なし"
+        return "【高値アラート】新規なし"
     head = new_alerts[0]
     if head.is_break:
         detail = f"{head.line_label}更新"
@@ -279,32 +297,18 @@ def build_subject(new_alerts: list[Alert]) -> str:
     base = f"【高値接近アラート】{head.code} {head.name}｜{detail}"
     if len(new_alerts) > 1:
         base += f"｜ほか{len(new_alerts) - 1}件"
-    return f"{SUBJECT_PREFIX} {base}"
+    return base
 
 
-def build_body(
-    new_alerts: list[Alert],
-    detected_count: int | None = None,
-    status_note: str = "",
-) -> str:
-    detected_count = len(new_alerts) if detected_count is None else detected_count
+def build_body(new_alerts: list[Alert]) -> str:
     lines: list[str] = [
-        "workflow: Intraday High Alert",
-        "source: GitHub Actions",
-        f"commit: {os.environ.get('GITHUB_SHA', 'local')}",
-        f"run_id: {os.environ.get('GITHUB_RUN_ID', 'local')}",
-        f"version: {ALERT_MAIL_VERSION}",
-        "",
         "ザラ場リアルタイム高値アラート",
         f"検知時刻: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
-        f"検出アラート: {detected_count}件",
         f"新規アラート: {len(new_alerts)}件",
         "",
     ]
-    if status_note:
-        lines.extend([status_note, ""])
-    # 種別ごとにまとめる（直近高値のブレイク→接近の順）。52週高値系はメールしない。
-    order = ["直近高値ブレイク", "直近高値接近"]
+    # 種別ごとにまとめる（52週更新→直近ブレイク→52週接近→直近接近の順）。
+    order = ["52週高値更新", "直近高値ブレイク", "52週高値接近", "直近高値接近"]
     grouped: dict[str, list[Alert]] = {key: [] for key in order}
     for alert in new_alerts:
         grouped.setdefault(alert.alert_type, []).append(alert)
@@ -316,10 +320,6 @@ def build_body(
         lines.append(f"■ {key}（{len(group)}件）")
         for alert in group:
             lines.extend(_format_alert(alert))
-        lines.append("")
-
-    if not new_alerts:
-        lines.append("新規通知対象はありません。既に本日通知済み、または手動の到達確認メールです。")
         lines.append("")
 
     lines.append(DISCLAIMER)
@@ -339,17 +339,8 @@ def _format_alert(alert: Alert) -> list[str]:
         f"  🗓 決算予定日:{alert.earnings_date}",
         f"  👥 OpenWork評価:{alert.openwork_score}",
         f"  理由:{alert.reason}",
-        f"  📈 チャート:{_chart_url(alert.code)}",
         "",
     ]
-
-
-def _chart_url(code: str) -> str:
-    return (
-        f"https://finance.yahoo.co.jp/quote/{code}.T/chart"
-        "?frm=dly&trm=6m&scl=stndrd&styl=cndl&evnts=volume"
-        "&ovrIndctr=sma%2Cmma%2Clma&addIndctr=&compare="
-    )
 
 
 # --------------------------------------------------------------------------
@@ -446,6 +437,10 @@ def scan(
             if indicators is None:
                 continue
             high_info = classify_high_profile(history)
+            # 終値ベース分類が52週更新を取り逃しても、当日Highの一時タッチがあれば52週更新として扱う。
+            touch = detect_intraday_52w_touch(history)
+            if touch is not None and str(high_info.get("high_type", "")) != "52W_NEW_HIGH":
+                high_info = dict(high_info) | touch
             alert = build_alert(stock.code, stock.name, indicators, high_info)
             if alert is not None:
                 alerts.append(_apply_extra_fields(alert, stock.code, openwork_map))
@@ -458,16 +453,8 @@ def scan(
 # --------------------------------------------------------------------------
 # Gmail送信（gmail_notify を再利用）
 # --------------------------------------------------------------------------
-def send_alert_mail(
-    new_alerts: list[Alert],
-    detected_count: int | None = None,
-    status_note: str = "",
-) -> bool:
+def send_alert_mail(new_alerts: list[Alert]) -> bool:
     from gmail_notify import load_gmail_config, send_gmail
-
-    if not intraday_mail_enabled():
-        print("intraday_alert_mail=skipped reason=disabled env=ENABLE_INTRADAY_MAIL")
-        return False
 
     config = load_gmail_config()
     if config is None:
@@ -475,10 +462,8 @@ def send_alert_mail(
               "required=GMAIL_USER,GMAIL_APP_PASSWORD,MAIL_TO")
         return False
     subject = build_subject(new_alerts)
-    body = build_body(new_alerts, detected_count=detected_count, status_note=status_note)
-    if not send_gmail(subject, body, config):
-        print("intraday_alert_mail=skipped reason=jpx_holiday")
-        return False
+    body = build_body(new_alerts)
+    send_gmail(subject, body, config)
     print(f"intraday_alert_mail=sent to={config.mail_to} subject={subject}")
     return True
 
@@ -517,15 +502,6 @@ def run(
         print(f"intraday_csv={csv_path}")
 
     if not new_alerts:
-        if alerts and not dry_run and status_mail_on_no_new_enabled():
-            sent = send_alert_mail(
-                [],
-                detected_count=len(alerts),
-                status_note="手動確認: クラウド実行は成功しています。検出銘柄はありますが、本日は重複防止により新規通知対象は0件です。",
-            )
-            if sent:
-                print("intraday_alert_mail=sent reason=status_on_no_new")
-            return 0
         print("intraday_alert_mail=skipped reason=no_new_alerts")
         return 0
 
@@ -561,9 +537,25 @@ def _self_test() -> int:
         base.update(kw)
         return base
 
-    # 52週高値系はNote対象であり、Gmailリアルタイム通知はしない。
-    assert build_alert("7173", "東京きらぼし", ind(), {"high_type": "52W_NEW_HIGH"}) is None
-    assert build_alert("8524", "北洋銀行", ind(current_price=992.0, dist_52w_high_pct=0.8), {"high_type": "52W_NEAR_HIGH"}) is None
+    # 52週高値更新（一時更新含む）は通知対象（カブタン/みんかぶの一覧に対応）。
+    a52 = build_alert("7173", "東京きらぼし", ind(), {"high_type": "52W_NEW_HIGH"})
+    assert a52 is not None and a52.alert_type == "52週高値更新" and a52.is_break, a52
+    assert a52.line_label == "52週高値" and a52.line_price == 1000.0 and a52.dist_pct == 0.0, a52
+    a52n = build_alert("8524", "北洋銀行", ind(current_price=992.0, dist_52w_high_pct=0.8), {"high_type": "52W_NEAR_HIGH"})
+    assert a52n is not None and a52n.alert_type == "52週高値接近" and not a52n.is_break and a52n.dist_pct == 0.8, a52n
+
+    # 一時更新の検出（当日Highが前日までの52週高値を上抜け→押し戻されてもOK）
+    idx = pd.bdate_range(end="2026-07-24", periods=253)
+    highs = [1000.0] * 252 + [1010.0]   # 当日だけ一時的に上抜け
+    closes = [990.0] * 252 + [995.0]    # 終値は高値未満（＝Closeベース分類では拾えない）
+    hist = pd.DataFrame({"High": highs, "Close": closes}, index=idx)
+    touch = detect_intraday_52w_touch(hist)
+    assert touch is not None and touch["high_type"] == "52W_NEW_HIGH" and touch["high_price"] == 1000.0, touch
+    # 上抜けていない日は None
+    hist2 = pd.DataFrame({"High": [1000.0] * 253, "Close": closes}, index=idx)
+    assert detect_intraday_52w_touch(hist2) is None
+    # データ不足（上場1年未満）は None＝捏造しない
+    assert detect_intraday_52w_touch(hist.tail(100)) is None
 
     # 直近高値ブレイク（スイング）
     a = build_alert("7011", "三菱重工", ind(), {
@@ -635,37 +627,19 @@ def _self_test() -> int:
 
     # 本文・件名（複数）
     multi = [
+        build_alert("1518", "三井松島HD", ind(), {"high_type": "52W_NEW_HIGH"}),
         build_alert("7173", "東京きらぼし", ind(), {"high_type": "SWING_HIGH_BREAK", "high_price": 990.0, "dist_to_high_pct": 0.0}),
         build_alert("8524", "北洋銀行", ind(), {"high_type": "RECENT_NEAR_HIGH", "high_price": 1010.0, "dist_to_high_pct": 0.8}),
     ]
     body = build_body(multi)
-    old_env = {key: os.environ.get(key) for key in ("GITHUB_SHA", "GITHUB_RUN_ID", "ENABLE_INTRADAY_MAIL")}
-    try:
-        os.environ["GITHUB_SHA"] = "abc123"
-        os.environ["GITHUB_RUN_ID"] = "98765"
-        meta_body = build_body(multi)
-        assert meta_body.splitlines()[:5] == [
-            "workflow: Intraday High Alert",
-            "source: GitHub Actions",
-            "commit: abc123",
-            "run_id: 98765",
-            "version: 2026-07-06",
-        ], meta_body
-        os.environ["ENABLE_INTRADAY_MAIL"] = "false"
-        assert intraday_mail_enabled() is False
-    finally:
-        for key, value in old_env.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
+    assert "52週高値更新（1件）" in body, body
     assert "直近高値ブレイク（1件）" in body and "直近高値接近（1件）" in body, body
-    assert "52週高値" not in body, body
+    # 52週更新が本文の先頭グループに来る
+    assert body.index("52週高値更新") < body.index("直近高値ブレイク"), body
     assert "決算予定日" in body and "OpenWork評価" in body, body
     assert DISCLAIMER in body
-    subject = build_subject(multi)
-    assert subject.startswith("[GitHub][Intraday][v2026-07-06]"), subject
-    assert "ほか1件" in subject
+    assert "ほか2件" in build_subject(multi)
+    assert "52週高値更新" in build_subject(multi), build_subject(multi)
 
     print("SELF_TEST_PASS")
     return 0

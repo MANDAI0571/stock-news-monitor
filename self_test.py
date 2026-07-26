@@ -15,7 +15,7 @@ from pattern_learn import build_pattern_summary
 from daily_note_mail import build_mail_body
 from note_autosave import extract_body_fragment, is_saved_draft_url, load_cloud_note_payload, load_storage_state
 from scanner.highs import analyze_high_freshness, build_high_sections_markdown, classify_high_profile, detect_duke_old_high_support, detect_previous_52w_high_line_retest, detect_quality_flags, detect_swing_high_break
-from scanner.indicators import calculate_indicators
+from scanner.indicators import calculate_indicators, detect_ma_touches
 from scanner.openwork import add_openwork_scores, format_openwork_score
 from scanner.scoring import meets_s_technical_gate, meets_strict_s_gate, score_stock
 from scanner.universe import JPX_CACHE_PATH, UniverseConfig, load_jpx_listed, normalize_jpx_listed
@@ -25,6 +25,8 @@ import trade_verification as tv
 
 
 def main() -> None:
+    _test_swing_high_near_7003_style()
+    _test_ma_touch_from_above_only()
     _test_indicators_and_scoring()
     _test_discipline_normal_and_stop()
     _test_market_regime_local_fallback()
@@ -64,6 +66,62 @@ def main() -> None:
     _test_decision_engine()
     _test_trade_verification()
     print("self-test: OK")
+
+
+def _test_swing_high_near_7003_style() -> None:
+    n = 70
+    dates = pd.bdate_range(end="2026-07-24", periods=n)
+    close = [4500.0] * n
+    high = [4550.0] * n
+    swing_pos = n - 14
+    high[swing_pos] = 5080.0
+    close[swing_pos] = 4950.0
+    for i in range(swing_pos + 1, n):
+        close[i] = 4700.0
+        high[i] = 4750.0
+    close[-1] = 4877.0
+    high[-1] = 4907.0
+    history = pd.DataFrame({
+        "Open": close,
+        "High": high,
+        "Low": [value * 0.98 for value in close],
+        "Close": close,
+        "Volume": 2_000_000,
+    }, index=dates)
+    swing = detect_swing_high_break(history)
+    assert swing["swing_high_break"] is False
+    assert swing["swing_high_near"] is True
+    assert swing["swing_high_price"] == 5080.0
+    assert abs(float(swing["swing_high_dist_pct"]) - 4.0) < 0.1
+    profile = classify_high_profile(history)
+    assert profile["high_type"] == "RECENT_NEAR_HIGH"
+    assert profile["high_price"] == 5080.0
+
+
+def _test_ma_touch_from_above_only() -> None:
+    def indicators(**overrides):
+        values = {
+            "ma25_rising": True,
+            "ma200_rising": True,
+            "ma240_rising": True,
+            "days_since_52w_high": 10,
+            "ma25_touch_pct": 1.0,
+            "ma200_touch_pct": 20.0,
+            "ma240_touch_pct": 25.0,
+            "ma25_gap_max_prev10": 5.0,
+            "ma200_gap_max_prev10": 30.0,
+            "ma240_gap_max_prev10": 35.0,
+        }
+        values.update(overrides)
+        return values
+
+    result = detect_ma_touches(indicators())
+    assert result["ma25_touch"] is True and result["ma_touch_any"]
+    assert detect_ma_touches(indicators(ma25_gap_max_prev10=-2.0))["ma25_touch"] is False
+    assert detect_ma_touches(indicators(ma240_rising=False))["ma_touch_any"] is False
+    assert detect_ma_touches(indicators(days_since_52w_high=0))["ma_touch_any"] is False
+    assert detect_ma_touches(indicators(days_since_52w_high=200))["ma_touch_any"] is False
+    assert detect_ma_touches(indicators(ma200_touch_pct=2.0))["ma200_touch"] is True
 
 
 def _test_chatgpt_300man_heading_image() -> None:
