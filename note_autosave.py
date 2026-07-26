@@ -1035,7 +1035,12 @@ def load_payload_from_entry(output_dir: Path, entry: dict) -> NoteDraftPayload:
     title = title_path.read_text(encoding="utf-8").strip()
     html = html_path.read_text(encoding="utf-8")
     chart_path = _resolve_chart_path(output_dir, entry)
-    return NoteDraftPayload(title=title, body_html=extract_body_fragment(html), chart_path=chart_path)
+    return NoteDraftPayload(
+        title=title,
+        body_html=extract_body_fragment(html),
+        chart_path=chart_path,
+        min_image_count=1 if chart_path else 0,
+    )
 
 
 def _resolve_chart_path(output_dir: Path, entry: dict) -> str | None:

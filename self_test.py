@@ -95,6 +95,7 @@ def _test_chatgpt_300man_heading_image() -> None:
         assert manifest[0]["chart_image"] == str(image)
         payload = load_payload_from_entry(output_dir, manifest[0])
         assert payload.chart_path == str(image)
+        assert payload.min_image_count == 1
 
     workflow = (Path(__file__).resolve().parent / ".github/workflows/chatgpt-300man-note.yml").read_text(encoding="utf-8")
     assert "outputs/codex_300man_header.png" in workflow
