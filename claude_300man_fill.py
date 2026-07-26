@@ -10,7 +10,7 @@ import pandas as pd
 from chatgpt_300man_note import fetch_open_price_yfinance, is_jpx_business_day
 
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parent
 ORDERS_PATH = ROOT / "data" / "claude_300man_orders.csv"
 JOURNAL_PATH = ROOT / "data" / "claude_300man_journal.csv"
 LEDGER_PATH = ROOT / "docs" / "claude_300man_ledger.md"
