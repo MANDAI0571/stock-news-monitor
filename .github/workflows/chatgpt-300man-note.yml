@@ -133,6 +133,7 @@ jobs:
             outputs/note_chatgpt_300man.md
             outputs/note_chatgpt_300man.html
             outputs/note_chatgpt_300man_title.txt
+            outputs/codex_300man_header.png
             outputs/note_drafts_manifest.json
             outputs/note_draft_url_chatgpt_300man.txt
             outputs/chatgpt_300man_mail_subject.txt
