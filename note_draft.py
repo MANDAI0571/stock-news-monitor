@@ -564,9 +564,23 @@ NOTE4_CHART_CODES = {
     "highs": "6951",
 }
 
+# 日付なしで繰り返し使う固定見出し画像。③ChatGPT版は独自ワークフローの
+# 動的画像を使うため、共通パイプラインからは上書きしない。
+NOTE4_FIXED_HEADERS = {
+    "claude": "note_header_claude_300man.png",
+    "pullback": "note_header_pullback.png",
+    "highs": "note_header_highs.png",
+}
+
 
 def chart_rel_path(key: str) -> str | None:
     """key に対応する本日のチャートPNGの相対パス（リポジトリ基準）。無ければ None。"""
+    fixed_header = NOTE4_FIXED_HEADERS.get(key)
+    if fixed_header:
+        fixed_path = PROJECT_ROOT / fixed_header
+        if not fixed_path.is_file() or fixed_path.stat().st_size == 0:
+            raise FileNotFoundError(f"固定見出し画像が見つかりません: {fixed_path}")
+        return fixed_header
     code = NOTE4_CHART_CODES.get(key)
     if not code:
         return None
