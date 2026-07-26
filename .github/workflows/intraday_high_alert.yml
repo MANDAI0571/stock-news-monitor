@@ -1,7 +1,7 @@
 name: Intraday High Alert
 
-# ザラ場中の直近高値接近・到達だけをGmail通知するリアルタイムアラート。
-# 52週高値、note下書き、300万円運用のメール通知はしない。日次note処理とは完全に独立。
+# ザラ場中の「52週高値更新（一時更新を含む）」と直近高値接近・到達をGmail通知する。
+# note下書き、300万円運用のメール通知はしない。日次note処理とは完全に独立。
 #
 # 実行: 日本時間(JST)の前場・後場の開始時に起動し、ジョブ内で5分ごとに継続監視。
 #   前場 09:00〜11:30 JST  /  後場 12:30〜15:30 JST
@@ -64,8 +64,8 @@ jobs:
         with:
           python-version: "3.11"
 
-      # 日本の祝日はザラ場が無いのでスキップ（可能な範囲・jpholiday）。
-      # 取得失敗や未導入でも実行は止めない（最低限「平日のみ」は cron で担保済み）。
+      # 日本の祝日・年末年始は東証休場としてスキップする。
+      # 判定に失敗した場合も安全側で送信しない。
       - name: Skip Japanese holidays
         id: holiday
         run: |
@@ -76,16 +76,19 @@ jobs:
           # UTC実行時刻 + 9h = JSTの当日
           jst = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
           today = jst.date()
-          skip = False
+          skip = today.month == 1 and today.day <= 3 or today.month == 12 and today.day == 31
           try:
               import jpholiday
               if jpholiday.is_holiday(today):
                   skip = True
                   print(f"jp_holiday={jpholiday.is_holiday_name(today)} date={today} -> skip")
+              elif skip:
+                  print(f"jpx_year_end_closure date={today} -> skip")
               else:
                   print(f"jp_holiday=none date={today} -> run")
           except Exception as exc:
-              print(f"holiday_check_skipped={exc} (continue)")
+              skip = True
+              print(f"holiday_check_failed={exc} -> skip (fail closed)")
           with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
               fh.write(f"skip={'true' if skip else 'false'}\n")
               fh.write(f"jst_date={today.strftime('%Y%m%d')}\n")
