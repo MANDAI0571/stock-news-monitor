@@ -34,6 +34,7 @@ def main() -> None:
     _test_gmail_body()
     _test_openwork_display_only()
     _test_note_autosave_and_mail_body()
+    _test_chatgpt_300man_heading_image()
     _test_sns_promo()
     _test_production_paths_do_not_use_limit()
     _test_jpx_float_codes_normalized()
@@ -63,6 +64,41 @@ def main() -> None:
     _test_decision_engine()
     _test_trade_verification()
     print("self-test: OK")
+
+
+def _test_chatgpt_300man_heading_image() -> None:
+    from chatgpt_300man_note import write_outputs as write_300man_outputs
+    from note_autosave import load_payload_from_entry
+
+    with TemporaryDirectory() as tmp:
+        output_dir = Path(tmp)
+        portfolio = pd.DataFrame(
+            [
+                {
+                    "slot": 1,
+                    "action": "BUY",
+                    "code": "1111",
+                    "name": "A社",
+                    "shares": 100,
+                    "entry_price": 1000,
+                    "position_value": 100000,
+                    "current_price": 1000,
+                    "market_value": 100000,
+                    "unrealized_pnl": 0,
+                }
+            ]
+        )
+        write_300man_outputs(output_dir, "Codex 300万円運用", "# 本文\n", portfolio)
+        image = output_dir / "codex_300man_header.png"
+        assert image.exists() and image.stat().st_size > 1000
+        manifest = json.loads((output_dir / "note_drafts_manifest.json").read_text(encoding="utf-8"))
+        assert manifest[0]["chart_image"] == str(image)
+        payload = load_payload_from_entry(output_dir, manifest[0])
+        assert payload.chart_path == str(image)
+
+    workflow = (Path(__file__).resolve().parent / ".github/workflows/chatgpt-300man-note.yml").read_text(encoding="utf-8")
+    assert "outputs/codex_300man_header.png" in workflow
+    print("self-test: chatgpt_300man_heading_image OK")
 
 
 def _test_indicators_and_scoring() -> None:
@@ -1562,7 +1598,7 @@ def _test_cloud_digest_mail() -> None:
     from datetime import datetime
     from zoneinfo import ZoneInfo
 
-    from cloud_mail_digest import build_digest, collect_attachments, safari_note_url
+    from cloud_mail_digest import build_digest, collect_attachments
 
     with tempfile.TemporaryDirectory() as tmp:
         out = Path(tmp)
@@ -1591,10 +1627,10 @@ def _test_cloud_digest_mail() -> None:
         assert "200MAタッチ（1件）" in digest.body
         assert "https://finance.yahoo.co.jp/quote/1333.T/chart" in digest.body
         assert "52週新高値" in digest.body
-        assert "## Note下書きURL（iPhone Safari用・記事別）" in digest.body
-        assert safari_note_url("https://editor.note.com/notes/claude123/edit/") in digest.body
-        assert "https%3A%2F%2Feditor.note.com%2Fnotes%2Fclaude123%2Fedit%2F" in digest.body
-        assert f"300万円 Claude版: {safari_note_url('https://editor.note.com/notes/claude123/edit/')}" in digest.body
+        assert "## iPhoneでの表示方法" in digest.body
+        assert "note iOSアプリの下書き読込不具合を回避" in digest.body
+        assert "https://editor.note.com/notes/claude123/edit/" not in digest.body
+        assert "添付の note_*.html" in digest.body
         assert any(path.name == "note_draft_url_claude.txt" for path in digest.attachments)
         assert "メトロンKPI" in digest.body
         assert "| nan" not in digest.body.lower()

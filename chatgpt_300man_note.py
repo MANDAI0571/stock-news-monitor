@@ -1046,6 +1046,29 @@ def render_html(title: str, markdown: str) -> str:
     return "\n".join(html)
 
 
+def build_heading_image(output_dir: Path, portfolio: pd.DataFrame) -> Path:
+    """Codex 300万円運用note専用の見出し画像を生成する。"""
+    from build_note_assets import _canvas, _draw_header, _rect, _save_png, _text
+
+    width, height = 1200, 630
+    image = _canvas(width, height, (247, 249, 252))
+    _draw_header(image, width, height, "CODEX 3M YEN", "PAPER PORTFOLIO / DAILY RECORD")
+
+    open_rows = _open_rows(portfolio)
+    invested = pd.to_numeric(
+        portfolio.get("position_value", pd.Series(dtype=float)), errors="coerce"
+    ).fillna(0).sum()
+    cash = max(0, CAPITAL - int(round(invested)))
+    run_date = jst_today().isoformat()
+
+    _text(image, width, height, 70, 190, f"RUN DATE {run_date}", (34, 40, 49), 5)
+    _text(image, width, height, 70, 285, f"OPEN POSITIONS {len(open_rows)}", (31, 116, 95), 6)
+    _text(image, width, height, 70, 380, f"CASH JPY {cash:,}", (48, 105, 152), 6)
+    _rect(image, width, height, 70, 500, 1060, 8, (31, 116, 95))
+    _text(image, width, height, 70, 535, "DECLARED TODAY / EXECUTE NEXT JPX OPEN", (72, 84, 97), 3)
+    return _save_png(output_dir / "codex_300man_header.png", width, height, image)
+
+
 def write_outputs(output_dir: Path, title: str, body: str, portfolio: pd.DataFrame) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     md = output_dir / "note_chatgpt_300man.md"
@@ -1061,6 +1084,11 @@ def write_outputs(output_dir: Path, title: str, body: str, portfolio: pd.DataFra
     body_file.write_text(body, encoding="utf-8")
     subject_file.write_text(f"【Codex 300万円運用】本日の記録 {jst_today().isoformat()}\n", encoding="utf-8")
     portfolio.to_csv(portfolio_file, index=False, encoding="utf-8-sig")
+    heading_image = build_heading_image(output_dir, portfolio)
+    try:
+        heading_ref = str(heading_image.relative_to(PROJECT_ROOT))
+    except ValueError:
+        heading_ref = str(heading_image)
     manifest = [
         {
             "key": "chatgpt_300man",
@@ -1069,6 +1097,7 @@ def write_outputs(output_dir: Path, title: str, body: str, portfolio: pd.DataFra
             "title_file": title_file.name,
             "html_file": html.name,
             "url_file": "note_draft_url_chatgpt_300man.txt",
+            "chart_image": heading_ref,
         }
     ]
     manifest_file.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
