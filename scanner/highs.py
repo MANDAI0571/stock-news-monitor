@@ -45,6 +45,8 @@ def classify_high_profile(history: pd.DataFrame) -> dict[str, object]:
         base = _as_dict(HighProfile())
         if swing.get("swing_high_break"):
             base |= _swing_as_high_profile(swing)
+        elif swing.get("swing_high_near"):
+            base |= _swing_near_as_high_profile(swing)
         return base | swing
 
     recent = window_high_profile(history, 60)
@@ -60,6 +62,8 @@ def classify_high_profile(history: pd.DataFrame) -> dict[str, object]:
     # スイング情報自体は swing_* 列として全行に残る（情報は失わない）。
     if swing.get("swing_high_break") and base.get("high_type") in ("", None, "OTHER"):
         base |= _swing_as_high_profile(swing)
+    elif swing.get("swing_high_near") and base.get("high_type") not in ("52W_NEW_HIGH", "52W_NEAR_HIGH"):
+        base |= _swing_near_as_high_profile(swing)
     return base | swing
 
 
@@ -71,6 +75,17 @@ def _swing_as_high_profile(swing: dict[str, object]) -> dict[str, object]:
         "high_price": swing.get("swing_high_price", ""),
         "high_date": swing.get("swing_high_date", ""),
         "dist_to_high_pct": swing.get("swing_high_break_pct", ""),
+    }
+
+
+def _swing_near_as_high_profile(swing: dict[str, object]) -> dict[str, object]:
+    return {
+        "high_type": "RECENT_NEAR_HIGH",
+        "high_label": HIGH_LABELS["RECENT_NEAR_HIGH"],
+        "high_window_days": 30,
+        "high_price": swing.get("swing_high_price", ""),
+        "high_date": swing.get("swing_high_date", ""),
+        "dist_to_high_pct": swing.get("swing_high_dist_pct", ""),
     }
 
 
@@ -241,12 +256,18 @@ def _as_dict(profile: HighProfile) -> dict[str, object]:
 
 
 
-def detect_swing_high_break(history: pd.DataFrame, min_lookback: int = 5, max_lookback: int = 30) -> dict[str, object]:
-    """Detect break above a clear recent swing high from 5-30 sessions ago.
+def detect_swing_high_break(
+    history: pd.DataFrame,
+    min_lookback: int = 5,
+    max_lookback: int = 30,
+    near_pct: float = 5.0,
+) -> dict[str, object]:
+    """Detect break above or approach to a clear recent swing high.
 
     Latest bar is the trigger bar. The swing high is selected from bars 5-30
     sessions before the latest bar, using clear local highs first. Today's high
     or close/current price breaking above that swing high triggers detection.
+    An unbroken line within ``near_pct`` of the latest close is marked near.
     """
     empty = {
         "swing_high_price": "",
@@ -254,6 +275,8 @@ def detect_swing_high_break(history: pd.DataFrame, min_lookback: int = 5, max_lo
         "swing_high_break_pct": "",
         "swing_high_break": False,
         "swing_high_label": "",
+        "swing_high_near": False,
+        "swing_high_dist_pct": "",
     }
     if history.empty or "High" not in history.columns or len(history) < min_lookback + 1:
         return empty
@@ -277,12 +300,17 @@ def detect_swing_high_break(history: pd.DataFrame, min_lookback: int = 5, max_lo
     trigger_price = max(float(high.iloc[-1]), float(close.iloc[-1]))
     break_pct = (trigger_price / swing_price - 1.0) * 100 if swing_price > 0 else 0.0
     swing_break = bool(swing_price > 0 and trigger_price > swing_price)
+    current_close = float(close.iloc[-1])
+    dist_pct = (swing_price - current_close) / swing_price * 100 if swing_price > 0 else 999.0
+    swing_near = bool(swing_price > 0 and not swing_break and 0.0 <= dist_pct <= near_pct)
     return {
         "swing_high_price": round(swing_price, 1),
         "swing_high_date": pd.Timestamp(history.index[pos]).date().isoformat(),
         "swing_high_break_pct": round(break_pct, 2),
         "swing_high_break": swing_break,
         "swing_high_label": HIGH_LABELS["SWING_HIGH_BREAK"] if swing_break else "",
+        "swing_high_near": swing_near,
+        "swing_high_dist_pct": round(dist_pct, 2) if swing_near else "",
     }
 
 

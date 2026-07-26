@@ -40,6 +40,9 @@ def calculate_indicators(history: pd.DataFrame) -> dict[str, float] | None:
     volume_5d = float(volume.rolling(5).mean().iloc[-1])
     volume_20d = float(volume.rolling(20).mean().iloc[-1])
     turnover_20d = float(turnover.rolling(20).mean().iloc[-1])
+    ma25_gap_max_prev10 = float(((close - ma25_series) / ma25_series * 100).iloc[-11:-1].max())
+    ma200_gap_max_prev10 = float(((close - ma200_series) / ma200_series * 100).iloc[-11:-1].max())
+    ma240_gap_max_prev10 = float(((close - ma240_series) / ma240_series * 100).iloc[-11:-1].max())
 
     if min(current, high_52w, ma25, ma50, ma75, ma200, ma240, volume_20d) <= 0:
         return None
@@ -73,6 +76,9 @@ def calculate_indicators(history: pd.DataFrame) -> dict[str, float] | None:
         "ma25_touch_pct": abs(current - ma25) / ma25 * 100,
         "ma200_touch_pct": abs(current - ma200) / ma200 * 100,
         "ma240_touch_pct": abs(current - ma240) / ma240 * 100,
+        "ma25_gap_max_prev10": ma25_gap_max_prev10,
+        "ma200_gap_max_prev10": ma200_gap_max_prev10,
+        "ma240_gap_max_prev10": ma240_gap_max_prev10,
         "volume_5d": volume_5d,
         "volume_20d": volume_20d,
         "volume_ratio_5d_20d": volume_5d / volume_20d,
@@ -132,28 +138,47 @@ def calculate_indicators_lenient(history: pd.DataFrame, min_days: int = 60) -> d
     }
 
 
-def detect_ma_touches(indicators: dict[str, float], touch_pct: float = 3.0) -> dict[str, object]:
-    """T-B(2026-06-28): 25/200/240MA への『押し目タッチ』判定（純関数・通信なし）。
-
-    各MAについて「上昇トレンド中(該当MAが右肩上がり)に、現値がそのMAから touch_pct% 以内まで
-    押した」状態を True とする。単なる25MA上抜けではなく、上昇トレンドの押し目を拾う狙い。
-    データが揃わない(ma240等が無い)場合は False。捏造しない。
-    """
+def detect_ma_touches(
+    indicators: dict[str, float],
+    touch_pct: float = 3.0,
+    max_days_since_high: int = 120,
+) -> dict[str, object]:
+    """52週新高値後に上から25/200/240MAへ下りてきた押し目だけを判定する。"""
     result: dict[str, object] = {}
     touched_labels: list[str] = []
-    specs = (
-        ("ma25", "ma25_rising", "ma25_touch_pct", "25MAタッチ"),
-        ("ma200", "ma200_rising", "ma200_touch_pct", "200MAタッチ"),
-        ("ma240", "ma240_rising", "ma240_touch_pct", "240MAタッチ"),
+    all_rising = all(
+        bool(indicators.get(key, False))
+        for key in ("ma25_rising", "ma200_rising", "ma240_rising")
     )
-    for key, rising_key, touch_key, label in specs:
-        rising = bool(indicators.get(rising_key, False))
+    try:
+        days_since = int(indicators.get("days_since_52w_high"))
+    except (TypeError, ValueError):
+        days_since = None
+    after_high_decline = days_since is not None and 1 <= days_since <= max_days_since_high
+    specs = (
+        ("ma25", "ma25_touch_pct", "ma25_gap_max_prev10", "25MAタッチ"),
+        ("ma200", "ma200_touch_pct", "ma200_gap_max_prev10", "200MAタッチ"),
+        ("ma240", "ma240_touch_pct", "ma240_gap_max_prev10", "240MAタッチ"),
+    )
+    for key, touch_key, prev_key, label in specs:
         touch_distance = indicators.get(touch_key)
         try:
             touch_distance = float(touch_distance)
         except (TypeError, ValueError):
             touch_distance = None
-        is_touch = bool(rising and touch_distance is not None and touch_distance <= touch_pct)
+        prev_gap_max = indicators.get(prev_key)
+        try:
+            prev_gap_max = float(prev_gap_max)
+        except (TypeError, ValueError):
+            prev_gap_max = None
+        from_above = prev_gap_max is not None and prev_gap_max > touch_pct
+        is_touch = bool(
+            all_rising
+            and after_high_decline
+            and touch_distance is not None
+            and touch_distance <= touch_pct
+            and from_above
+        )
         result[f"{key}_touch"] = is_touch
         if is_touch:
             touched_labels.append(label)
