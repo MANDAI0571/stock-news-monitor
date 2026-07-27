@@ -1536,7 +1536,7 @@ def _test_duke_old_high_support() -> None:
 def _test_intraday_watchlist() -> None:
     """日中監視ウォッチリスト: 選定・優先順・上限クリップ・英数字コード・全銘柄フォールバック。"""
     from build_intraday_watchlist import select_watchlist, build, WATCHLIST_NAME
-    from intraday_high_alert import build_alert, build_body, build_subject, intraday_mail_enabled, load_watchlist_codes, status_mail_on_no_new_enabled
+    from intraday_high_alert import build_alert, build_body, build_subject, load_watchlist_codes
 
     df = pd.DataFrame([
         {"code": "7203", "name": "トヨタ", "market": "東証プライム", "rank": "S", "score": 90,
@@ -1595,62 +1595,37 @@ def _test_intraday_watchlist() -> None:
     subject = build_subject([alert])
     assert subject.startswith("[GitHub][Intraday][v2026-07-06]"), subject
 
-    old_env = {key: os.environ.get(key) for key in ("GITHUB_SHA", "GITHUB_RUN_ID", "ENABLE_INTRADAY_MAIL", "INTRADAY_STATUS_MAIL_ON_NO_NEW")}
-    try:
-        os.environ["GITHUB_SHA"] = "abc123"
-        os.environ["GITHUB_RUN_ID"] = "98765"
-        body = build_body([alert])
-        assert body.splitlines()[:5] == [
-            "workflow: Intraday High Alert",
-            "source: GitHub Actions",
-            "commit: abc123",
-            "run_id: 98765",
-            "version: 2026-07-06",
-        ], body
-        assert "検出アラート: 1件" in body
-        assert "https://finance.yahoo.co.jp/quote/7011.T/chart" in body
-        status_body = build_body([], detected_count=19, status_note="手動確認")
-        assert "検出アラート: 19件" in status_body
-        assert "新規アラート: 0件" in status_body
-        assert "手動確認" in status_body
-        os.environ["ENABLE_INTRADAY_MAIL"] = "false"
-        assert intraday_mail_enabled() is False
-        os.environ["ENABLE_INTRADAY_MAIL"] = "true"
-        assert intraday_mail_enabled() is True
-        os.environ["INTRADAY_STATUS_MAIL_ON_NO_NEW"] = "true"
-        assert status_mail_on_no_new_enabled() is True
-        os.environ["INTRADAY_STATUS_MAIL_ON_NO_NEW"] = "false"
-        assert status_mail_on_no_new_enabled() is False
-    finally:
-        for key, value in old_env.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
-
+    body = build_body([alert])
+    assert "ザラ場リアルタイム高値アラート" in body
+    assert "新規アラート: 1件" in body
+    assert "7011 三菱重工" in body
+    assert "更新済み（乖離0%）" in body
+    assert "※これは投資助言ではなく、スクリーニング通知です。" in body
 
 def _test_intraday_cloud_workflow_contract() -> None:
-    """リアルタイム監視はGitHub Actions本番scheduleでGmail送信し、通知済みstateをrun間で引き継ぐ。"""
+    """リアルタイム監視は常駐ジョブで実行し、場外スキャンと接近通知を防ぐ。"""
     workflow = (Path(__file__).resolve().parent / ".github" / "workflows" / "intraday_high_alert.yml").read_text(encoding="utf-8")
-    assert 'ENABLE_INTRADAY_MAIL: "false"' not in workflow
-    assert "send_mail:" in workflow
-    assert "status_mail_on_no_new:" in workflow
-    assert "INTRADAY_STATUS_MAIL_ON_NO_NEW" in workflow
-    assert "(github.event_name == 'schedule' || github.event_name == 'push') && 'true'" in workflow
-    assert "actions/cache/restore@v4" in workflow
-    assert "actions/cache/save@v4" in workflow
-    assert "intraday-alert-state-${{ steps.holiday.outputs.jst_date }}" in workflow
-    assert "Check Gmail secrets" in workflow
-    assert "GMAIL_USER secret is missing" in workflow
     assert 'cron: "7 0 * * 1-5"' in workflow
+    assert 'cron: "22 0 * * 1-5"' in workflow
+    assert 'cron: "37 0 * * 1-5"' in workflow
     assert 'cron: "37 3 * * 1-5"' in workflow
-    assert "sleep 300" in workflow
+    assert 'cron: "52 3 * * 1-5"' in workflow
+    assert 'cron: "7 4 * * 1-5"' in workflow
+    assert "concurrency:" in workflow and "cancel-in-progress: false" in workflow
     assert "timeout-minutes: 240" in workflow
+    assert 'IH_ALERT_SCOPE: "break"' in workflow
+    assert 'INTRADAY_USE_WATCHLIST: "0"' in workflow
+    assert 'IH_MIN_TURNOVER: "50000000"' in workflow
+    assert "while true; do" in workflow
+    assert '[ "$scan" -eq 0 ] && [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]' in workflow
+    assert "[GUARD] outside market hours" in workflow
+    assert "sleep 60" in workflow
     assert '".github/triggers/intraday-high-alert"' in workflow
-    assert "github.event_name == 'push'" in workflow
-    assert "find outputs -maxdepth 1 -name 'screening_result*.csv' -delete" in workflow
-
-
+    assert "Restore today's dedup state" in workflow
+    assert "actions/upload-artifact@v4" in workflow
+    assert "Check Gmail secrets" not in workflow
+    assert "ENABLE_INTRADAY_MAIL" not in workflow
+    assert "INTRADAY_STATUS_MAIL_ON_NO_NEW" not in workflow
 def _test_cloud_digest_mail() -> None:
     """25MA/押し目などの引け後クラウド結果はGmailで届き、手動再送もできる。"""
     import tempfile
