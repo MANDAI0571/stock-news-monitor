@@ -1,2 +1,2 @@
-﻿entry_date,fill_time_jst,status,code,ticker,name,entry_price,shares,position_value,source_order_date
-2026-07-22,2026-07-26T16:47:21+09:00,OPEN,7453,7453.T,良品計画,4206.00,100,420600,2026-07-21
+﻿entry_date,fill_time_jst,status,code,ticker,name,entry_price,shares,position_value,source_order_date,exit_date,exit_price,exit_value,realized_pnl,exit_order_date
+2026-07-22,2026-07-26T16:47:21+09:00,OPEN,7453,7453.T,良品計画,4206.00,100,420600,2026-07-21,,,,,
