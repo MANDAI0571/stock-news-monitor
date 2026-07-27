@@ -41,7 +41,12 @@ import pandas as pd
 from scanner.highs import classify_high_profile
 from scanner.indicators import calculate_indicators
 from scanner.openwork import format_openwork_score, load_openwork_scores
-from scanner.prices import ensure_output_dir, fetch_next_earnings_date, fetch_price_history
+from scanner.prices import (
+    ensure_output_dir,
+    fetch_next_earnings_date,
+    fetch_price_history,
+    prefetch_price_histories,
+)
 from scanner.universe import UniverseConfig, load_jpx_listed
 
 
@@ -426,6 +431,13 @@ def scan(
         universe = universe.head(limit)
 
     total = len(universe)
+    # 全銘柄スキャンでも数分で終わるよう、先にバッチ一括取得してキャッシュを温める。
+    # （1銘柄ずつの逐次取得だと3,500銘柄で1時間超かかりザラ場の15分間隔に間に合わない）
+    if total > 50:
+        prefetch_stats = prefetch_price_histories(
+            [str(t) for t in universe["ticker"].tolist()], period=period
+        )
+        print(f"intraday_prefetch={prefetch_stats}", flush=True)
     openwork_map = _load_openwork_map()
     alerts: list[Alert] = []
     for idx, stock in enumerate(universe.itertuples(index=False), start=1):
