@@ -32,6 +32,11 @@ on:
     - cron: "0,15,30,45 4,5 * * 1-5"
     - cron: "0,15,30 6 * * 1-5"
 
+# 同時実行を防ぐ（前の回が長引いたら次の回は待つ。キャンセルはしない）。
+concurrency:
+  group: intraday-high-alert
+  cancel-in-progress: false
+
 jobs:
   intraday-high-alert:
     runs-on: ubuntu-latest
@@ -40,7 +45,7 @@ jobs:
     permissions:
       contents: read
       actions: read
-    # 本番(schedule)は必ず全銘柄が母集団だが、intraday_watchlist.csv があれば200〜500銘柄に絞る。
+    # 本番は常に全銘柄（約3,500銘柄）が母集団。バッチ一括取得で数分に収まる。
     # QUICK_MODE は手動実行(workflow_dispatch)のテスト時だけ有効。
     env:
       QUICK_MODE: ${{ github.event_name == 'schedule' && 'false' || (github.event.inputs.quick_mode == 'false' && 'false' || 'true') }}
@@ -87,33 +92,23 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # 前日引け後の daily-discipline ジョブが上げた screening_result.csv を取得（ジョブ間はFS非共有のため）。
-      # 取得できなくても失敗にしない＝ウォッチリストが無ければ intraday は全銘柄にフォールバックする。
-      - name: Fetch latest EOD screening result (best-effort)
+      # 15分ごとの実行はVMが毎回まっさらなので、直前の実行が保存した「本日通知済みリスト」
+      # （intraday_alert_state_YYYYMMDD.json）を取得して重複メールを防ぐ。無ければそのまま進む。
+      - name: Restore today's dedup state (best-effort)
         if: steps.holiday.outputs.skip != 'true'
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p outputs
-          run_id=$(gh run list --workflow daily-discipline.yml --status success --limit 1 --json databaseId --jq '.[0].databaseId' 2>/dev/null || true)
+          run_id=$(gh run list --workflow intraday_high_alert.yml --status success --limit 1 --json databaseId --jq '.[0].databaseId' 2>/dev/null || true)
           if [ -n "$run_id" ]; then
-            echo "download screening artifact from run_id=$run_id"
-            gh run download "$run_id" -n stock-news-monitor-outputs -D outputs 2>/dev/null || echo "artifact download skipped"
+            echo "restore dedup state from run_id=$run_id"
+            gh run download "$run_id" -n intraday-high-alerts -D outputs 2>/dev/null || echo "no previous state artifact"
           else
-            echo "no successful daily-discipline run found -> full universe fallback"
+            echo "no previous run -> fresh state"
           fi
-          find outputs -name 'screening_result*.csv' 2>/dev/null || true
-
-      # 前日EODの結果から日中監視用ウォッチリスト（200〜500銘柄）を作る。無ければ全銘柄フォールバック。
-      # 52週高値接近の取り込みを5%→10%に広げ、上限を500に上げて「当日更新しそうな銘柄」の取り逃しを減らす。
-      - name: Build intraday watchlist (200-500 symbols)
-        if: steps.holiday.outputs.skip != 'true'
-        env:
-          INTRADAY_NEAR_52W_PCT: "10"
-          INTRADAY_WATCH_MAX: "500"
-        run: |
-          python3 build_intraday_watchlist.py || echo "watchlist build skipped -> full universe fallback"
+          find outputs -name 'intraday_alert_state_*.json' 2>/dev/null || true
 
       - name: Run intraday high alert
         if: steps.holiday.outputs.skip != 'true'
@@ -121,8 +116,8 @@ jobs:
           GMAIL_USER: ${{ secrets.GMAIL_USER }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           MAIL_TO: ${{ secrets.MAIL_TO }}
-          # 既定でウォッチリストを優先（存在すれば200〜500銘柄に絞る。無ければ全銘柄）。
-          INTRADAY_USE_WATCHLIST: "1"
+          # カブタン等の全銘柄ベースの一覧と一致させるため、ウォッチリストは使わず常に全銘柄を母集団にする。
+          INTRADAY_USE_WATCHLIST: "0"
           # 流動性ゲートを1億円→5000万円に緩和（カブタン/みんかぶ一覧に載る小型株の取り逃し対策）。
           IH_MIN_TURNOVER: "50000000"
         run: |
