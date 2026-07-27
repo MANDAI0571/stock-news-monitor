@@ -36,7 +36,7 @@ on:
         default: "30"
   schedule:
     # 毎時00分付近の混雑を避ける。09:07 と 12:37 JST に起動する。
-    # 保険として15分後・30分後にも起こす。GitHub側でスケジュールが落ちる事故に備える。branch_protection_rule: # 先行の回が生きていれば concurrency で待たされ、直後に場外判定で即終了する。
+    # 保険として15分後・30分後にも起こす。GitHub側でスケジュールが落ちる事故に備える。
     # 先行の回が生きていれば concurrency で待たされ、直後に場外判定で即終了する。
     - cron: "7 0 * * 1-5"
     - cron: "22 0 * * 1-5"
@@ -142,7 +142,7 @@ jobs:
           start=$(date +%s)
           scan=0
           while true; do
-          hm0=$(TZ=Asia/Tokyo date +%H%M); n0=$((10#$hm0)); if { [ "$n0" -ge 900 ] && [ "$n0" -lt 1130 ]; } || { [ "$n0" -ge 1230 ] && [ "$n0" -lt 1530 ]; }; then :; elif [ "$scan" -eq 0 ] && [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then echo "[GUARD] outside market hours jst=$hm0 but manual run -> single scan"; else echo "[GUARD] outside market hours jst=$hm0 -> exit without scanning (scans=$scan)"; break; fi
+            hm0=$(TZ=Asia/Tokyo date +%H%M); n0=$((10#$hm0)); if { [ "$n0" -ge 900 ] && [ "$n0" -lt 1130 ]; } || { [ "$n0" -ge 1230 ] && [ "$n0" -lt 1530 ]; }; then :; elif [ "$scan" -eq 0 ] && [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then echo "[GUARD] outside market hours jst=$hm0 but manual run -> single scan"; else echo "[GUARD] outside market hours jst=$hm0 -> exit without scanning (scans=$scan)"; break; fi
             scan=$((scan+1))
             echo "[SESSION] scan #${scan} started jst=$(TZ=Asia/Tokyo date '+%H:%M:%S')"
             if [ "${QUICK_MODE}" = "true" ]; then
