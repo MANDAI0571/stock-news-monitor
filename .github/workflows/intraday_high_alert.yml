@@ -1,21 +1,18 @@
 name: Intraday High Alert
 
-# ザラ場中の「52週高値更新（一時更新を含む）」と直近高値接近・到達をGmail通知する。
+# ザラ場中の「52週高値更新（一時更新含む）」と「直近高値接近・到達」をGmail通知するリアルタイムアラート。
 # note下書き、300万円運用のメール通知はしない。日次note処理とは完全に独立。
 #
-# 実行: 日本時間(JST)の前場・後場の開始時に起動し、ジョブ内で5分ごとに継続監視。
+# 実行: 日本時間(JST)のザラ場中だけ、15分ごと。
 #   前場 09:00〜11:30 JST  /  後場 12:30〜15:30 JST
 # GitHub Actions の cron は UTC。JST = UTC + 9h なので 9時間引く:
 #   09:00〜11:30 JST → 00:00〜02:30 UTC
 #   12:30〜15:30 JST → 03:30〜06:30 UTC
 # JSTの平日(月〜金)は、対応するUTC時刻でも同じ曜日(月〜金=1-5)になる
 # （00:00 UTC = 当日09:00 JST のため日付がまたがらない）。土日は実行しない。
-# GitHub側の5分cron欠落を避けるため、セッション中は同じジョブを継続させる。
+# 注: GitHub Actions の cron は分指定が単一値。15分刻みは */15 で表現する。
 
 on:
-  push:
-    paths:
-      - ".github/triggers/intraday-high-alert"
   workflow_dispatch:
     inputs:
       quick_mode:
@@ -26,23 +23,19 @@ on:
         description: "QUICK_MODE時に処理する銘柄数"
         type: string
         default: "30"
-      send_mail:
-        description: "手動実行でもGmailを送る（通常はOFF。本番scheduleは常にON）"
-        type: boolean
-        default: false
-      status_mail_on_no_new:
-        description: "手動確認時、新規0件でも到達確認メールを送る"
-        type: boolean
-        default: true
   schedule:
-    # 毎時00分付近の混雑を避ける。09:07と12:37 JSTに開始。
-    - cron: "7 0 * * 1-5"
-    - cron: "37 3 * * 1-5"
+    # 前場: 00:00〜02:30 UTC（= 09:00〜11:30 JST）平日のみ、15分ごと
+    - cron: "0,15,30,45 0,1 * * 1-5"
+    - cron: "0,15,30 2 * * 1-5"
+    # 後場: 03:30〜06:30 UTC（= 12:30〜15:30 JST）平日のみ、15分ごと
+    - cron: "30,45 3 * * 1-5"
+    - cron: "0,15,30,45 4,5 * * 1-5"
+    - cron: "0,15,30 6 * * 1-5"
 
 jobs:
   intraday-high-alert:
     runs-on: ubuntu-latest
-    timeout-minutes: 240
+    timeout-minutes: 30
     # 前日EODのスクリーニング結果アーティファクトを読むため read 権限が要る。
     permissions:
       contents: read
@@ -50,22 +43,20 @@ jobs:
     # 本番(schedule)は必ず全銘柄が母集団だが、intraday_watchlist.csv があれば200〜500銘柄に絞る。
     # QUICK_MODE は手動実行(workflow_dispatch)のテスト時だけ有効。
     env:
-      QUICK_MODE: ${{ (github.event_name == 'schedule' || github.event_name == 'push') && 'false' || (github.event.inputs.quick_mode == 'false' && 'false' || 'true') }}
+      QUICK_MODE: ${{ github.event_name == 'schedule' && 'false' || (github.event.inputs.quick_mode == 'false' && 'false' || 'true') }}
       MAX_SYMBOLS: ${{ github.event.inputs.max_symbols || '30' }}
-      ENABLE_INTRADAY_MAIL: ${{ (github.event_name == 'schedule' || github.event_name == 'push') && 'true' || (github.event.inputs.send_mail == 'true' && 'true' || 'false') }}
-      INTRADAY_STATUS_MAIL_ON_NO_NEW: ${{ github.event_name == 'push' && 'true' || (github.event_name == 'workflow_dispatch' && github.event.inputs.send_mail == 'true' && github.event.inputs.status_mail_on_no_new != 'false' && 'true' || 'false') }}
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      # 日本の祝日・年末年始は東証休場としてスキップする。
-      # 判定に失敗した場合も安全側で送信しない。
+      # 日本の祝日はザラ場が無いのでスキップ（可能な範囲・jpholiday）。
+      # 取得失敗や未導入でも実行は止めない（最低限「平日のみ」は cron で担保済み）。
       - name: Skip Japanese holidays
         id: holiday
         run: |
@@ -73,60 +64,28 @@ jobs:
           pip install jpholiday >/dev/null 2>&1 || true
           python - <<'PY'
           import datetime, os
-          # UTC実行時刻 + 9h = JSTの当日
-          jst = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
-          today = jst.date()
-          skip = today.month == 1 and today.day <= 3 or today.month == 12 and today.day == 31
+          skip = False
           try:
               import jpholiday
+              # UTC実行時刻 + 9h = JSTの当日
+              jst = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
+              today = jst.date()
               if jpholiday.is_holiday(today):
                   skip = True
                   print(f"jp_holiday={jpholiday.is_holiday_name(today)} date={today} -> skip")
-              elif skip:
-                  print(f"jpx_year_end_closure date={today} -> skip")
               else:
                   print(f"jp_holiday=none date={today} -> run")
           except Exception as exc:
-              skip = True
-              print(f"holiday_check_failed={exc} -> skip (fail closed)")
+              print(f"holiday_check_skipped={exc} (continue)")
           with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
               fh.write(f"skip={'true' if skip else 'false'}\n")
-              fh.write(f"jst_date={today.strftime('%Y%m%d')}\n")
           PY
-
-      - name: Prepare output dir
-        if: steps.holiday.outputs.skip != 'true'
-        run: mkdir -p outputs
-
-      # 15分ごとの別runでも「同じ銘柄・同じアラート種別は1日1回」を守る。
-      # GitHub Actions cacheはimmutableなので、日付prefixで直近stateを復元し、runごとに新しいkeyで保存する。
-      - name: Restore intraday dedup state
-        if: steps.holiday.outputs.skip != 'true'
-        uses: actions/cache/restore@v4
-        with:
-          path: outputs/intraday_alert_state_${{ steps.holiday.outputs.jst_date }}.json
-          key: intraday-alert-state-${{ steps.holiday.outputs.jst_date }}-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: |
-            intraday-alert-state-${{ steps.holiday.outputs.jst_date }}-
 
       - name: Install dependencies
         if: steps.holiday.outputs.skip != 'true'
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-
-      - name: Check Gmail secrets
-        if: steps.holiday.outputs.skip != 'true' && env.ENABLE_INTRADAY_MAIL == 'true'
-        env:
-          GMAIL_USER: ${{ secrets.GMAIL_USER }}
-          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
-          MAIL_TO: ${{ secrets.MAIL_TO }}
-        run: |
-          missing=0
-          [ -n "$GMAIL_USER" ] || { echo "::error::GMAIL_USER secret is missing"; missing=1; }
-          [ -n "$GMAIL_APP_PASSWORD" ] || { echo "::error::GMAIL_APP_PASSWORD secret is missing"; missing=1; }
-          [ -n "$MAIL_TO" ] || { echo "::error::MAIL_TO secret is missing"; missing=1; }
-          exit "$missing"
 
       # 前日引け後の daily-discipline ジョブが上げた screening_result.csv を取得（ジョブ間はFS非共有のため）。
       # 取得できなくても失敗にしない＝ウォッチリストが無ければ intraday は全銘柄にフォールバックする。
@@ -137,20 +96,22 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p outputs
-          # リポジトリに残る古い確認用CSVを消し、取得失敗時に古い銘柄を監視しない。
-          find outputs -maxdepth 1 -name 'screening_result*.csv' -delete
           run_id=$(gh run list --workflow daily-discipline.yml --status success --limit 1 --json databaseId --jq '.[0].databaseId' 2>/dev/null || true)
           if [ -n "$run_id" ]; then
             echo "download screening artifact from run_id=$run_id"
-            gh run download "$run_id" -n stock-news-monitor-outputs -D outputs || echo "artifact download skipped -> full universe fallback"
+            gh run download "$run_id" -n stock-news-monitor-outputs -D outputs 2>/dev/null || echo "artifact download skipped"
           else
             echo "no successful daily-discipline run found -> full universe fallback"
           fi
           find outputs -name 'screening_result*.csv' 2>/dev/null || true
 
       # 前日EODの結果から日中監視用ウォッチリスト（200〜500銘柄）を作る。無ければ全銘柄フォールバック。
+      # 52週高値接近の取り込みを5%→10%に広げ、上限を500に上げて「当日更新しそうな銘柄」の取り逃しを減らす。
       - name: Build intraday watchlist (200-500 symbols)
         if: steps.holiday.outputs.skip != 'true'
+        env:
+          INTRADAY_NEAR_52W_PCT: "10"
+          INTRADAY_WATCH_MAX: "500"
         run: |
           python3 build_intraday_watchlist.py || echo "watchlist build skipped -> full universe fallback"
 
@@ -162,50 +123,20 @@ jobs:
           MAIL_TO: ${{ secrets.MAIL_TO }}
           # 既定でウォッチリストを優先（存在すれば200〜500銘柄に絞る。無ければ全銘柄）。
           INTRADAY_USE_WATCHLIST: "1"
+          # 流動性ゲートを1億円→5000万円に緩和（カブタン/みんかぶ一覧に載る小型株の取り逃し対策）。
+          IH_MIN_TURNOVER: "50000000"
         run: |
           start=$(date +%s)
-          while true; do
-            echo "[SESSION] scan started jst=$(TZ=Asia/Tokyo date '+%H:%M:%S')"
-            if [ "${QUICK_MODE}" = "true" ]; then
-              python3 intraday_high_alert.py --limit "${MAX_SYMBOLS}"
-            else
-              python3 intraday_high_alert.py
-            fi
-            # pushによる復旧確認メールは最初の1回だけ。以後は新規検知時のみ送信。
-            export INTRADAY_STATUS_MAIL_ON_NO_NEW=false
-            hm=$(TZ=Asia/Tokyo date +%H%M)
-            now=$((10#$hm))
-            if { [ "$now" -ge 900 ] && [ "$now" -lt 1130 ]; } || \
-               { [ "$now" -ge 1230 ] && [ "$now" -lt 1530 ]; }; then
-              echo "[SESSION] next scan in 300s"
-              sleep 300
-            else
-              echo "[SESSION] market session ended jst=$hm"
-              break
-            fi
-          done
-          end=$(date +%s); echo "[TIMER] intraday_high_alert elapsed=$((end-start))s"
-
-      - name: Check intraday state file
-        if: steps.holiday.outputs.skip != 'true'
-        id: intraday_state
-        run: |
-          if [ -f "outputs/intraday_alert_state_${{ steps.holiday.outputs.jst_date }}.json" ]; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
+          if [ "${QUICK_MODE}" = "true" ]; then
+            python3 intraday_high_alert.py --limit "${MAX_SYMBOLS}"
           else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
+            python3 intraday_high_alert.py
           fi
-
-      - name: Save intraday dedup state
-        if: steps.holiday.outputs.skip != 'true' && steps.intraday_state.outputs.exists == 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: outputs/intraday_alert_state_${{ steps.holiday.outputs.jst_date }}.json
-          key: intraday-alert-state-${{ steps.holiday.outputs.jst_date }}-${{ github.run_id }}-${{ github.run_attempt }}
+          end=$(date +%s); echo "[TIMER] intraday_high_alert elapsed=$((end-start))s"
 
       - name: Upload alert outputs
         if: steps.holiday.outputs.skip != 'true'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: intraday-high-alerts
           path: |
