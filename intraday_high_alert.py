@@ -11,6 +11,13 @@
   - SWING_HIGH_BREAK / RECENT_NEW_HIGH → 「直近高値ブレイク」
   - RECENT_NEAR_HIGH → 「直近高値接近」（直近スイング高値まで3%以内）
 
+メール通知の絞り込み（環境変数 IH_ALERT_SCOPE）:
+  - "break"（既定）= すでに高値を抜けた銘柄だけ通知（52週高値更新＋直近高値ブレイク）。
+    「接近」系はメールに載せない。全銘柄スキャンだと接近系が大量に出てメールが読めなくなるため。
+  - "52w"          = 52週高値更新（一時更新含む）のみ通知。さらに絞りたいとき。
+  - "all"          = 従来どおり接近系も含めて全部通知。
+  絞り込みは補足情報（決算予定日・OpenWork）の取得より前に行うので、実行時間も短くなる。
+
 通知しない対象（このスクリプトでは扱わない）:
   - ChatGPT 300万円運用 / Claude 300万円運用
   - 25MAタッチ / 200MAタッチ / 240MAタッチ
@@ -111,6 +118,30 @@ BREAK_HIGH_TYPES = {"52W_NEW_HIGH", "SWING_HIGH_BREAK", "RECENT_NEW_HIGH"}
 # 52週系（高値ライン表示に indicators の high_52w / dist_52w_high_pct を使う）。
 FIFTYTWO_HIGH_TYPES: set[str] = {"52W_NEW_HIGH", "52W_NEAR_HIGH"}
 
+# メール通知の絞り込み既定値（詳細は _alert_scope / alert_in_scope）。
+DEFAULT_ALERT_SCOPE = "break"
+
+# 表記ゆれを吸収する（yml やターミナルでの打ち間違いで黙って全件通知にならないように）。
+_ALERT_SCOPE_ALIASES: dict[str, str] = {
+    "break": "break",
+    "breaks": "break",
+    "breakout": "break",
+    "new_high": "break",
+    "update": "break",
+    "52w": "52w",
+    "52週": "52w",
+    "52week": "52w",
+    "52w_new_high": "52w",
+    "all": "all",
+    "full": "all",
+}
+
+ALERT_SCOPE_LABELS: dict[str, str] = {
+    "break": "52週高値更新＋直近高値ブレイク（接近は通知しない）",
+    "52w": "52週高値更新のみ",
+    "all": "全種別（接近も通知）",
+}
+
 
 @dataclass
 class Alert:
@@ -132,6 +163,30 @@ class Alert:
     def dedup_key(self) -> str:
         return f"{self.code}|{self.alert_type}"
 
+
+def _alert_scope() -> str:
+    """IH_ALERT_SCOPE を正規化して返す。未知の値は既定にフォールバックし、必ず警告を出す。"""
+    raw = os.environ.get("IH_ALERT_SCOPE", DEFAULT_ALERT_SCOPE).strip().lower()
+    scope = _ALERT_SCOPE_ALIASES.get(raw)
+    if scope is None:
+        print(
+            f"WARNING: IH_ALERT_SCOPE={raw!r} は未知の値です。"
+            f"既定の {DEFAULT_ALERT_SCOPE!r} で実行します"
+            f"（指定できる値: break / 52w / all）",
+            flush=True,
+        )
+        return DEFAULT_ALERT_SCOPE
+    return scope
+
+
+def alert_in_scope(alert: Alert, scope: str) -> bool:
+    """このアラートをメール通知の対象にするか。純関数（通信なし）。"""
+    if scope == "all":
+        return True
+    if scope == "52w":
+        return alert.high_type == "52W_NEW_HIGH"
+    # "break": すでに高値を更新・ブレイクしたものだけ（＝接近は除外）
+    return alert.is_break
 
 
 # --------------------------------------------------------------------------
@@ -416,7 +471,13 @@ def scan(
     limit: int | None = None,
     period: str = "14mo",
     watchlist_codes: set[str] | None = None,
+    scope: str | None = None,
 ) -> list[Alert]:
+    scope = scope or _alert_scope()
+    print(
+        f"intraday_alert_scope={scope} ({ALERT_SCOPE_LABELS.get(scope, scope)})",
+        flush=True,
+    )
     universe = load_jpx_listed(UniverseConfig(markets=markets))
     if watchlist_codes:
         # 日中は前日EODで選んだ200〜500銘柄だけを監視（軽量化）。該当0件なら絞らない（フォールバック）。
@@ -440,6 +501,7 @@ def scan(
         print(f"intraday_prefetch={prefetch_stats}", flush=True)
     openwork_map = _load_openwork_map()
     alerts: list[Alert] = []
+    out_of_scope = 0
     for idx, stock in enumerate(universe.itertuples(index=False), start=1):
         if idx % 200 == 0:
             print(f"[{idx}/{total}] scanning...", flush=True)
@@ -454,11 +516,21 @@ def scan(
             if touch is not None and str(high_info.get("high_type", "")) != "52W_NEW_HIGH":
                 high_info = dict(high_info) | touch
             alert = build_alert(stock.code, stock.name, indicators, high_info)
-            if alert is not None:
-                alerts.append(_apply_extra_fields(alert, stock.code, openwork_map))
+            if alert is None:
+                continue
+            # 通知対象外は補足情報（決算予定日・OpenWork）を取りに行かずここで捨てる。
+            # 1件ごとに通信が発生するため、除外を先に行うと実行時間も短くなる。
+            if not alert_in_scope(alert, scope):
+                out_of_scope += 1
+                continue
+            alerts.append(_apply_extra_fields(alert, stock.code, openwork_map))
         except Exception as exc:  # 1銘柄の失敗で全体を止めない
             print(f"skip {stock.ticker}: {exc}", flush=True)
             continue
+    print(
+        f"intraday_scope_filter=scope:{scope} kept:{len(alerts)} excluded:{out_of_scope}",
+        flush=True,
+    )
     return alerts
 
 
@@ -652,6 +724,42 @@ def _self_test() -> int:
     assert DISCLAIMER in body
     assert "ほか2件" in build_subject(multi)
     assert "52週高値更新" in build_subject(multi), build_subject(multi)
+
+    # --- 通知の絞り込み（IH_ALERT_SCOPE）---
+    a_52w = build_alert("1518", "三井松島HD", ind(), {"high_type": "52W_NEW_HIGH"})
+    a_swing = build_alert("7011", "三菱重工", ind(), {
+        "high_type": "SWING_HIGH_BREAK", "high_price": 990.0, "dist_to_high_pct": 0.0})
+    a_recent_new = build_alert("7173", "東京きらぼし", ind(), {
+        "high_type": "RECENT_NEW_HIGH", "high_price": 990.0, "dist_to_high_pct": 0.0})
+    a_52w_near = build_alert("8524", "北洋銀行", ind(current_price=992.0, dist_52w_high_pct=0.8),
+                             {"high_type": "52W_NEAR_HIGH"})
+    a_recent_near = build_alert("6951", "日本電子", ind(), {
+        "high_type": "RECENT_NEAR_HIGH", "high_price": 1010.0, "dist_to_high_pct": 1.0})
+    sample = [a_52w, a_swing, a_recent_new, a_52w_near, a_recent_near]
+
+    # break（既定）= 更新・ブレイクの3件だけ通す。接近2件は除外。
+    kept = [x for x in sample if alert_in_scope(x, "break")]
+    assert kept == [a_52w, a_swing, a_recent_new], kept
+    # 52w = 52週高値更新の1件だけ。直近高値ブレイクも除外される。
+    kept = [x for x in sample if alert_in_scope(x, "52w")]
+    assert kept == [a_52w], kept
+    # all = 従来どおり全件。
+    assert all(alert_in_scope(x, "all") for x in sample)
+
+    # 環境変数の読み取り（表記ゆれ吸収・未知の値は既定にフォールバック）
+    saved = os.environ.get("IH_ALERT_SCOPE")
+    try:
+        os.environ.pop("IH_ALERT_SCOPE", None)
+        assert _alert_scope() == DEFAULT_ALERT_SCOPE == "break", _alert_scope()
+        for raw, want in (("52w", "52w"), ("ALL", "all"), (" Break ", "break"),
+                          ("breakout", "break"), ("yes-please", DEFAULT_ALERT_SCOPE)):
+            os.environ["IH_ALERT_SCOPE"] = raw
+            assert _alert_scope() == want, (raw, _alert_scope(), want)
+    finally:
+        if saved is None:
+            os.environ.pop("IH_ALERT_SCOPE", None)
+        else:
+            os.environ["IH_ALERT_SCOPE"] = saved
 
     print("SELF_TEST_PASS")
     return 0
