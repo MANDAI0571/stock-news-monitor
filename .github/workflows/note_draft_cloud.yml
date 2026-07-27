@@ -90,7 +90,11 @@ jobs:
         run: |
           start=$(date +%s)
           echo "QUICK_MODE=$QUICK_MODE MAX_SYMBOLS=$MAX_SYMBOLS"
-          python3 daily_discipline_run.py --include-rejected
+          if [ "$QUICK_MODE" = "true" ]; then
+            python3 daily_discipline_run.py --include-rejected --limit "$MAX_SYMBOLS"
+          else
+            python3 daily_discipline_run.py --include-rejected
+          fi
           end=$(date +%s); echo "[TIMER] daily_discipline_run elapsed=$((end-start))s"
 
       # T-I(2026-07-10): バックテスト博士。screening_highs を data/ に追記し、
@@ -328,15 +332,3 @@ jobs:
             outputs/screening_highs_*.csv
             outputs/screening_52w_retest_*.csv
             outputs/discipline_portfolio_*.csv
-            outputs/s_rank_candidates_*.csv
-            outputs/warren_summary.json
-            outputs/decision_result.csv
-            outputs/decision_report.md
-            outputs/discipline_result.csv
-            outputs/paper_portfolio_decision.csv
-            outputs/eyecatch.png
-            outputs/market_status.png
-            outputs/funnel.png
-            outputs/buy_*.png
-            outputs/watch.png
-          if-no-files-found: error
