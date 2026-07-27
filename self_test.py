@@ -1567,8 +1567,8 @@ def _test_cloud_digest_mail() -> None:
         assert "200MAタッチ（1件）" in digest.body
         assert "https://finance.yahoo.co.jp/quote/1333.T/chart" in digest.body
         assert "52週新高値" in digest.body
-        assert "## iPhoneでの表示方法" in digest.body
-        assert "note iOSアプリの下書き読込不具合を回避" in digest.body
+        assert "## Note下書きURL（iPhone Safari用・記事別）" in digest.body
+        assert "Safariを経由して開くリンクです。" in digest.body
         assert "https://editor.note.com/notes/claude123/edit/" not in digest.body
         assert "添付の note_*.html" in digest.body
         assert any(path.name == "note_draft_url_claude.txt" for path in digest.attachments)
