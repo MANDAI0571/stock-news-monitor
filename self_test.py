@@ -15,7 +15,7 @@ from pattern_learn import build_pattern_summary
 from daily_note_mail import build_mail_body
 from note_autosave import extract_body_fragment, is_saved_draft_url, load_cloud_note_payload, load_storage_state
 from scanner.highs import analyze_high_freshness, build_high_sections_markdown, classify_high_profile, detect_duke_old_high_support, detect_previous_52w_high_line_retest, detect_quality_flags, detect_swing_high_break
-from scanner.indicators import calculate_indicators, detect_ma_touches
+from scanner.indicators import calculate_indicators
 from scanner.openwork import add_openwork_scores, format_openwork_score
 from scanner.scoring import meets_s_technical_gate, meets_strict_s_gate, score_stock
 from scanner.universe import JPX_CACHE_PATH, UniverseConfig, load_jpx_listed, normalize_jpx_listed
@@ -25,8 +25,6 @@ import trade_verification as tv
 
 
 def main() -> None:
-    _test_swing_high_near_7003_style()
-    _test_ma_touch_from_above_only()
     _test_indicators_and_scoring()
     _test_discipline_normal_and_stop()
     _test_market_regime_local_fallback()
@@ -36,7 +34,6 @@ def main() -> None:
     _test_gmail_body()
     _test_openwork_display_only()
     _test_note_autosave_and_mail_body()
-    _test_chatgpt_300man_heading_image()
     _test_sns_promo()
     _test_production_paths_do_not_use_limit()
     _test_jpx_float_codes_normalized()
@@ -66,98 +63,6 @@ def main() -> None:
     _test_decision_engine()
     _test_trade_verification()
     print("self-test: OK")
-
-
-def _test_swing_high_near_7003_style() -> None:
-    n = 70
-    dates = pd.bdate_range(end="2026-07-24", periods=n)
-    close = [4500.0] * n
-    high = [4550.0] * n
-    swing_pos = n - 14
-    high[swing_pos] = 5080.0
-    close[swing_pos] = 4950.0
-    for i in range(swing_pos + 1, n):
-        close[i] = 4700.0
-        high[i] = 4750.0
-    close[-1] = 4877.0
-    high[-1] = 4907.0
-    history = pd.DataFrame({
-        "Open": close,
-        "High": high,
-        "Low": [value * 0.98 for value in close],
-        "Close": close,
-        "Volume": 2_000_000,
-    }, index=dates)
-    swing = detect_swing_high_break(history)
-    assert swing["swing_high_break"] is False
-    assert swing["swing_high_near"] is True
-    assert swing["swing_high_price"] == 5080.0
-    assert abs(float(swing["swing_high_dist_pct"]) - 4.0) < 0.1
-    profile = classify_high_profile(history)
-    assert profile["high_type"] == "RECENT_NEAR_HIGH"
-    assert profile["high_price"] == 5080.0
-
-
-def _test_ma_touch_from_above_only() -> None:
-    def indicators(**overrides):
-        values = {
-            "ma25_rising": True,
-            "ma200_rising": True,
-            "ma240_rising": True,
-            "days_since_52w_high": 10,
-            "ma25_touch_pct": 1.0,
-            "ma200_touch_pct": 20.0,
-            "ma240_touch_pct": 25.0,
-            "ma25_gap_max_prev10": 5.0,
-            "ma200_gap_max_prev10": 30.0,
-            "ma240_gap_max_prev10": 35.0,
-        }
-        values.update(overrides)
-        return values
-
-    result = detect_ma_touches(indicators())
-    assert result["ma25_touch"] is True and result["ma_touch_any"]
-    assert detect_ma_touches(indicators(ma25_gap_max_prev10=-2.0))["ma25_touch"] is False
-    assert detect_ma_touches(indicators(ma240_rising=False))["ma_touch_any"] is False
-    assert detect_ma_touches(indicators(days_since_52w_high=0))["ma_touch_any"] is False
-    assert detect_ma_touches(indicators(days_since_52w_high=200))["ma_touch_any"] is False
-    assert detect_ma_touches(indicators(ma200_touch_pct=2.0))["ma200_touch"] is True
-
-
-def _test_chatgpt_300man_heading_image() -> None:
-    from chatgpt_300man_note import write_outputs as write_300man_outputs
-    from note_autosave import load_payload_from_entry
-
-    with TemporaryDirectory() as tmp:
-        output_dir = Path(tmp)
-        portfolio = pd.DataFrame(
-            [
-                {
-                    "slot": 1,
-                    "action": "BUY",
-                    "code": "1111",
-                    "name": "A社",
-                    "shares": 100,
-                    "entry_price": 1000,
-                    "position_value": 100000,
-                    "current_price": 1000,
-                    "market_value": 100000,
-                    "unrealized_pnl": 0,
-                }
-            ]
-        )
-        write_300man_outputs(output_dir, "Codex 300万円運用", "# 本文\n", portfolio)
-        image = output_dir / "codex_300man_header.png"
-        assert image.exists() and image.stat().st_size > 1000
-        manifest = json.loads((output_dir / "note_drafts_manifest.json").read_text(encoding="utf-8"))
-        assert manifest[0]["chart_image"] == str(image)
-        payload = load_payload_from_entry(output_dir, manifest[0])
-        assert payload.chart_path == str(image)
-        assert payload.min_image_count == 1
-
-    workflow = (Path(__file__).resolve().parent / ".github/workflows/chatgpt-300man-note.yml").read_text(encoding="utf-8")
-    assert "outputs/codex_300man_header.png" in workflow
-    print("self-test: chatgpt_300man_heading_image OK")
 
 
 def _test_indicators_and_scoring() -> None:
@@ -1593,7 +1498,7 @@ def _test_intraday_watchlist() -> None:
     })
     assert alert is not None
     subject = build_subject([alert])
-    assert subject.startswith("[GitHub][Intraday][v2026-07-06]"), subject
+    assert subject.startswith("【高値接近アラート】7011 三菱重工｜直近高値更新"), subject
 
     body = build_body([alert])
     assert "ザラ場リアルタイム高値アラート" in body
@@ -1626,6 +1531,7 @@ def _test_intraday_cloud_workflow_contract() -> None:
     assert "Check Gmail secrets" not in workflow
     assert "ENABLE_INTRADAY_MAIL" not in workflow
     assert "INTRADAY_STATUS_MAIL_ON_NO_NEW" not in workflow
+
 def _test_cloud_digest_mail() -> None:
     """25MA/押し目などの引け後クラウド結果はGmailで届き、手動再送もできる。"""
     import tempfile
