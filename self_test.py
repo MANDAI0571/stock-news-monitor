@@ -1078,7 +1078,6 @@ def _test_track_record() -> None:
         assert added_again == 0, "同一(日付,コード)が重複追記された"
         record = load_record(record_path)
         assert len(record) == 2 and set(record["code"]) == {"1111", "2222"}
-assert "Markdown/HTML/CSVの元ファイルは添付に入れています。" in digest.body
         # 合成価格: 1111 は掲載後上昇、2222 は下落。営業日インデックスで entry_day を含む。
         idx = pd.bdate_range("2026-07-08", periods=25)
 
@@ -1570,7 +1569,7 @@ def _test_cloud_digest_mail() -> None:
         assert "## Note下書きURL（iPhone Safari用・記事別）" in digest.body
         assert "Safariを経由して開くリンクです。" in digest.body
         assert "https://editor.note.com/notes/claude123/edit/" not in digest.body
-        assert "添付の note_*.html" in digest.body
+        assert "Markdown/HTML/CSVの元ファイルは添付に入れています。" in digest.body
         assert any(path.name == "note_draft_url_claude.txt" for path in digest.attachments)
         assert "メトロンKPI" in digest.body
         assert "| nan" not in digest.body.lower()
