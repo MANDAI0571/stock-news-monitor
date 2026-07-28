@@ -5,19 +5,6 @@ on:
     paths:
       - ".github/triggers/note-draft-cloud"
   workflow_dispatch:
-    inputs:
-      quick_mode:
-        description: "QUICK_MODE (true=軽量確認 / false=全銘柄)"
-        type: boolean
-        default: true
-      max_symbols:
-        description: "QUICK_MODE 時に処理する銘柄数"
-        type: string
-        default: "30"
-      send_mail:
-        description: "手動実行で25MA/200MAまとめメールを送る（通常のテストではOFF）"
-        type: boolean
-        default: false
   schedule:
     # T-J(2026-07-10): 平日16:30 JST に自動実行（cron は UTC なので 7:30）。
     # 大引け15:30 → カブタンのリスト確定16:00頃 → 16:10 trade-verification →
@@ -41,15 +28,13 @@ jobs:
     timeout-minutes: 90
 
     env:
-      # 定時実行（schedule）は必ず全銘柄（QUICK_MODE=false）。手動実行は入力値を尊重。
-      QUICK_MODE: ${{ (github.event_name == 'schedule' || github.event_name == 'push') && 'false' || (github.event.inputs.quick_mode == 'false' && 'false' || 'true') }}
-      MAX_SYMBOLS: ${{ github.event.inputs.max_symbols || '30' }}
+
       PROGRESS_EVERY: "25"
       # v10(2026-07-19): カードのPER/PBR/ROE等と決算予定日をYahoo Financeから補完
       # （表示対象の銘柄のみ・失敗しても記事生成は止めない・取得できない項目は未取得表示）
       NOTE_FETCH_FUNDAMENTALS: "1"
       NOTE_FETCH_EARNINGS: "1"
-      SEND_CLOUD_DIGEST: ${{ github.event_name == 'schedule' && 'true' || (github.event.inputs.send_mail == 'true' && 'true' || 'false') }}
+      SEND_CLOUD_DIGEST: "true"
 
     steps:
       - name: Checkout
@@ -93,7 +78,6 @@ jobs:
       - name: Run screening and discipline portfolio
         run: |
           start=$(date +%s)
-          echo "QUICK_MODE=$QUICK_MODE MAX_SYMBOLS=$MAX_SYMBOLS"
           python3 daily_discipline_run.py --include-rejected
           end=$(date +%s); echo "[TIMER] daily_discipline_run elapsed=$((end-start))s"
 
