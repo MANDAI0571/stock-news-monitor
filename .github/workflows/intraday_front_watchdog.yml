@@ -35,10 +35,10 @@ jobs:
           except Exception as exc:
               print(f"holiday_check_skipped={exc} (continue)")
           with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
-              fh.write("skip=" + ("true" if skip else "false") + chr(92) + "n")
+              fh.write(f"skip={'true' if skip else 'false'}\n")
           PY
       - name: Dispatch intraday tick
-        if: steps.holiday.outputs.skip != "true"
+        if: steps.holiday.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
