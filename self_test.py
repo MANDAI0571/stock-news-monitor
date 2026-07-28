@@ -740,6 +740,7 @@ def _test_production_paths_do_not_use_limit() -> None:
         # 本番ワークフローに QUICK_MODE / MAX_SYMBOLS が固定されていないこと（全銘柄で実行される）。
         assert "QUICK_MODE" not in text, f"{workflow.name} に QUICK_MODE が残っています"
         assert "MAX_SYMBOLS" not in text, f"{workflow.name} に MAX_SYMBOLS が残っています"
+        assert "--cloud-article" not in text, f"{workflow.name} に不要な --cloud-article が残っています"
         assert "actions/checkout@v7" in text
         assert "actions/setup-python@v6" in text
         assert "actions/upload-artifact@v7" in text
@@ -1585,7 +1586,7 @@ def _test_cloud_digest_mail() -> None:
     note_workflow = (project_root / ".github" / "workflows" / "note_draft_cloud.yml").read_text(encoding="utf-8")
     daily_workflow = (project_root / ".github" / "workflows" / "daily-discipline.yml").read_text(encoding="utf-8")
     resend_workflow = (project_root / ".github" / "workflows" / "cloud_digest_mail.yml").read_text(encoding="utf-8")
-    assert "send_mail:" in note_workflow
+    assert "send_mail:" not in note_workflow
     assert "SEND_CLOUD_DIGEST" in note_workflow
     assert "Build or send cloud digest mail" in note_workflow
     assert "cloud_mail_digest.py --output-dir outputs" in note_workflow
