@@ -125,18 +125,6 @@ jobs:
       - name: Validate Note artifact quality gate
         run: python3 validate_note_artifact.py --artifact-dir outputs
 
-      - name: Save cloud Note draft in note.com
-        env:
-          NOTE_STORAGE_STATE: ${{ secrets.NOTE_STORAGE_STATE }}
-          NOTE_EMAIL: ${{ secrets.NOTE_EMAIL }}
-          NOTE_PASSWORD: ${{ secrets.NOTE_PASSWORD }}
-        run: |
-          if command -v xvfb-run >/dev/null 2>&1; then
-            xvfb-run -a python3 note_autosave.py --cloud-article --no-headless --note-url-file note_draft_url_cloud.txt
-          else
-            python3 note_autosave.py --cloud-article --note-url-file note_draft_url_cloud.txt
-          fi
-
       # v8(2026-07-19): manifest駆動のNote下書き保存を定時実行に配線し、
       # 保存本数をゲートで検知（保存漏れの静かな失敗を防止）。
       # v10(2026-07-19): ③ChatGPT版はCodexの独自便（chatgpt-300man-note.yml・16:45）に分離したため、
@@ -182,7 +170,7 @@ jobs:
           from pathlib import Path
 
           note_url = ""
-          for path in (Path("outputs/note_draft_url_cloud.txt"), Path("note_draft_url_cloud.txt")):
+          for path in (Path("outputs/note_draft_url_highs.txt"), Path("note_draft_url_highs.txt")):
               if path.exists():
                   note_url = path.read_text(encoding="utf-8").strip()
                   break
