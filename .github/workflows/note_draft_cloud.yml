@@ -76,7 +76,7 @@ jobs:
           python -m playwright install --with-deps chromium
           end=$(date +%s); echo "[TIMER] install_dependencies elapsed=$((end-start))s"
 
-      - name: Self test (critical: trading / fills / ledger)
+      - name: "Self test (critical: trading / fills / ledger)"
         run: python3 self_test_groups.py --group critical
 
       - name: Self test (editorial / mail / note format)
