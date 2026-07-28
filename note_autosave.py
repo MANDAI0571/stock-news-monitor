@@ -242,8 +242,10 @@ def _save_one(context, payload: NoteDraftPayload, error_key: str | None = None) 
             page.goto(NOTE_NEW_URL, wait_until="domcontentloaded", timeout=60_000)
         try:
             _wait_for_editor_ready(page)
-            _fill_title(page, payload.title)
+            _fill_title_verified(page, payload.title)
             _fill_body(page, payload.body_html)
+            # ProseMirrorへの貼り付けでタイトルが消えることがあるため、本文入力後にも再確認・再入力する。
+            _fill_title_verified(page, payload.title)
             # 本文を入れた後で、本文の冒頭(タイトル直下)に画像を挿入する。
             # set_all+paste が画像も消すため、必ず本文確定の「後」に行う。失敗は致命にしない。
             image_paths = list(payload.image_paths)
@@ -263,6 +265,14 @@ def _save_one(context, payload: NoteDraftPayload, error_key: str | None = None) 
                     image_status = "failed"
                 print(f"note_draft_image_uploaded_detail[{error_key}]={image_ok}/{len(image_paths)}")
             _try_save(page)
+            page.wait_for_timeout(5000)
+            saved_title = _read_title_text(page).strip()
+            saved_editor = _find_body_editor(page)
+            saved_length = _editor_text_length(saved_editor) if saved_editor is not None else 0
+            if saved_title != payload.title.strip() or saved_length < 80:
+                raise RuntimeError(
+                    f"保存後の内容確認に失敗しました: title={saved_title!r} body_length={saved_length}"
+                )
             try:
                 page.wait_for_url(
                     re.compile(r"https://(?:editor\.)?note\.com/notes/(?!new)[A-Za-z0-9_-]+"),
@@ -549,21 +559,31 @@ def save_note_drafts(
 
     _require_auth()
     results: list[tuple[str, str | None, str | None, str]] = []
+    try:
+        max_attempts = max(1, int(os.getenv("NOTE_SAVE_ATTEMPTS", "2")))
+    except ValueError:
+        max_attempts = 2
     with sync_playwright() as playwright:
         browser, context = _open_context(playwright, headless)
         try:
             for key, payload in payloads:
-                try:
-                    url, image_status = _save_one(context, payload, error_key=key)
-                    verification = _verify_saved_draft(context, url, payload, image_status, key=key)
-                    verification["draft_list"] = _verify_draft_list(context, payload.title, key=key)
-                    verification["ok"] = _cloud_verify_ok(verification, url)
-                    print(f"note_draft_reopen_verified[{key}]={verification['ok']}")
-                    if not verification["ok"]:
-                        raise RuntimeError(f"保存後に編集画面を開き直せませんでした: {verification}")
-                    results.append((key, url, None, image_status))
-                except Exception as exc:  # noqa: BLE001 - 1本失敗で全体を止めない
-                    results.append((key, None, str(exc), "none"))
+                last_error = "保存に失敗しました"
+                for attempt in range(1, max_attempts + 1):
+                    try:
+                        url, image_status = _save_one(context, payload, error_key=key)
+                        verification = _verify_saved_draft(context, url, payload, image_status, key=key)
+                        verification["draft_list"] = _verify_draft_list(context, payload.title, key=key)
+                        verification["ok"] = _cloud_verify_ok(verification, url)
+                        print(f"note_draft_reopen_verified[{key}]={verification['ok']}")
+                        if not verification["ok"]:
+                            raise RuntimeError(f"保存後に編集画面を開き直せませんでした: {verification}")
+                        results.append((key, url, None, image_status))
+                        break
+                    except Exception as exc:  # noqa: BLE001 - 1本失敗で全体を止めない
+                        last_error = str(exc)
+                        print(f"note_draft_retry[{key}]={attempt}/{max_attempts}: {last_error}")
+                        if attempt == max_attempts:
+                            results.append((key, None, last_error, "none"))
         finally:
             context.close()
             browser.close()
@@ -830,6 +850,23 @@ def _wait_for_editor_ready(page, timeout_ms: int = 180_000) -> None:
 
     # 描画直後はまだ入力を受け付けない事があるので少し待つ
     page.wait_for_timeout(1500)
+
+
+def _fill_title_verified(page, title: str, attempts: int = 4) -> None:
+    """タイトルを入力し、読み返して一致するまで再入力する。"""
+    last_value = ""
+    for _ in range(max(1, attempts)):
+        try:
+            _fill_title(page, title)
+        except Exception:
+            continue
+        page.wait_for_timeout(300)
+        last_value = _read_title_text(page).strip()
+        if last_value == title.strip():
+            return
+    raise RuntimeError(
+        f"タイトル入力後の読み返しが不一致です: expected={title!r} actual={last_value!r}"
+    )
 
 
 def _fill_title(page, title: str) -> None:
