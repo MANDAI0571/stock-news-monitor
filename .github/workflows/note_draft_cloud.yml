@@ -76,6 +76,340 @@ jobs:
           python -m playwright install --with-deps chromium
           end=$(date +%s); echo "[TIMER] install_dependencies elapsed=$((end-start))s"
 
+      - name: Self test (critical: trading / fills / ledger)
+        run: python3 self_test_groups.py --group critical
+
+      - name: Self test (editorial / mail / note format)
+        continue-on-error: true
+        run: python3 self_test_groups.py --group editorial
+
+      - name: Market regime (市場監督)
+        run: python3 market_regime.py
+        continue-on-error: true
+
+      - name: Fetch market snapshot
+        run: python3 fetch_market.py
+
+      - name: Run screening and discipline portfolio
+        run: |
+          start=$(date +%s)
+          echo "QUICK_MODE=$QUICK_MODE MAX_SYMBOLS=$MAX_SYMBOLS"
+          python3 daily_discipline_run.py --include-rejected
+          end=$(date +%s); echo "[TIMER] daily_discipline_run elapsed=$((end-start))s"
+
+      # T-I(2026-07-10): バックテスト博士。screening_highs を data/ に追記し、
+      # 過去掲載銘柄の +1/+5/+20営業日の実績を outputs/track_record.json に集計する。
+      # note生成（build_note_assets）より前に実行することで、記事の実績セクションに反映される。
+      # 失敗しても note パイプラインは止めない（continue-on-error）。
+      - name: Track record (バックテスト博士)
+        continue-on-error: true
+        run: |
+          start=$(date +%s)
+          python3 track_record.py --update
+          end=$(date +%s); echo "[TIMER] track_record elapsed=$((end-start))s"
+
+      - name: Persist track record (data/highs_track_record.csv)
+        continue-on-error: true
+        run: |
+          if [ ! -f data/highs_track_record.csv ]; then
+            echo "track_record: 記録ファイルなし（コミットせず）"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/highs_track_record.csv
+          if git diff --cached --quiet; then
+            echo "track_record: 変更なし（コミットせず）"
+            exit 0
+          fi
+          git commit -m "chore: update highs track record [skip ci]"
+          git pull --rebase origin "${GITHUB_REF_NAME}" || true
+          git push origin HEAD:"${GITHUB_REF_NAME}" || echo "track_record: push失敗（記事生成は継続）"
+
+      - name: Run decision engine
+        run: |
+          start=$(date +%s)
+          python3 decision_engine.py
+          end=$(date +%s); echo "[TIMER] decision_engine elapsed=$((end-start))s"
+
+      - name: Build Note draft assets
+        run: |
+          start=$(date +%s)
+          python3 build_note_assets.py
+          end=$(date +%s); echo "[TIMER] build_note_assets elapsed=$((end-start))s"
+
+      - name: Validate Note artifact quality gate
+        run: python3 validate_note_artifact.py --artifact-dir outputs
+
+      - name: Save cloud Note draft in note.com
+        env:
+          NOTE_STORAGE_STATE: ${{ secrets.NOTE_STORAGE_STATE }}
+          NOTE_EMAIL: ${{ secrets.NOTE_EMAIL }}
+          NOTE_PASSWORD: ${{ secrets.NOTE_PASSWORD }}
+        run: |
+          if command -v xvfb-run >/dev/null 2>&1; then
+            xvfb-run -a python3 note_autosave.py --cloud-article --no-headless --note-url-file note_draft_url_cloud.txt
+          else
+            python3 note_autosave.py --cloud-article --note-url-file note_draft_url_cloud.txt
+          fi
+
+      # v8(2026-07-19): manifest駆動のNote下書き保存を定時実行に配線し、
+      # 保存本数をゲートで検知（保存漏れの静かな失敗を防止）。
+      # v10(2026-07-19): ③ChatGPT版はCodexの独自便（chatgpt-300man-note.yml・16:45）に分離したため、
+      # ここで保存するのは①52週新高値/②押し目/④Claudeの3本（ゲート3/3）。
+      # ③は chatgpt-300man-note.yml（Codex担当）が16:45に生成・保存する（2重保存防止）。
+      - name: Save 3-note drafts in note.com (manifest)
+        env:
+          NOTE_STORAGE_STATE: ${{ secrets.NOTE_STORAGE_STATE }}
+          NOTE_EMAIL: ${{ secrets.NOTE_EMAIL }}
+          NOTE_PASSWORD: ${{ secrets.NOTE_PASSWORD }}
+        run: |
+          if command -v xvfb-run >/dev/null 2>&1; then
+            xvfb-run -a python3 note_autosave.py --no-headless | tee note_autosave_multi.log
+          else
+            python3 note_autosave.py | tee note_autosave_multi.log
+          fi
+          if grep -q "note_autosave_skipped=holiday_no_new_data" note_autosave_multi.log; then
+            echo "休場日スキップ（正常）"
+            exit 0
+          fi
+          grep -q "note_draft_saved=3/3" note_autosave_multi.log || { echo "::error::3本のnote下書き保存が未完了（note_draft_savedを確認）"; exit 1; }
+          grep -q "note_draft_reopen_verified\[claude\]=True" note_autosave_multi.log || { echo "::error::Claude版を保存後に開き直せません"; exit 1; }
+          grep -q "note_draft_reopen_verified\[pullback\]=True" note_autosave_multi.log || { echo "::error::押し目版を保存後に開き直せません"; exit 1; }
+          grep -q "note_draft_reopen_verified\[highs\]=True" note_autosave_multi.log || { echo "::error::52週新高値版を保存後に開き直せません"; exit 1; }
+
+      - name: Build Phase 1 distribution drafts (no external posting)
+        env:
+          PHASE1_SIGNUP_BASE_URL: ${{ secrets.PHASE1_SIGNUP_BASE_URL }}
+        run: |
+          mkdir -p outputs/phase1_distribution
+          status_file="outputs/phase1_distribution/status.txt"
+          if [ -z "$PHASE1_SIGNUP_BASE_URL" ]; then
+            echo "disabled: PHASE1_SIGNUP_BASE_URL is not configured" | tee "$status_file"
+            exit 0
+          fi
+          if [ ! -s outputs/note_highs.md ]; then
+            echo "failed: outputs/note_highs.md is missing" | tee "$status_file"
+            exit 1
+          fi
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          note_url = ""
+          for path in (Path("outputs/note_draft_url_cloud.txt"), Path("note_draft_url_cloud.txt")):
+              if path.exists():
+                  note_url = path.read_text(encoding="utf-8").strip()
+                  break
+          config = {
+              "signup_base_url": os.environ["PHASE1_SIGNUP_BASE_URL"],
+              "note_url": note_url,
+              "campaign": "",
+          }
+          Path("/tmp/phase1_distribution_config.json").write_text(
+              json.dumps(config, ensure_ascii=False), encoding="utf-8"
+          )
+          PY
+          python3 phase1/tools/generate_distribution_drafts.py \
+            --note outputs/note_highs.md \
+            --config /tmp/phase1_distribution_config.json \
+            --content morning \
+            --out-dir outputs/phase1_distribution \
+            --check
+          echo "ready: drafts generated and compliance passed; external posting disabled" | tee "$status_file"
+
+      - name: Build Phase 1 Metron daily summary when real data exists
+        if: always()
+        run: |
+          mkdir -p outputs/phase1_distribution
+          if [ ! -s data/metron_daily.csv ]; then
+            echo "disabled: data/metron_daily.csv is not configured" > outputs/phase1_distribution/metron_status.txt
+            exit 0
+          fi
+          python3 phase1/tools/generate_metron_summary.py \
+            --csv data/metron_daily.csv \
+            --out outputs/phase1_distribution/metron_daily.md
+          echo "ready: real CSV summary generated" > outputs/phase1_distribution/metron_status.txt
+
+      - name: Show summary
+        if: always()
+        run: |
+          python3 screening_summary.py || true
+          echo "=== market snapshot ==="
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          path = Path("outputs/market_snapshot.json")
+          if not path.exists():
+              print("market_snapshot.json missing")
+          else:
+              data = json.loads(path.read_text(encoding="utf-8"))
+              print(f"regime={data.get('regime', '未取得')} indicator_regime={data.get('indicator_regime', '未取得')}")
+              for item in (data.get("indicators") or {}).values():
+                  print(
+                      f"{item.get('label', '')}: {item.get('display_value', '未取得')} "
+                      f"({item.get('display_change_pct', '未取得')}) status={item.get('status', 'unavailable')}"
+                  )
+          PY
+          echo "=== note draft files ==="
+          ls -lh outputs/note_*.md outputs/note_*.html outputs/note_*.txt outputs/*manifest*.json outputs/market_snapshot.json 2>/dev/null || true
+          echo "=== cloud note artifact files ==="
+          ls -lh outputs/note_body.md outputs/note_preview.html outputs/warren_summary.json outputs/decision_result.csv outputs/discipline_result.csv outputs/paper_portfolio_decision.csv outputs/eyecatch.png outputs/market_status.png outputs/funnel.png outputs/buy_*.png outputs/watch.png 2>/dev/null || true
+
+      - name: Metron KPI report
+        if: always()
+        run: python3 metron_kpi.py
+
+      - name: Check Gmail secrets for cloud digest
+        id: gmail_secrets
+        if: always() && env.SEND_CLOUD_DIGEST == 'true'
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+        run: |
+          missing=0
+          [ -n "$GMAIL_USER" ] || { echo "::error::GMAIL_USER secret is missing"; missing=1; }
+          [ -n "$GMAIL_APP_PASSWORD" ] || { echo "::error::GMAIL_APP_PASSWORD secret is missing"; missing=1; }
+          [ -n "$MAIL_TO" ] || { echo "::error::MAIL_TO secret is missing"; missing=1; }
+          exit "$missing"
+
+      - name: Build or send cloud digest mail
+        if: always()
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+        run: |
+          if [ "$SEND_CLOUD_DIGEST" = "true" ]; then
+            python3 cloud_mail_digest.py --output-dir outputs
+          else
+            python3 cloud_mail_digest.py --output-dir outputs --dry-run
+          fi
+
+      - name: Upload Note draft artifact
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: note-draft-cloud
+          path: |
+            outputs/note_body.md
+            outputs/note_preview.html
+            outputs/note_daily.md
+            outputs/note_title.txt
+            outputs/note_daily.html
+            outputs/note_chatgpt.md
+            outputs/note_claude.md
+            outputs/note_pullback.md
+            outputs/note_highs.md
+            outputs/note_chatgpt.html
+            outputs/note_claude.html
+            outputs/note_pullback.html
+            outputs/note_highs.html
+            outputs/note_chatgpt_title.txt
+            outputs/note_claude_title.txt
+            outputs/note_pullback_title.txt
+            outputs/note_highs_title.txt
+            outputs/note_drafts_manifest.json
+            outputs/note_cloud_artifact_manifest.json
+            outputs/note_draft_url_cloud.txt
+            outputs/note_draft_url_*.txt
+            outputs/cloud_digest_mail_subject.txt
+            outputs/cloud_digest_mail_body.md
+            outputs/note_autosave_verify_cloud.json
+            outputs/note_autosave_error*.png
+            outputs/note_image_debug*.png
+            outputs/market_snapshot.json
+            outputs/track_record.json
+            outputs/metron_kpi_report.md
+            outputs/metron_kpi.json
+            outputs/phase1_distribution/*.md
+            outputs/phase1_distribution/*.txt
+            outputs/screening_result.csv
+            outputs/screening_result_*.csv
+            outputs/screening_pullback_*.csv
+            outputs/screening_highs_*.csv
+            outputs/screening_52w_retest_*.csv
+            outputs/discipline_portfolio_*.csv
+name: Note下書き（クラウド生成）
+
+on:
+  push:
+    paths:
+      - ".github/triggers/note-draft-cloud"
+  workflow_dispatch:
+    inputs:
+      quick_mode:
+        description: "QUICK_MODE (true=軽量確認 / false=全銘柄)"
+        type: boolean
+        default: true
+      max_symbols:
+        description: "QUICK_MODE 時に処理する銘柄数"
+        type: string
+        default: "30"
+      send_mail:
+        description: "手動実行で25MA/200MAまとめメールを送る（通常のテストではOFF）"
+        type: boolean
+        default: false
+  schedule:
+    # T-J(2026-07-10): 平日16:30 JST に自動実行（cron は UTC なので 7:30）。
+    # 大引け15:30 → カブタンのリスト確定16:00頃 → 16:10 trade-verification →
+    # 16:30 本ワークフロー（実績記録 → note4本の下書き自動保存）の順。
+    # 注意: 日本の祝日もそのまま走る（データが薄いだけで実害なし）。
+    - cron: "30 7 * * 1-5"
+
+# 手動実行と定時実行が重ならないようにする（data/ への push 競合防止）
+concurrency:
+  group: note-draft-cloud
+  cancel-in-progress: false
+
+permissions:
+  # T-I(2026-07-10): 実績トラッキング（バックテスト博士）の記録CSVを
+  # data/highs_track_record.csv にコミットするため write が必要。
+  contents: write
+
+jobs:
+  build-note-draft:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    env:
+      # 定時実行（schedule）は必ず全銘柄（QUICK_MODE=false）。手動実行は入力値を尊重。
+      QUICK_MODE: ${{ (github.event_name == 'schedule' || github.event_name == 'push') && 'false' || (github.event.inputs.quick_mode == 'false' && 'false' || 'true') }}
+      MAX_SYMBOLS: ${{ github.event.inputs.max_symbols || '30' }}
+      PROGRESS_EVERY: "25"
+      # v10(2026-07-19): カードのPER/PBR/ROE等と決算予定日をYahoo Financeから補完
+      # （表示対象の銘柄のみ・失敗しても記事生成は止めない・取得できない項目は未取得表示）
+      NOTE_FETCH_FUNDAMENTALS: "1"
+      NOTE_FETCH_EARNINGS: "1"
+      SEND_CLOUD_DIGEST: ${{ github.event_name == 'schedule' && 'true' || (github.event.inputs.send_mail == 'true' && 'true' || 'false') }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Restore price/universe cache
+        uses: actions/cache@v6
+        with:
+          path: cache
+          key: stock-cache-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            stock-cache-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: |
+          start=$(date +%s)
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          python -m playwright install --with-deps chromium
+          end=$(date +%s); echo "[TIMER] install_dependencies elapsed=$((end-start))s"
+
       - name: Self test
         run: python3 self_test.py
 
