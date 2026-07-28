@@ -200,3 +200,10 @@ jobs:
             outputs/intraday_session.log
             outputs/intraday_daily_summary.json
           if-no-files-found: ignore
+      - name: Notify failure by mail
+        if: failure()
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+        run: python3 notify_workflow_failure.py

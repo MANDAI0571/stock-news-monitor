@@ -24,6 +24,13 @@ jobs:
       - name: Run critical self-test
         run: python3 self_test_groups.py --group critical
 
+      - name: Notify failure by mail
+        if: failure()
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+        run: python3 notify_workflow_failure.py
   editorial:
     runs-on: ubuntu-latest
     continue-on-error: true

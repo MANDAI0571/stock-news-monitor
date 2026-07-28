@@ -96,3 +96,10 @@ jobs:
             outputs/cloud_digest_mail_subject.txt
             outputs/cloud_digest_mail_body.md
           if-no-files-found: warn
+      - name: Notify failure by mail
+        if: failure()
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+        run: python3 notify_workflow_failure.py

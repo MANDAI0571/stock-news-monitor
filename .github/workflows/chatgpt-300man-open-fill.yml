@@ -79,3 +79,10 @@ jobs:
             outputs/chatgpt_300man_portfolio.csv
             outputs/chatgpt_300man_open_fill_report.md
           if-no-files-found: warn
+      - name: Notify failure by mail
+        if: failure()
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+        run: python3 notify_workflow_failure.py
