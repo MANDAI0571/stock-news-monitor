@@ -678,6 +678,35 @@ def _verify_saved_draft(
             )
         except Exception as exc:  # noqa: BLE001 - 再読込失敗でも記録を残し、最終判定は _cloud_verify_ok に委ねる
             result["error"] = str(exc)
+
+        # note.com は連続保存の3本目だけ編集画面の描画が遅れることがある。
+        # 保存URLが発行済みでもタイトルがまだDOMに出ない場合は、
+        # 同じ下書きを一度だけ再読込してから最終判定する。
+        if not result["title_found"] or result["image_count"] < payload.min_image_count:
+            try:
+                page.reload(wait_until="domcontentloaded", timeout=60_000)
+                _wait_for_editor_ready(page, timeout_ms=60_000)
+                page.wait_for_timeout(5000)
+                retry_text = _page_visible_text(page)
+                retry_title = _read_title_text(page)
+                retry_images = _count_editor_images(page)
+                retry_missing = [text for text in payload.verify_texts if text and text not in retry_text]
+                result.update({
+                    "url": page.url,
+                    "title_found": payload.title in retry_title or payload.title in retry_text,
+                    "image_count": retry_images,
+                    "missing_texts": retry_missing,
+                    "url_pattern_ok": is_saved_draft_url(page.url) or is_saved_draft_url(draft_url),
+                    "verification_retry": True,
+                })
+                result["ok"] = (
+                    bool(result["title_found"])
+                    and retry_images >= payload.min_image_count
+                    and not retry_missing
+                )
+            except Exception as retry_exc:
+                result["retry_error"] = str(retry_exc)
+
         print(f"note_cloud_verify_title[{key}]={result['title_found']}")
         print(f"note_cloud_verify_images[{key}]={result['image_count']}/{payload.min_image_count}")
         print(f"note_cloud_verify_missing_texts[{key}]={result['missing_texts']}")
