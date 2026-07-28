@@ -1,0 +1,40 @@
+name: Push self-test
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  critical:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Compile critical modules
+        run: python3 -m py_compile self_test.py self_test_groups.py trade_journal.py trade_verification.py paper_portfolio_discipline.py decision_engine.py
+      - name: Run critical self-test
+        run: python3 self_test_groups.py --group critical
+
+  editorial:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run editorial self-test
+        run: python3 self_test_groups.py --group editorial
