@@ -1,0 +1,49 @@
+name: Intraday front-session watchdog
+
+on:
+  schedule:
+    - cron: "2 0 * * 1-5"
+    - cron: "17 0 * * 1-5"
+    - cron: "32 0 * * 1-5"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Skip Japanese holidays
+        id: holiday
+        run: |
+          python -m pip install --upgrade pip >/dev/null 2>&1 || true
+          pip install jpholiday >/dev/null 2>&1 || true
+          python - <<'PY'
+          import datetime
+          import os
+          skip = False
+          try:
+              import jpholiday
+              jst = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
+              today = jst.date()
+              if jpholiday.is_holiday(today):
+                  skip = True
+                  print(f"jp_holiday={jpholiday.is_holiday_name(today)} date={today} -> skip")
+              else:
+                  print(f"jp_holiday=none date={today} -> run")
+          except Exception as exc:
+              print(f"holiday_check_skipped={exc} (continue)")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
+              fh.write(f"skip={'true' if skip else 'false'}\n")
+          PY
+      - name: Dispatch intraday tick
+        if: steps.holiday.outputs.skip != 'true'
+        env:
+          GH_TOKEN: \${{ github.token }}
+        run: |
+          curl -fsSL -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer \${GH_TOKEN}" \
+            "https://api.github.com/repos/\${GITHUB_REPOSITORY}/dispatches" \
+            -d '{"event_type":"intraday_tick"}'
