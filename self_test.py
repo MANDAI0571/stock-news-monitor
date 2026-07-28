@@ -730,7 +730,11 @@ def _test_production_paths_do_not_use_limit() -> None:
     app = (root / "app.py").read_text(encoding="utf-8")
     assert 'number_input("動作確認用の上限銘柄数' not in app
     assert "limit=None" in app
-    for workflow in [root / ".github/workflows/daily-discipline.yml", root / ".github/workflows/note_autosave.yml"]:
+    for workflow in [
+        root / ".github/workflows/daily-discipline.yml",
+        root / ".github/workflows/note_autosave.yml",
+        root / ".github/workflows/note_draft_cloud.yml",
+    ]:
         text = workflow.read_text(encoding="utf-8")
         assert "--limit" not in text
         # 本番ワークフローに QUICK_MODE / MAX_SYMBOLS が固定されていないこと（全銘柄で実行される）。
