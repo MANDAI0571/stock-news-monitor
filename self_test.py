@@ -740,6 +740,7 @@ def _test_production_paths_do_not_use_limit() -> None:
         # 本番ワークフローに QUICK_MODE / MAX_SYMBOLS が固定されていないこと（全銘柄で実行される）。
         assert "QUICK_MODE" not in text, f"{workflow.name} に QUICK_MODE が残っています"
         assert "MAX_SYMBOLS" not in text, f"{workflow.name} に MAX_SYMBOLS が残っています"
+        assert "--cloud-article" not in text, f"{workflow.name} に不要な --cloud-article が残っています"
         assert "actions/checkout@v7" in text
         assert "actions/setup-python@v6" in text
         assert "actions/upload-artifact@v7" in text
