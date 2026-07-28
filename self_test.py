@@ -36,6 +36,7 @@ def main() -> None:
     _test_note_autosave_and_mail_body()
     _test_sns_promo()
     _test_production_paths_do_not_use_limit()
+    _test_every_workflow_notifies_on_failure()
     _test_jpx_float_codes_normalized()
     _test_price_cache_and_prefetch()
     _test_high_classification()
@@ -750,6 +751,20 @@ def _test_production_paths_do_not_use_limit() -> None:
     # pandas 3系は文字列列への数値代入がTypeErrorになるため、2系固定を必須にする。
     requirements = (root / "requirements.txt").read_text(encoding="utf-8")
     assert "pandas>=2.2,<3.0" in requirements, "requirements.txt で pandas を 2 系に固定してください"
+
+
+def _test_every_workflow_notifies_on_failure() -> None:
+    """Every workflow must report a failed job without masking the original failure."""
+    project_root = Path(__file__).resolve().parent
+    workflows_dir = project_root / ".github" / "workflows"
+    missing = []
+    for workflow in sorted(workflows_dir.glob("*.yml")):
+        text = workflow.read_text(encoding="utf-8")
+        if "notify_workflow_failure.py" not in text or "if: failure()" not in text:
+            missing.append(workflow.name)
+    assert not missing, f"failure mail step missing from: {', '.join(missing)}"
+    notifier = (project_root / "notify_workflow_failure.py").read_text(encoding="utf-8")
+    assert "allow_non_business_day=True" in notifier
 
 
 def _test_jpx_float_codes_normalized() -> None:

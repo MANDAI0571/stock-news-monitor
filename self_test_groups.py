@@ -5,6 +5,7 @@ import self_test
 
 CRITICAL_TESTS = {
     "_test_discipline_normal_and_stop",
+    "_test_every_workflow_notifies_on_failure",
     "_test_production_paths_do_not_use_limit",
     "_test_track_record",
     "_test_journal_and_pattern_learning",
