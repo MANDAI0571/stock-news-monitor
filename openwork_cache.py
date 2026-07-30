@@ -2,12 +2,12 @@
 
 【この仕組みの正確な位置づけ】
 これは「OpenWorkの自動取得」ではない。
-**手動で用意したOpenWorkデータ（data/openwork_scores.csv）を、月次でキャッシュ
-（data/openwork_cache.csv）へ反映する**仕組みである。外部サイトへは一切アクセスしない。
+**手動で用意したOpenWorkデータ（data/openwork_shared/openwork_scores.csv）を、
+月次で共用キャッシュへ反映する**仕組みである。外部サイトへは一切アクセスしない。
 
 月次workflow（openwork_monthly.yml、毎月1日 9:00 JST = 0:00 UTC）が行うこと:
-1. data/openwork_scores.csv（手動整備）を読み込む
-2. 新しい取得日・評価値を data/openwork_cache.csv へ反映する
+1. data/openwork_shared/openwork_scores.csv（Codex・Claude共用）を読み込む
+2. 新しい取得日・評価値を data/openwork_shared/openwork_cache.csv へ反映する
 3. 取得日から30日未満の既存正常値は上書きしない（30日ルール）
 4. 空欄・異常値（評価は1.0〜5.0の範囲外など）で既存の正常値を消さない
 5. 変更がある場合のみ commit する
@@ -35,8 +35,10 @@ import pandas as pd
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 DATA_DIR = PROJECT_ROOT / "data"
-CACHE_PATH = DATA_DIR / "openwork_cache.csv"
-MANUAL_SCORES_PATH = DATA_DIR / "openwork_scores.csv"
+OPENWORK_SHARED_DIR = DATA_DIR / "openwork_shared"
+CACHE_PATH = OPENWORK_SHARED_DIR / "openwork_cache.csv"
+MANUAL_SCORES_PATH = OPENWORK_SHARED_DIR / "openwork_scores.csv"
+LEGACY_MANUAL_SCORES_PATH = DATA_DIR / "openwork_scores.csv"
 RECORD_PATH = DATA_DIR / "highs_track_record.csv"
 
 FRESH_DAYS = 30           # 30日未満は再取得しない
@@ -149,12 +151,20 @@ def manual_source_fetcher(codes: list[str], scores_path: Path = MANUAL_SCORES_PA
     あればそのまま取り込む（respondents, treatment など）。
     """
     today = today or date.today()
-    if not scores_path.exists():
+    paths = [scores_path]
+    if scores_path == MANUAL_SCORES_PATH:
+        paths = [LEGACY_MANUAL_SCORES_PATH, MANUAL_SCORES_PATH]
+    frames: list[pd.DataFrame] = []
+    for candidate in paths:
+        if not candidate.exists():
+            continue
+        try:
+            frames.append(pd.read_csv(candidate, dtype={"code": str}))
+        except Exception:
+            continue
+    if not frames:
         return {}
-    try:
-        df = pd.read_csv(scores_path, dtype={"code": str})
-    except Exception:
-        return {}
+    df = pd.concat(frames, ignore_index=True)
     if "code" not in df.columns:
         return {}
     df["code"] = df["code"].astype(str).str.strip().str.upper().str.removesuffix(".0")
@@ -164,7 +174,11 @@ def manual_source_fetcher(codes: list[str], scores_path: Path = MANUAL_SCORES_PA
         code = str(row["code"])
         if code not in wanted:
             continue
-        item: dict[str, object] = {"fetched_at": today.isoformat(), "status": "ok", "source_url": "data/openwork_scores.csv"}
+        item: dict[str, object] = {
+            "fetched_at": today.isoformat(),
+            "status": "ok",
+            "source_url": "data/openwork_shared/openwork_scores.csv",
+        }
         overall = _valid_rating(row.get("overall", row.get("openwork_score")))
         if overall is not None:
             item["overall"] = overall

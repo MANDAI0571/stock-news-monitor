@@ -7,19 +7,31 @@ from datetime import date, datetime
 import pandas as pd
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_OPENWORK_PATH = PROJECT_ROOT / "data" / "openwork_scores.csv"
-DEFAULT_OPENWORK_META_PATH = PROJECT_ROOT / "data" / "openwork_scores_meta.json"
+OPENWORK_SHARED_DIR = PROJECT_ROOT / "data" / "openwork_shared"
+DEFAULT_OPENWORK_PATH = OPENWORK_SHARED_DIR / "openwork_scores.csv"
+DEFAULT_OPENWORK_META_PATH = OPENWORK_SHARED_DIR / "openwork_scores_meta.json"
+LEGACY_OPENWORK_PATH = PROJECT_ROOT / "data" / "openwork_scores.csv"
 
 
 def load_openwork_scores(path: Path | str = DEFAULT_OPENWORK_PATH) -> pd.DataFrame:
     path = Path(path)
-    if not path.exists():
+    paths = [path]
+    # 既定読込みでは旧CSV→共用CSVの順に重ね、共用側の最新値を優先する。
+    if path == DEFAULT_OPENWORK_PATH:
+        paths = [LEGACY_OPENWORK_PATH, DEFAULT_OPENWORK_PATH]
+    frames: list[pd.DataFrame] = []
+    for candidate in paths:
+        if not candidate.exists():
+            continue
+        try:
+            frame = pd.read_csv(candidate, dtype={"code": str})
+        except Exception:
+            continue
+        if {"code", "openwork_score"}.issubset(frame.columns):
+            frames.append(frame[["code", "openwork_score"]])
+    if not frames:
         return pd.DataFrame(columns=["code", "openwork_score"])
-    df = pd.read_csv(path, dtype={"code": str})
-    required = {"code", "openwork_score"}
-    if not required.issubset(df.columns):
-        return pd.DataFrame(columns=["code", "openwork_score"])
-    out = df[["code", "openwork_score"]].copy()
+    out = pd.concat(frames, ignore_index=True)
     out["code"] = out["code"].astype(str).str.strip().str.removesuffix(".0")
     out["openwork_score"] = pd.to_numeric(out["openwork_score"], errors="coerce")
     return out.drop_duplicates("code", keep="last")
