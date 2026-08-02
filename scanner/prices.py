@@ -4,6 +4,7 @@ import os
 import re
 import signal
 import shutil
+import queue as queue_mod
 import multiprocessing as mp
 from contextlib import contextmanager
 from datetime import date, datetime
@@ -21,9 +22,17 @@ YFINANCE_WALL_TIMEOUT = int(os.environ.get("YFINANCE_WALL_TIMEOUT", str(max(30, 
 YFINANCE_THREADS = os.environ.get("YFINANCE_THREADS", "false").strip().lower() in {"1", "true", "yes", "on"}
 CACHE_KEEP_DAYS = 3
 
+# T-K修正(2026-08-02): 空データの記憶はプロセス内のみ。ディスクには残さない。
+_EMPTY_THIS_PROCESS: set[tuple[str, str]] = set()
+
 
 def _cache_enabled() -> bool:
     return os.environ.get("PRICE_CACHE_DISABLE", "").strip().lower() not in {"1", "true", "yes"}
+
+
+def _cache_refresh_enabled() -> bool:
+    """毎回キャッシュを取り直すか（ザラ場のリアルタイム監視用）。"""
+    return os.environ.get("PRICE_CACHE_REFRESH", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 @contextmanager
@@ -144,14 +153,24 @@ def _download_with_process(target, *, label: str, wall_timeout: int, **kwargs) -
     queue = ctx.Queue(maxsize=1)
     proc = ctx.Process(target=_download_worker, args=(queue, target, kwargs), daemon=True)
     proc.start()
-    proc.join(wall_timeout)
-    if proc.is_alive():
+    # T-K修正(2026-08-02): 親は「先にqueueを読み出してから」子の終了を待つ。
+    # 旧実装は proc.join(wall_timeout) → queue.get() の順だった。
+    # 子がOSのパイプバッファ(Linuxで約64KB)を超えるDataFrameをput()すると、
+    # 親が読み出すまで子は書き込み途中でブロックしたまま終了できない。
+    # 親は join() で待ち続けるため、互いに相手待ちになりデッドロックする。
+    # 結果、複数銘柄バッチ(数百KB)は通信状態と無関係に必ずTimeoutErrorになっていた。
+    # 単一銘柄(約20KB)だけが偶然バッファに収まって成功していた。
+    try:
+        status, payload = queue.get(timeout=wall_timeout)
+    except queue_mod.Empty:
         proc.terminate()
         proc.join(5)
         raise TimeoutError(f"{label} exceeded {wall_timeout}s")
-    if queue.empty():
-        raise TimeoutError(f"{label} exited without data")
-    status, payload = queue.get()
+    # ペイロードを受け取った後なら子は速やかに終了できる。
+    proc.join(10)
+    if proc.is_alive():
+        proc.terminate()
+        proc.join(5)
     if status == "ok":
         return payload
     raise RuntimeError(f"{label} failed: {payload}")
@@ -165,6 +184,7 @@ def prefetch_price_histories(
     """複数銘柄をバッチ取得してキャッシュに保存する。
 
     既にキャッシュ済みの銘柄はスキップ。戻り値は集計 {"cached", "fetched", "empty"}。
+    PRICE_CACHE_REFRESH=1 のときはキャッシュを無視して取り直し、上書きする。
     """
     stats = {"cached": 0, "fetched": 0, "empty": 0, "failed_batches": 0, "failed_tickers": 0}
     if not tickers or not _cache_enabled():
@@ -172,6 +192,11 @@ def prefetch_price_histories(
 
     cleanup_old_price_cache()
 
+    # T-K修正(2026-08-02): ザラ場監視ではキャッシュを日単位で使い回すと
+    # 2回目以降のスキャンが1回目の価格を読み続け、その後の高値更新を
+    # 一切検知できなくなる。PRICE_CACHE_REFRESH=1 のときは毎スキャン取り直す。
+    # （バッチ取得のキャッシュ自体は1スキャン内の重複取得を防ぐため残す）
+    refresh = _cache_refresh_enabled()
     pending: list[str] = []
     seen: set[str] = set()
     for ticker in tickers:
@@ -179,7 +204,7 @@ def prefetch_price_histories(
         if not ticker or ticker in seen:
             continue
         seen.add(ticker)
-        if _read_price_cache(_cache_path(ticker, period)) is not None:
+        if not refresh and _read_price_cache(_cache_path(ticker, period)) is not None:
             stats["cached"] += 1
         else:
             pending.append(ticker)
@@ -230,6 +255,9 @@ def prefetch_price_histories(
 
 
 def fetch_price_history(ticker: str, period: str = "18mo") -> pd.DataFrame:
+    key = (str(ticker), str(period))
+    if key in _EMPTY_THIS_PROCESS:
+        return pd.DataFrame()
     if _cache_enabled():
         cache_path = _cache_path(ticker, period)
         cached = _read_price_cache(cache_path)
@@ -248,8 +276,14 @@ def fetch_price_history(ticker: str, period: str = "18mo") -> pd.DataFrame:
         timeout=YFINANCE_TIMEOUT,
     )
     result = normalize_price_history(df)
-    if _cache_enabled():
-        _save_price_cache(result, _cache_path(ticker, period))
+    # T-K修正(2026-08-02): 取得失敗による空データを .empty マーカーとして
+    # ディスクに書かない。旧実装は一時的な失敗をその日いっぱい「データ無し」として
+    # キャッシュし、同日中の再取得を全て封じていた（キャッシュ汚染）。
+    # 空だった銘柄は同一プロセス内だけ記憶して重複取得を避ける。
+    if result.empty:
+        _EMPTY_THIS_PROCESS.add(key)
+    elif _cache_enabled():
+        _save_price_cache(result, _cache_path(ticker, period), save_empty_marker=False)
     return result
 
 

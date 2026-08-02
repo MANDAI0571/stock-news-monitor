@@ -547,8 +547,19 @@ def send_alert_mail(new_alerts: list[Alert]) -> bool:
         return False
     subject = build_subject(new_alerts)
     body = build_body(new_alerts)
-    send_gmail(subject, body, config)
-    print(f"intraday_alert_mail=sent to={config.mail_to} subject={subject}")
+    # T-K修正(2026-08-02): send_gmail の戻り値を必ず見る。
+    # 旧実装は戻り値を捨てて常に True を返していたため、
+    # 実際には送れていなくてもログに「送信」と出て、さらに呼び出し側が
+    # 重複防止の状態を更新してしまい、同じアラートが二度と送られなかった。
+    try:
+        delivered = send_gmail(subject, body, config)
+    except Exception as exc:  # noqa: BLE001 - 送信失敗を握りつぶさず記録する
+        print(f"intraday_alert_mail=failed to={config.mail_to} error={exc!r}", flush=True)
+        return False
+    if not delivered:
+        print(f"intraday_alert_mail=not_sent to={config.mail_to} subject={subject}", flush=True)
+        return False
+    print(f"intraday_alert_mail=sent to={config.mail_to} subject={subject}", flush=True)
     return True
 
 
