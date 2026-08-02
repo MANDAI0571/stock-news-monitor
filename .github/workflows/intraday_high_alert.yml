@@ -141,10 +141,11 @@ jobs:
           # 接近系を含めると1回あたり1,000件超になりメールが読めないため。
           # 値は break / 52w / all。詳細は intraday_high_alert.py の _alert_scope を参照。
           IH_ALERT_SCOPE: "break"
-          PREFETCH_BATCH_SIZE: "50"
+          PREFETCH_BATCH_SIZE: "200"
           YFINANCE_THREADS: "true"
           YFINANCE_TIMEOUT: "30"
-          YFINANCE_WALL_TIMEOUT: "300"
+          YFINANCE_WALL_TIMEOUT: "120"
+          PRICE_CACHE_REFRESH: "1"
         run: |
           mkdir -p outputs
           log_file="outputs/intraday_session.log"
