@@ -26,6 +26,20 @@ CACHE_KEEP_DAYS = 3
 PREFETCH_RETRY_ROUNDS = int(os.environ.get("PREFETCH_RETRY_ROUNDS", "2"))
 PREFETCH_RETRY_WAIT = int(os.environ.get("PREFETCH_RETRY_WAIT", "20"))
 
+# T-K修正(2026-08-02 その2): Yahooのレート制限そのものを避けるための自動減速。
+# 2026-08-02のrun #153では3,544銘柄中2,146銘柄が
+# YFRateLimitError('Too Many Requests')で空になった。原因は取得の出しすぎ。
+# 何件/秒で怒られるかはYahoo側の非公開仕様で、こちらから測れない。
+# そこで固定値を決め打ちせず、空振り率を見て自分で速度を落とす。
+# PREFETCH_ADAPTIVE=0 で無効化（従来動作）。
+PREFETCH_ADAPTIVE = os.environ.get("PREFETCH_ADAPTIVE", "1").strip().lower() not in {"0", "false", "no", "off"}
+PREFETCH_BATCH_PAUSE = float(os.environ.get("PREFETCH_BATCH_PAUSE", "0"))
+PREFETCH_MAX_PAUSE = float(os.environ.get("PREFETCH_MAX_PAUSE", "45"))
+# このバッチの空振り率がこれ以上なら「出しすぎ」とみなして減速する。
+PREFETCH_SLOW_RATIO = float(os.environ.get("PREFETCH_SLOW_RATIO", "0.5"))
+# 何回続けて空振りゼロなら速度を戻すか。1にすると増減を繰り返して壁に当たり続ける。
+PREFETCH_SPEEDUP_AFTER = int(os.environ.get("PREFETCH_SPEEDUP_AFTER", "3"))
+
 # T-K修正(2026-08-02): 空データの記憶はプロセス内のみ。ディスクには残さない。
 _EMPTY_THIS_PROCESS: set[tuple[str, str]] = set()
 
@@ -213,11 +227,51 @@ def prefetch_price_histories(
         else:
             pending.append(ticker)
 
+    # T-K修正(2026-08-02 その2): バッチ間の待ち時間。空振りが多い間だけ自動で伸ばす。
+    pause_state = {"sec": PREFETCH_BATCH_PAUSE, "slowdowns": 0, "clean": 0}
+
+    def _adapt(tag: str, start: int, chunk_len: int, empty_in_batch: int) -> None:
+        """このバッチの空振り率を見て、次のバッチまでの待ちを増減する。"""
+        if not PREFETCH_ADAPTIVE or chunk_len <= 0:
+            return
+        ratio = empty_in_batch / chunk_len
+        if ratio >= PREFETCH_SLOW_RATIO:
+            pause_state["clean"] = 0
+            before = pause_state["sec"]
+            pause_state["sec"] = min(max(before * 2, 5.0), PREFETCH_MAX_PAUSE)
+            pause_state["slowdowns"] += 1
+            if pause_state["sec"] != before:
+                print(
+                    f"price_prefetch{tag} slowdown start={start} empty={empty_in_batch}/{chunk_len} "
+                    f"pause={before:.0f}s->{pause_state['sec']:.0f}s",
+                    flush=True,
+                )
+            return
+        if ratio > 0.0:
+            # 少しでも空振りがあるうちは今の速度を維持する（戻すのは完全に通ったときだけ）。
+            pause_state["clean"] = 0
+            return
+        pause_state["clean"] += 1
+        if pause_state["clean"] < PREFETCH_SPEEDUP_AFTER:
+            return
+        pause_state["clean"] = 0
+        if pause_state["sec"] > PREFETCH_BATCH_PAUSE:
+            before = pause_state["sec"]
+            pause_state["sec"] = max(before / 2, PREFETCH_BATCH_PAUSE)
+            print(
+                f"price_prefetch{tag} speedup start={start} pause={before:.0f}s->{pause_state['sec']:.0f}s",
+                flush=True,
+            )
+
     def _run_pass(targets: list[str], *, size: int, tag: str) -> list[str]:
         """1巡分のバッチ取得。値が取れなかった銘柄のリストを返す。"""
         missed: list[str] = []
         for start in range(0, len(targets), size):
             chunk = targets[start:start + size]
+            # 直前のバッチで空振りが多かったぶんだけ間を空けてから次を投げる。
+            if start > 0 and pause_state["sec"] > 0:
+                time.sleep(pause_state["sec"])
+            empty_in_batch = 0
             batch_failed = False
             try:
                 batch = _download_with_process(
@@ -256,9 +310,11 @@ def prefetch_price_histories(
                     normalized = pd.DataFrame()
                 if normalized.empty:
                     missed.append(ticker)
+                    empty_in_batch += 1
                     continue
                 _save_price_cache(normalized, _cache_path(ticker, period), save_empty_marker=False)
                 stats["fetched"] += 1
+            _adapt(tag, start, len(chunk), len(chunk) if batch_failed else empty_in_batch)
         return missed
 
     remaining = _run_pass(pending, size=batch_size, tag="")
@@ -290,6 +346,7 @@ def prefetch_price_histories(
     # ザラ場中に1巡も終わらない。記憶はプロセス内だけなので、60秒後の次スキャン
     # （別プロセス）では改めて取りに行く。
     stats["empty"] = len(remaining)
+    stats["slowdowns"] = pause_state["slowdowns"]
     for ticker in remaining:
         _EMPTY_THIS_PROCESS.add((str(ticker), str(period)))
     return stats

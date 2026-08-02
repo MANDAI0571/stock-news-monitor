@@ -828,6 +828,7 @@ def _test_price_cache_and_prefetch() -> None:
     original_wall_timeout = prices.YFINANCE_WALL_TIMEOUT
     original_retry_wait = prices.PREFETCH_RETRY_WAIT
     original_retry_rounds = prices.PREFETCH_RETRY_ROUNDS
+    original_adaptive = prices.PREFETCH_ADAPTIVE
     try:
         with TemporaryDirectory() as tmp:
             prices.PRICE_CACHE_ROOT = Path(tmp) / "prices"
@@ -835,6 +836,8 @@ def _test_price_cache_and_prefetch() -> None:
             prices.YFINANCE_WALL_TIMEOUT = 0
             prices.PREFETCH_RETRY_WAIT = 0  # テストは待たない
             prices.PREFETCH_RETRY_ROUNDS = 2
+            # 自動減速はテストでは切る（偽データの空振りで実時間だけ待つことになるため）。
+            prices.PREFETCH_ADAPTIVE = False
             prices._EMPTY_THIS_PROCESS.clear()
 
             tickers = ["1001.T", "1002.T", "9998.T"]
@@ -884,6 +887,7 @@ def _test_price_cache_and_prefetch() -> None:
         prices.YFINANCE_WALL_TIMEOUT = original_wall_timeout
         prices.PREFETCH_RETRY_WAIT = original_retry_wait
         prices.PREFETCH_RETRY_ROUNDS = original_retry_rounds
+        prices.PREFETCH_ADAPTIVE = original_adaptive
         prices._EMPTY_THIS_PROCESS.clear()
 
 
