@@ -826,17 +826,23 @@ def _test_price_cache_and_prefetch() -> None:
     original_root = prices.PRICE_CACHE_ROOT
     original_download = prices.yf.download
     original_wall_timeout = prices.YFINANCE_WALL_TIMEOUT
+    original_retry_wait = prices.PREFETCH_RETRY_WAIT
+    original_retry_rounds = prices.PREFETCH_RETRY_ROUNDS
     try:
         with TemporaryDirectory() as tmp:
             prices.PRICE_CACHE_ROOT = Path(tmp) / "prices"
             prices.yf.download = fake_download
             prices.YFINANCE_WALL_TIMEOUT = 0
+            prices.PREFETCH_RETRY_WAIT = 0  # テストは待たない
+            prices.PREFETCH_RETRY_ROUNDS = 2
+            prices._EMPTY_THIS_PROCESS.clear()
 
             tickers = ["1001.T", "1002.T", "9998.T"]
             stats = prefetch_stats = prices.prefetch_price_histories(tickers, batch_size=2)
             assert prefetch_stats["fetched"] == 2, stats
             assert prefetch_stats["empty"] == 1, stats
-            assert calls["batch"] == 2  # batch_size=2 で3銘柄→2チャンク
+            # batch_size=2 で3銘柄→2チャンク。空だった9998.Tを2巡ぶん取り直すので +2。
+            assert calls["batch"] == 4, calls
 
             # キャッシュヒット: 単発ダウンロードが発生しないこと
             hist = prices.fetch_price_history("1001.T")
@@ -844,22 +850,28 @@ def _test_price_cache_and_prefetch() -> None:
             assert list(hist.columns) == ["Open", "High", "Low", "Close", "Volume"]
             assert calls["single"] == 0
 
-            # プリフェッチの空結果は一時的な通信失敗かもしれないため、空キャッシュ固定しない。
+            # T-K修正(2026-08-02): 取り直しても空だった銘柄は、このスキャン中は
+            # 1銘柄ずつ取りに行かない。レート制限下では1銘柄あたり
+            # YFINANCE_WALL_TIMEOUT秒待たされ、ザラ場中に1巡も終わらなくなるため。
+            # 「一時的な失敗を諦めない」という元の意図は上のリトライ巡回が担う。
+            # 記憶はプロセス内だけなので、次のスキャン（別プロセス）では取りに行く。
             empty_hist = prices.fetch_price_history("9998.T")
-            assert not empty_hist.empty
-            assert calls["single"] == 1
+            assert empty_hist.empty
+            assert calls["single"] == 0, calls
+            assert ("9998.T", "18mo") in prices._EMPTY_THIS_PROCESS
 
-            # 2回目のプリフェッチは単発取得済みも含めて全てキャッシュ扱い
+            # 値が取れた銘柄はキャッシュ扱い。空のままの銘柄は再度取りに行く（1巡+2リトライ）。
             stats2 = prices.prefetch_price_histories(tickers, batch_size=2)
-            assert stats2["cached"] == 3, stats2
-            assert calls["batch"] == 2
+            assert stats2["cached"] == 2, stats2
+            assert stats2["empty"] == 1, stats2
+            assert calls["batch"] == 7, calls
 
             # キャッシュ未登録銘柄は従来通り単発取得され、以後はキャッシュされる
             hist_new = prices.fetch_price_history("2002.T")
             assert not hist_new.empty
-            assert calls["single"] == 2
+            assert calls["single"] == 1
             prices.fetch_price_history("2002.T")
-            assert calls["single"] == 2
+            assert calls["single"] == 1
 
             # 古い日付ディレクトリの掃除
             old_dir = prices.PRICE_CACHE_ROOT / "2000-01-01__18mo"
@@ -870,6 +882,9 @@ def _test_price_cache_and_prefetch() -> None:
         prices.PRICE_CACHE_ROOT = original_root
         prices.yf.download = original_download
         prices.YFINANCE_WALL_TIMEOUT = original_wall_timeout
+        prices.PREFETCH_RETRY_WAIT = original_retry_wait
+        prices.PREFETCH_RETRY_ROUNDS = original_retry_rounds
+        prices._EMPTY_THIS_PROCESS.clear()
 
 
 def _test_9256_limit50_excluded_but_full_universe_included() -> None:

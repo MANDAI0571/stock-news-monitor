@@ -4,6 +4,7 @@ import os
 import re
 import signal
 import shutil
+import time
 import queue as queue_mod
 import multiprocessing as mp
 from contextlib import contextmanager
@@ -21,6 +22,9 @@ YFINANCE_TIMEOUT = int(os.environ.get("YFINANCE_TIMEOUT", "20"))
 YFINANCE_WALL_TIMEOUT = int(os.environ.get("YFINANCE_WALL_TIMEOUT", str(max(30, YFINANCE_TIMEOUT + 10))))
 YFINANCE_THREADS = os.environ.get("YFINANCE_THREADS", "false").strip().lower() in {"1", "true", "yes", "on"}
 CACHE_KEEP_DAYS = 3
+# T-K修正(2026-08-02): Yahooのレート制限で空になった銘柄を、待ってから小さいバッチで取り直す。
+PREFETCH_RETRY_ROUNDS = int(os.environ.get("PREFETCH_RETRY_ROUNDS", "2"))
+PREFETCH_RETRY_WAIT = int(os.environ.get("PREFETCH_RETRY_WAIT", "20"))
 
 # T-K修正(2026-08-02): 空データの記憶はプロセス内のみ。ディスクには残さない。
 _EMPTY_THIS_PROCESS: set[tuple[str, str]] = set()
@@ -209,48 +213,85 @@ def prefetch_price_histories(
         else:
             pending.append(ticker)
 
-    for start in range(0, len(pending), batch_size):
-        chunk = pending[start:start + batch_size]
-        batch_failed = False
-        try:
-            batch = _download_with_process(
-                chunk,
-                label=f"price_prefetch start={start} size={len(chunk)}",
-                wall_timeout=YFINANCE_WALL_TIMEOUT,
-                period=period,
-                interval="1d",
-                # T-K修正(2026-07-12): カブタン整合のため未調整価格を使う。
-                # 配当調整済み設定（旧実装）は過去の高値を配当分だけ下方修正するため、
-                # 52週高値の「位置」と「距離%」がカブタン（分割調整のみ）とズレていた。
-                # False = 分割調整のみ・配当未調整 ＝ カブタンと同じ基準。
-                auto_adjust=False,
-                progress=False,
-                group_by="ticker",
-                threads=YFINANCE_THREADS,
-                timeout=YFINANCE_TIMEOUT,
-            )
-        except Exception as exc:
-            stats["failed_batches"] += 1
-            stats["failed_tickers"] += len(chunk)
-            batch_failed = True
-            print(
-                f"WARNING price_prefetch batch failed start={start} size={len(chunk)} timeout={YFINANCE_TIMEOUT}s error={exc}",
-                flush=True,
-            )
-            batch = None
-        for ticker in chunk:
-            if batch_failed:
-                continue
-            raw = _split_batch_frame(batch, ticker) if batch is not None else pd.DataFrame()
+    def _run_pass(targets: list[str], *, size: int, tag: str) -> list[str]:
+        """1巡分のバッチ取得。値が取れなかった銘柄のリストを返す。"""
+        missed: list[str] = []
+        for start in range(0, len(targets), size):
+            chunk = targets[start:start + size]
+            batch_failed = False
             try:
-                normalized = normalize_price_history(raw)
-            except ValueError:
-                normalized = pd.DataFrame()
-            _save_price_cache(normalized, _cache_path(ticker, period), save_empty_marker=False)
-            if normalized.empty:
-                stats["empty"] += 1
-            else:
+                batch = _download_with_process(
+                    chunk,
+                    label=f"price_prefetch{tag} start={start} size={len(chunk)}",
+                    wall_timeout=YFINANCE_WALL_TIMEOUT,
+                    period=period,
+                    interval="1d",
+                    # T-K修正(2026-07-12): カブタン整合のため未調整価格を使う。
+                    # 配当調整済み設定（旧実装）は過去の高値を配当分だけ下方修正するため、
+                    # 52週高値の「位置」と「距離%」がカブタン（分割調整のみ）とズレていた。
+                    # False = 分割調整のみ・配当未調整 ＝ カブタンと同じ基準。
+                    auto_adjust=False,
+                    progress=False,
+                    group_by="ticker",
+                    threads=YFINANCE_THREADS,
+                    timeout=YFINANCE_TIMEOUT,
+                )
+            except Exception as exc:
+                stats["failed_batches"] += 1
+                stats["failed_tickers"] += len(chunk)
+                batch_failed = True
+                print(
+                    f"WARNING price_prefetch{tag} batch failed start={start} size={len(chunk)} timeout={YFINANCE_TIMEOUT}s error={exc}",
+                    flush=True,
+                )
+                batch = None
+            for ticker in chunk:
+                if batch_failed:
+                    missed.append(ticker)
+                    continue
+                raw = _split_batch_frame(batch, ticker) if batch is not None else pd.DataFrame()
+                try:
+                    normalized = normalize_price_history(raw)
+                except ValueError:
+                    normalized = pd.DataFrame()
+                if normalized.empty:
+                    missed.append(ticker)
+                    continue
+                _save_price_cache(normalized, _cache_path(ticker, period), save_empty_marker=False)
                 stats["fetched"] += 1
+        return missed
+
+    remaining = _run_pass(pending, size=batch_size, tag="")
+
+    # T-K修正(2026-08-02): 空になった銘柄を「待ってから小さいバッチで」取り直す。
+    # 2026-08-02のrun #152では3,066銘柄取得後にYahooがレート制限を返し、
+    # 8xxx〜9xxx番台の478銘柄(NTT 9432/ソフトバンクG 9984を含む)が丸ごと空になった。
+    # 間を置いてバッチを小さくすると通ることが多いので、ここで取り戻す。
+    for attempt in range(1, PREFETCH_RETRY_ROUNDS + 1):
+        if not remaining:
+            break
+        wait = PREFETCH_RETRY_WAIT * attempt
+        retry_size = max(20, batch_size // (2 ** attempt))
+        print(
+            f"price_prefetch retry#{attempt} tickers={len(remaining)} wait={wait}s batch={retry_size}",
+            flush=True,
+        )
+        time.sleep(wait)
+        before = len(remaining)
+        remaining = _run_pass(remaining, size=retry_size, tag=f" retry#{attempt}")
+        print(
+            f"price_prefetch retry#{attempt} recovered={before - len(remaining)} still_empty={len(remaining)}",
+            flush=True,
+        )
+
+    # T-K修正(2026-08-02): 再取得しても空だった銘柄は「このスキャン中は空」と記憶する。
+    # これが無いと、後段のスキャンが1銘柄ずつ取り直しに行き、レート制限下では
+    # 1銘柄あたりYFINANCE_WALL_TIMEOUT(120秒)まで待たされる。478銘柄なら最悪16時間で、
+    # ザラ場中に1巡も終わらない。記憶はプロセス内だけなので、60秒後の次スキャン
+    # （別プロセス）では改めて取りに行く。
+    stats["empty"] = len(remaining)
+    for ticker in remaining:
+        _EMPTY_THIS_PROCESS.add((str(ticker), str(period)))
     return stats
 
 
