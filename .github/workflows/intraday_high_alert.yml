@@ -49,7 +49,7 @@ on:
 
 # 同時実行を防ぐ（前の回が長引いたら次の回は待つ。キャンセルはしない）。
 concurrency:
-  group: intraday-high-alert
+  group: intraday-high-alert-v2
   cancel-in-progress: false
 
 jobs:
