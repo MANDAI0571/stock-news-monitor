@@ -8,20 +8,39 @@ from pathlib import Path
 from gmail_notify import load_gmail_config, send_gmail
 from jptime import jst_today
 
-DETECTED_RE = re.compile(r"intraday_alerts_detected=(\d+) new=(\d+)")
+DETECTED_RE = re.compile(
+    r"intraday_alerts_detected=(\d+) new=(\d+)(?: date=(\d{4}-\d{2}-\d{2}))?"
+)
 SCAN_RE = re.compile(r"(?:scan_count=|\[SESSION\] scan #)(\d+)")
 FAIL_RE = re.compile(r"\[SESSION\] scan #\d+ failed")
 
 
+def _detections_for_day(text: str, day: str) -> list[re.Match[str]]:
+    """当日分の検出行だけを返す。
+
+    T-K修正(2026-08-03): セッションログは前の実行のアーティファクトから復元されるため、
+    前日の検出行が混ざりうる。実際 7/28と7/29、7/30と7/31 のサマリーメールは
+    検出件数・新規件数が完全に一致していた（スキャン回数だけが違う）。
+    日付つきの行が1つでもあれば、当日の日付と一致する行だけを数える。
+    日付なしの古い行しか無い場合は従来どおり全部数える（後方互換）。
+    """
+    matches = list(DETECTED_RE.finditer(text))
+    if any(m.group(3) for m in matches):
+        return [m for m in matches if m.group(3) == day]
+    return matches
+
+
 def summarize_log(path: Path) -> dict[str, int | str]:
     text = path.read_text(encoding="utf-8", errors="replace") if path.exists() else ""
-    detected = sum(int(m.group(1)) for m in DETECTED_RE.finditer(text))
-    new = sum(int(m.group(2)) for m in DETECTED_RE.finditer(text))
+    day = jst_today().isoformat()
+    matches = _detections_for_day(text, day)
+    detected = sum(int(m.group(1)) for m in matches)
+    new = sum(int(m.group(2)) for m in matches)
     failures = len(FAIL_RE.findall(text))
     scan_matches = [int(value) for value in SCAN_RE.findall(text)]
-    scan_count = max(scan_matches) if scan_matches else len(DETECTED_RE.findall(text))
+    scan_count = max(scan_matches) if scan_matches else len(matches)
     return {
-        "date": jst_today().isoformat(),
+        "date": day,
         "state": "normal" if scan_count > 0 else "abnormal",
         "scan_count": scan_count,
         "detected_count": detected,

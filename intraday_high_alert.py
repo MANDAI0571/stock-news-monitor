@@ -592,7 +592,14 @@ def run(
     new_keys = {a.dedup_key() for a in new_alerts}
 
     csv_path = write_csv(alerts, new_keys, output_dir)
-    print(f"intraday_alerts_detected={len(alerts)} new={len(new_alerts)}")
+    # T-K修正(2026-08-03): 日次サマリーが前日のログを巻き込んで同じ数字を出す事故が
+    # 起きていた。集計側が当日分だけを数えられるよう、JSTの日付を必ず添える。
+    from jptime import jst_today as _jst_today
+
+    print(
+        f"intraday_alerts_detected={len(alerts)} new={len(new_alerts)} "
+        f"date={_jst_today().isoformat()}"
+    )
     if csv_path:
         print(f"intraday_csv={csv_path}")
 

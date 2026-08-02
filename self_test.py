@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import json
+import time
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -63,6 +64,8 @@ def main() -> None:
     _test_csv_schema_contract()
     _test_decision_engine()
     _test_trade_verification()
+    _test_intraday_summary_counts_today_only()
+    _test_prefetch_pause_is_carried_over()
     print("self-test: OK")
 
 
@@ -2192,6 +2195,89 @@ def _test_openwork_manual_reflection_contract() -> None:
         assert "6:00 JST" not in workflow_text            # 旧表記が残っていない
         assert "自動取得」ではありません" in workflow_text  # 方式の明記
     print("self-test: openwork_manual_reflection(空欄保持・外部アクセスなし・9:00JST統一) OK")
+
+
+def _test_intraday_summary_counts_today_only() -> None:
+    """日次サマリーが前日の検出行を巻き込まないこと。
+
+    2026-07-28と07-29、07-30と07-31のサマリーメールは、スキャン回数だけ違うのに
+    検出件数・新規件数が完全に一致していた（90/2 と 27954/389）。
+    セッションログが前回実行のアーティファクトから復元されるためで、
+    検出行にJST日付を付けて当日分だけ数えることで塞ぐ。
+    """
+    import tempfile
+    import intraday_summary_mail as summary_mail
+    from jptime import jst_today
+
+    today = jst_today().isoformat()
+    with tempfile.TemporaryDirectory() as tmp:
+        log = Path(tmp) / "session.log"
+        log.write_text(
+            "[SESSION] scan #1 started\n"
+            "intraday_alerts_detected=27954 new=389 date=2026-07-30\n"
+            "[SESSION] scan #2 started\n"
+            f"intraday_alerts_detected=7 new=3 date={today}\n"
+            "[SESSION] scan #3 started\n"
+            f"intraday_alerts_detected=8 new=4 date={today}\n",
+            encoding="utf-8",
+        )
+        got = summary_mail.summarize_log(log)
+        assert got["detected_count"] == 15, got
+        assert got["new_count"] == 7, got
+        assert got["scan_count"] == 3, got
+
+        # 日付なしの旧ログは従来どおり全部数える（後方互換）。
+        legacy = Path(tmp) / "legacy.log"
+        legacy.write_text(
+            "[SESSION] scan #1 started\nintraday_alerts_detected=100 new=50\n",
+            encoding="utf-8",
+        )
+        old = summary_mail.summarize_log(legacy)
+        assert old["detected_count"] == 100 and old["new_count"] == 50, old
+
+    # 出力側が日付を付けていなければ、上の絞り込みは永久に効かない。
+    src = Path(__file__).resolve().parent / "intraday_high_alert.py"
+    text = src.read_text(encoding="utf-8")
+    assert "intraday_alerts_detected={len(alerts)} new={len(new_alerts)} " in text
+    assert "date={_jst_today().isoformat()}" in text
+    print("self-test: intraday_summary(当日分だけ集計・旧ログ互換) OK")
+
+
+def _test_prefetch_pause_is_carried_over() -> None:
+    """学習した待ち時間が次のスキャン（別プロセス）に引き継がれること。"""
+    import tempfile
+    from scanner import prices
+
+    saved_state = prices.PREFETCH_PAUSE_STATE
+    saved_adaptive = prices.PREFETCH_ADAPTIVE
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            prices.PREFETCH_ADAPTIVE = True
+            prices.PREFETCH_PAUSE_STATE = str(Path(tmp) / "pause.json")
+            assert prices._load_learned_pause() == prices.PREFETCH_BATCH_PAUSE
+            prices._save_learned_pause(20.0)
+            assert prices._load_learned_pause() == 20.0
+            # 上限を超える値は必ず丸める。
+            prices._save_learned_pause(9999.0)
+            assert prices._load_learned_pause() == prices.PREFETCH_MAX_PAUSE
+            # 古い学習値は捨てる（前場の混雑を後場に持ち込まない）。
+            # 判定はファイル内の保存時刻で行う。復元でmtimeが今になっても効くこと。
+            state = Path(prices.PREFETCH_PAUSE_STATE)
+            stale = time.time() - prices.PREFETCH_PAUSE_TTL - 60
+            state.write_text(json.dumps({"sec": 40.0, "ts": stale}), encoding="utf-8")
+            os.utime(state, None)
+            assert prices._load_learned_pause() == prices.PREFETCH_BATCH_PAUSE
+            # 壊れたファイルでも落ちない。
+            state.write_text("{", encoding="utf-8")
+            assert prices._load_learned_pause() == prices.PREFETCH_BATCH_PAUSE
+            # 無効化できる。
+            prices.PREFETCH_PAUSE_STATE = ""
+            prices._save_learned_pause(30.0)
+            assert prices._load_learned_pause() == prices.PREFETCH_BATCH_PAUSE
+    finally:
+        prices.PREFETCH_PAUSE_STATE = saved_state
+        prices.PREFETCH_ADAPTIVE = saved_adaptive
+    print("self-test: prefetch_pause(引き継ぎ・上限・失効・破損耐性) OK")
 
 
 if __name__ == "__main__":

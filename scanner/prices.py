@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import signal
@@ -42,6 +43,51 @@ PREFETCH_SPEEDUP_AFTER = int(os.environ.get("PREFETCH_SPEEDUP_AFTER", "3"))
 
 # T-K修正(2026-08-02): 空データの記憶はプロセス内のみ。ディスクには残さない。
 _EMPTY_THIS_PROCESS: set[tuple[str, str]] = set()
+
+# T-K修正(2026-08-03): 学習した待ち時間をスキャン間で引き継ぐ。
+# ザラ場中は60秒ごとに別プロセスで起動し直すため、そのままだと毎回0秒から
+# 学習をやり直す。0->5->10->20->40と登り直す間のバッチはほぼ全部空振りになり、
+# 時間を捨てるうえにYahooをさらに怒らせる。run #154では1スキャン24分かかった。
+# 空ファイル名を渡せば無効化できる（PREFETCH_PAUSE_STATE=""）。
+PREFETCH_PAUSE_STATE = os.environ.get("PREFETCH_PAUSE_STATE", "outputs/.prefetch_pause.json").strip()
+# 古い学習値は捨てる。前場の混雑を後場まで引きずらないため。
+PREFETCH_PAUSE_TTL = float(os.environ.get("PREFETCH_PAUSE_TTL", "1800"))
+
+
+def _load_learned_pause() -> float:
+    """前回スキャンが学習した待ち時間を読む。読めなければ既定値。"""
+    if not PREFETCH_ADAPTIVE or not PREFETCH_PAUSE_STATE:
+        return PREFETCH_BATCH_PAUSE
+    try:
+        path = Path(PREFETCH_PAUSE_STATE)
+        if not path.exists():
+            return PREFETCH_BATCH_PAUSE
+        data = json.loads(path.read_text(encoding="utf-8"))
+        # 保存時刻はファイルの中に持つ。アーティファクト経由で復元されると
+        # 更新時刻が「復元した瞬間」になり、古い値が新しく見えてしまうため。
+        written_at = float(data.get("ts", 0.0))
+        if time.time() - written_at > PREFETCH_PAUSE_TTL:
+            return PREFETCH_BATCH_PAUSE
+        saved = float(data["sec"])
+    except Exception:
+        return PREFETCH_BATCH_PAUSE
+    if not saved > PREFETCH_BATCH_PAUSE:
+        return PREFETCH_BATCH_PAUSE
+    return min(saved, PREFETCH_MAX_PAUSE)
+
+
+def _save_learned_pause(sec: float) -> None:
+    """次のスキャンのために待ち時間を残す。失敗しても本処理は止めない。"""
+    if not PREFETCH_ADAPTIVE or not PREFETCH_PAUSE_STATE:
+        return
+    try:
+        path = Path(PREFETCH_PAUSE_STATE)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({"sec": float(sec), "ts": time.time()}), encoding="utf-8"
+        )
+    except Exception:
+        return
 
 
 def _cache_enabled() -> bool:
@@ -228,7 +274,12 @@ def prefetch_price_histories(
             pending.append(ticker)
 
     # T-K修正(2026-08-02 その2): バッチ間の待ち時間。空振りが多い間だけ自動で伸ばす。
-    pause_state = {"sec": PREFETCH_BATCH_PAUSE, "slowdowns": 0, "clean": 0}
+    pause_state = {"sec": _load_learned_pause(), "slowdowns": 0, "clean": 0}
+    if pause_state["sec"] > PREFETCH_BATCH_PAUSE:
+        print(
+            f"price_prefetch resume pause={pause_state['sec']:.0f}s (前回スキャンの学習値)",
+            flush=True,
+        )
 
     def _adapt(tag: str, start: int, chunk_len: int, empty_in_batch: int) -> None:
         """このバッチの空振り率を見て、次のバッチまでの待ちを増減する。"""
@@ -347,6 +398,7 @@ def prefetch_price_histories(
     # （別プロセス）では改めて取りに行く。
     stats["empty"] = len(remaining)
     stats["slowdowns"] = pause_state["slowdowns"]
+    _save_learned_pause(float(pause_state["sec"]))
     for ticker in remaining:
         _EMPTY_THIS_PROCESS.add((str(ticker), str(period)))
     return stats
