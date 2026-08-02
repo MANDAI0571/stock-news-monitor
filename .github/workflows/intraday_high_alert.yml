@@ -148,7 +148,7 @@ jobs:
           PRICE_CACHE_REFRESH: "1"
         run: |
           mkdir -p outputs
-          log_file="outputs/intraday_session.log"
+          log_file="outputs/intraday_session_$(TZ=Asia/Tokyo date +%F).log"
           exec > >(tee -a "$log_file") 2>&1
           start=$(date +%s)
           scan=0
@@ -202,7 +202,7 @@ jobs:
           path: |
             outputs/intraday_high_alerts_*.csv
             outputs/intraday_alert_state_*.json
-            outputs/intraday_session.log
+            outputs/intraday_session_*.log
             outputs/intraday_daily_summary.json
           if-no-files-found: ignore
       - name: Notify failure by mail
