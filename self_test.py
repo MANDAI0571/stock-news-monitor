@@ -68,6 +68,7 @@ def main() -> None:
     _test_prefetch_pause_is_carried_over()
     _test_claude_note_holdings_come_from_ledger()
     _test_claude_note_structure_is_readable()
+    _test_intraday_mail_is_capped()
     print("self-test: OK")
 
 
@@ -2397,6 +2398,49 @@ def _test_claude_note_structure_is_readable() -> None:
     assert body.index(nd.PORTFOLIO_SECTION_CANDIDATES) < body.index("## 買い候補TOP10（一覧表）")
     assert "※これは投資助言ではなく、スクリーニング結果です。" in body
     print("self-test: Claude記事の構成(重複なし・運用状況が先・デバッグ行なし) OK")
+
+
+def _test_intraday_mail_is_capped() -> None:
+    """1通のメールに全件を詰め込まない（2026-08-03の347件事故の再発防止）。
+
+    件数そのものは必ず残し、明細だけを売買代金の大きい順に上位N件へ絞る。
+    省略した件数とCSVの案内を本文に必ず書く。
+    """
+    from intraday_high_alert import Alert, build_body, build_subject, select_mail_alerts
+
+    def mk(i: int, turnover: int) -> Alert:
+        return Alert(
+            code=f"{1000 + i}", name=f"銘柄{i}", current_price=100.0 + i,
+            alert_type="直近高値ブレイク", high_type="RECENT_BREAK",
+            line_label="直近高値", line_price=100.0, dist_pct=0.0, is_break=True,
+            volume_ratio=1.5, turnover_20d=turnover, reason="直近高値を更新・ブレイク",
+        )
+
+    alerts = [mk(i, turnover=(i + 1) * 100_000_000) for i in range(347)]
+
+    shown, omitted = select_mail_alerts(alerts, max_items=25)
+    assert len(shown) == 25, len(shown)
+    assert omitted == 322, omitted
+    # 売買代金の大きい順に選ばれること
+    assert shown[0].turnover_20d == 347 * 100_000_000, shown[0].turnover_20d
+    assert shown[0].turnover_20d > shown[-1].turnover_20d
+
+    body = build_body(alerts, max_items=25)
+    assert "新規アラート: 347件" in body, body[:400]
+    assert "残り322件は省略" in body, body[:400]
+    assert "intraday_high_alerts_*.csv" in body, body[:400]
+    assert body.count("銘柄") >= 25
+    # 上限以下ならそのまま全件
+    few = alerts[:5]
+    shown2, omitted2 = select_mail_alerts(few, max_items=25)
+    assert omitted2 == 0 and len(shown2) == 5
+    assert "省略" not in build_body(few, max_items=25)
+    # 0以下は無制限（従来どおり）
+    shown3, omitted3 = select_mail_alerts(alerts, max_items=0)
+    assert omitted3 == 0 and len(shown3) == 347
+    # 件名は従来どおり件数を伝える
+    assert "ほか346件" in build_subject(alerts)
+    print("self-test: ザラ場メールは上位N件に制限され件数とCSV案内が残る OK")
 
 
 if __name__ == "__main__":

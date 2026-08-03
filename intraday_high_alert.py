@@ -101,6 +101,23 @@ def load_watchlist_codes(path: Path) -> set[str] | None:
 # 流動性ゲート（出来高が極端に少ない銘柄を弾く）。20日平均売買代金の下限（円）。
 MIN_TURNOVER = float(os.environ.get("IH_MIN_TURNOVER", "100000000"))  # 1億円
 
+# 1通のメールに載せる明細の最大件数。
+# 【2026-08-03 追加の理由】その日の最初のスキャンは重複判定の基準(state)が空なので、
+# すでに高値を更新済みの銘柄が全部「新規」として1通に載る。実測で347件になり、
+# メールとして読めなかった。件数そのものは件名と本文冒頭に必ず残し、
+# 本文の明細だけを売買代金の大きい順で上位N件に絞る。
+# 全件は intraday_high_alerts_*.csv に残るので情報は失われない。
+# 0以下を指定すると無制限（従来どおり全件掲載）。
+DEFAULT_MAX_MAIL_ITEMS = 25
+
+
+def _max_mail_items() -> int:
+    raw = os.environ.get("IH_MAX_MAIL_ITEMS", str(DEFAULT_MAX_MAIL_ITEMS)).strip()
+    try:
+        return int(raw)
+    except ValueError:
+        return DEFAULT_MAX_MAIL_ITEMS
+
 # 通知対象の high_type → アラート種別（日本語）。
 # Gmail通知は「52週高値更新（一時更新含む）・接近」と「直近高値ブレイク・接近」。
 # MAタッチ、リテスト、note通知は対象外。
@@ -360,17 +377,38 @@ def build_subject(new_alerts: list[Alert]) -> str:
     return base
 
 
-def build_body(new_alerts: list[Alert]) -> str:
+def select_mail_alerts(
+    new_alerts: list[Alert], max_items: int | None = None
+) -> tuple[list[Alert], int]:
+    """メール本文に載せる分だけを選ぶ（売買代金の大きい順）。
+
+    戻り値は (掲載するアラート, 省略した件数)。
+    上限が0以下、または件数が上限以下ならそのまま全件を返す。
+    """
+    limit = _max_mail_items() if max_items is None else max_items
+    if limit <= 0 or len(new_alerts) <= limit:
+        return list(new_alerts), 0
+    ranked = sorted(new_alerts, key=lambda a: a.turnover_20d, reverse=True)
+    return ranked[:limit], len(new_alerts) - limit
+
+
+def build_body(new_alerts: list[Alert], max_items: int | None = None) -> str:
+    shown, omitted = select_mail_alerts(new_alerts, max_items)
     lines: list[str] = [
         "ザラ場リアルタイム高値アラート",
         f"検知時刻: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
         f"新規アラート: {len(new_alerts)}件",
-        "",
     ]
+    if omitted:
+        lines.append(
+            f"※本文には売買代金の大きい順に{len(shown)}件だけ掲載しています"
+            f"（残り{omitted}件は省略）。全件は intraday_high_alerts_*.csv にあります。"
+        )
+    lines.append("")
     # 種別ごとにまとめる（52週更新→直近ブレイク→52週接近→直近接近の順）。
     order = ["52週高値更新", "直近高値ブレイク", "52週高値接近", "直近高値接近"]
     grouped: dict[str, list[Alert]] = {key: [] for key in order}
-    for alert in new_alerts:
+    for alert in shown:
         grouped.setdefault(alert.alert_type, []).append(alert)
 
     for key in order:
