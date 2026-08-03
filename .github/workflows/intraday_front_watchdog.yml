@@ -5,6 +5,8 @@ on:
     - cron: "2 0 * * 1-5"
     - cron: "17 0 * * 1-5"
     - cron: "32 0 * * 1-5"
+    - cron: "47 0 * * 1-5"
+    - cron: "2 1 * * 1-5"
   workflow_dispatch:
 
 permissions:
