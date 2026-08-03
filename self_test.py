@@ -66,6 +66,8 @@ def main() -> None:
     _test_trade_verification()
     _test_intraday_summary_counts_today_only()
     _test_prefetch_pause_is_carried_over()
+    _test_claude_note_holdings_come_from_ledger()
+    _test_claude_note_structure_is_readable()
     print("self-test: OK")
 
 
@@ -293,12 +295,16 @@ BUY条件を満たす銘柄がないため、現金を守ります。
         (out_dir / "note_cloud_artifact_manifest.json").write_text("{}", encoding="utf-8")
         # 正しい4本（highs/pullback/chatgpt/claude）＋各冒頭の市場ステータス＋最低限の記事内容が新契約
         status_block = "## 市場ステータス\n\n- 本日の地合い: **NORMAL**\n- 判定元: regime.txt\n\n"
+        # T-K更新(2026-08-03): 保有欄は運用台帳(*_300man_journal.csv)由来、
+        # 当日の配分案は「本日の買い候補（未約定・当日試算）」に分離するのが新契約。
         portfolio_block = (
-            "## 保有銘柄・CASH判断\n\n- 本日は新規買いなし → CASH判断（現金維持）\n\n"
-            "## 売買理由\n\n- CASH: Sランク不足のため現金保有\n\n"
+            "## 保有銘柄・CASH判断\n\n- 出所: `claude_300man_journal.csv`（実際に約定した記録だけ）\n"
+            "- 約定はまだありません → CASH（現金 3,000,000円）\n\n"
+            "## 売買理由\n\n- 台帳に注文がないため、売買理由はありません（約定ゼロ）。\n\n"
             "## 評価額・現金比率\n\n- 運用資金: 3,000,000円\n- 現金: 3,000,000円（現金比率 100.0%）\n\n"
-            "## 損益（未実現損益）\n\n- 未実現損益: 0円（保有なし・現金のみ）\n\n"
-            "## 次営業日の方針\n\n- 地合いNORMAL: 規律どおりSランク上位を最大3銘柄で買付。\n"
+            "## 損益（未実現損益）\n\n- 未実現損益: 0円（保有なし）\n\n"
+            "## 次営業日の方針\n\n- 地合いNORMAL: 規律どおりSランク上位を最大3銘柄で買付。\n\n"
+            "## 本日の買い候補（未約定・当日試算）\n\n- 本日の買い候補: なし（CASH判断 3枠）\n"
         )
         note4_manifest = []
         for key in ["highs", "pullback", "chatgpt", "claude"]:
@@ -338,7 +344,7 @@ BUY条件を満たす銘柄がないため、現金を守ります。
         # 運用セクションのうち1つ（損益）が欠けても失敗扱い
         (out_dir / "note_claude.md").write_text(
             f"# ダミー claude 2026-07-07\n\n{status_block}"
-            + portfolio_block.replace("## 損益（未実現損益）\n\n- 未実現損益: 0円（保有なし・現金のみ）\n\n", ""),
+            + portfolio_block.replace("## 損益（未実現損益）\n\n- 未実現損益: 0円（保有なし）\n\n", ""),
             encoding="utf-8",
         )
         thin2 = validate_artifact(out_dir)
@@ -2278,6 +2284,119 @@ def _test_prefetch_pause_is_carried_over() -> None:
         prices.PREFETCH_PAUSE_STATE = saved_state
         prices.PREFETCH_ADAPTIVE = saved_adaptive
     print("self-test: prefetch_pause(引き継ぎ・上限・失効・破損耐性) OK")
+
+
+def _test_claude_note_holdings_come_from_ledger() -> None:
+    """2026-07-16の事故の再発防止。
+
+    その日のスクリーニングで 9861 吉野家ホールディングス がBUY候補に出ても、
+    運用台帳に約定が無い限り「保有」としては書かないこと。
+    保有欄は台帳（7453 良品計画）だけを載せ、吉野家は
+    「本日の買い候補（未約定・当日試算）」にだけ現れること。
+    """
+    import tempfile
+
+    import note_draft as nd
+    from validate_note_artifact import _note4_content_issue
+
+    discipline = pd.DataFrame([
+        {"slot": 1, "action": "BUY", "regime": "NORMAL", "code": "9861",
+         "name": "吉野家ホールディングス", "shares": 200, "entry_price": 3626.0,
+         "position_value": 725200, "rule": "Sランクのみ", "cash_reason": ""},
+        {"slot": 2, "action": "CASH", "regime": "NORMAL", "code": "",
+         "name": "", "shares": "", "entry_price": "", "position_value": 0,
+         "rule": "", "cash_reason": "Sランク不足のため現金保有"},
+    ])
+
+    saved_paths = dict(nd.LEDGER_PATHS)
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            orders_path = Path(tmp) / "claude_300man_orders.csv"
+            journal_path = Path(tmp) / "claude_300man_journal.csv"
+            orders_path.write_text(
+                "decision_date,execution_date,side,code,ticker,name,shares,reason,status\n"
+                "2026-07-21,2026-07-22,BUY,7453,7453.T,良品計画,100,Claude運用の前日宣告,FILLED\n",
+                encoding="utf-8",
+            )
+            journal_path.write_text(
+                "entry_date,fill_time_jst,status,code,ticker,name,entry_price,shares,"
+                "position_value,source_order_date,exit_date,exit_price,exit_value,"
+                "realized_pnl,exit_order_date\n"
+                "2026-07-22,2026-07-26T16:47:21+09:00,OPEN,7453,7453.T,良品計画,4206.00,100,"
+                "420600,2026-07-21,,,,,\n",
+                encoding="utf-8",
+            )
+            nd.LEDGER_PATHS["claude"] = (orders_path, journal_path)
+
+            block = "\n".join(nd._portfolio_status_block(discipline, operation="claude"))
+
+            holdings = block.split(nd.PORTFOLIO_SECTION_REASONS)[0]
+            assert "良品計画" in holdings, holdings
+            assert "吉野家" not in holdings, holdings
+            assert "claude_300man_journal.csv" in holdings, holdings
+
+            candidates = block.split(nd.PORTFOLIO_SECTION_CANDIDATES)[1]
+            assert "吉野家" in candidates, candidates
+            assert "未約定" in candidates, candidates
+
+            # 現金は台帳から: 3,000,000 - 420,600 = 2,579,400
+            assert "2,579,400" in block, block
+
+            # 別勘定（Codex側）の台帳が空なら、Claudeの保有を借りてこないこと
+            nd.LEDGER_PATHS["chatgpt"] = (Path(tmp) / "none1.csv", Path(tmp) / "none2.csv")
+            other = "\n".join(nd._portfolio_status_block(discipline, operation="chatgpt"))
+            assert "良品計画" not in other, other
+            assert "約定はまだありません" in other, other
+
+            # 品質ゲートを実際に通す（必須見出し＋台帳由来マーカー）
+            fake_article = "# t\n\n" + block + "\n"
+            assert _note4_content_issue("claude", fake_article) is None
+            # 保有欄が台帳由来でなくなったら必ず落ちること
+            broken = fake_article.replace("claude_300man_journal.csv", "discipline.csv")
+            assert _note4_content_issue("claude", broken) is not None
+    finally:
+        nd.LEDGER_PATHS.clear()
+        nd.LEDGER_PATHS.update(saved_paths)
+    print("self-test: 300万円運用の保有欄は台帳が正（吉野家=候補どまり） OK")
+
+
+def _test_claude_note_structure_is_readable() -> None:
+    """記事構成の回帰テスト。
+
+    同じ銘柄の3回掲載・記事内記事・本文に残るデバッグ行をやめ、
+    運用状況が買い候補より先に来ること。
+    """
+    import note_draft as nd
+
+    screening = pd.DataFrame([
+        {"code": "8358", "ticker": "8358.T", "name": "スルガ銀行", "rank": "S",
+         "score": 90, "current_price": 2761.0, "reason": "52週高値接近",
+         "dist_52w_high_pct": 1.0, "openwork_score": ""},
+        {"code": "9861", "ticker": "9861.T", "name": "吉野家ホールディングス", "rank": "S",
+         "score": 85, "current_price": 3626.0, "reason": "52週高値接近",
+         "dist_52w_high_pct": 2.0, "openwork_score": ""},
+    ])
+    discipline = pd.DataFrame([
+        {"slot": 1, "action": "CASH", "regime": "NORMAL", "code": "", "name": "",
+         "shares": "", "entry_price": "", "position_value": 0, "rule": "",
+         "cash_reason": "Sランク不足のため現金保有"},
+    ])
+    sources = nd.SourceFiles(
+        screening=Path("screening_result_20260803_000000.csv"),
+        discipline=Path("discipline_portfolio_20260803_000000.csv"),
+        backtest=None,
+    )
+    body = nd.build_claude_note(screening, discipline, None, sources)
+
+    assert "そのままnoteに貼れる文章" not in body
+    assert "\nsource_screening=" not in body  # 生のデバッグ行は本文に出さない
+    assert "<!-- source_screening=" in body   # 出所はコメントとして残す
+    assert "## 各銘柄の理由" not in body       # 同じ銘柄の3回目の掲載をやめた
+    assert body.count("## 買い候補TOP10（一覧表）") == 1
+    assert body.index(nd.PORTFOLIO_SECTION_HOLDINGS) < body.index("## 買い候補TOP10（一覧表）")
+    assert body.index(nd.PORTFOLIO_SECTION_CANDIDATES) < body.index("## 買い候補TOP10（一覧表）")
+    assert "※これは投資助言ではなく、スクリーニング結果です。" in body
+    print("self-test: Claude記事の構成(重複なし・運用状況が先・デバッグ行なし) OK")
 
 
 if __name__ == "__main__":

@@ -48,7 +48,14 @@ NOTE4_PORTFOLIO_SECTIONS = (
     "## 評価額・現金比率",
     "## 損益（未実現損益）",
     "## 次営業日の方針",
+    # T-K追加(2026-08-03): 当日の配分案は保有と混ぜず独立見出しで出す
+    "## 本日の買い候補（未約定・当日試算）",
 )
+# T-K追加(2026-08-03): 「保有銘柄・CASH判断」欄が本物の台帳から出ている証跡。
+# ここが discipline CSV（当日の配分案）に戻ると、買っていない銘柄を保有として
+# 配信した 2026-07-16 の事故が再発するため、機械で止める。
+NOTE4_LEDGER_MARKER = "_300man_journal.csv"
+NOTE4_HOLDINGS_SECTION = "## 保有銘柄・CASH判断"
 # highs/pullback: 候補がある場合に必須の「理由」マーカー（従来表の根拠列）
 NOTE4_REASON_MARKERS = {
     "highs": ("高値乖離%",),
@@ -353,6 +360,10 @@ def _note4_content_issue(key: str, text: str) -> str | None:
                 return f"必須セクション欠落: {header[3:]}"
             if not _md_section_body(text, header).strip():
                 return f"セクション空欄: {header[3:]}"
+        # 保有欄が本物の台帳（*_300man_journal.csv）由来であることを確認する
+        holdings = _md_section_body(text, NOTE4_HOLDINGS_SECTION)
+        if NOTE4_LEDGER_MARKER not in holdings:
+            return "保有銘柄・CASH判断が運用台帳（*_300man_journal.csv）由来ではありません"
         return None
     # highs / pullback: 候補銘柄一覧＋理由、無い場合は「該当なし」「データ不足」の明記が必須
     # 全候補がイナゴ/TOB疑いでカードが無い日でも、従来表があれば「候補あり」として扱う

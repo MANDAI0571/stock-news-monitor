@@ -944,7 +944,7 @@ def build_chatgpt_note(discipline: pd.DataFrame, screening: pd.DataFrame, source
     lines.append("")
     lines.extend(summarize_discipline(discipline))
     lines.append("")
-    lines.extend(_portfolio_status_block(discipline))
+    lines.extend(_portfolio_status_block(discipline, operation="chatgpt"))
     buys = discipline[discipline.get("action", pd.Series(dtype=str)).astype(str).str.upper() == "BUY"] if not discipline.empty else discipline
     lines.extend(["## 300万円運用BUY候補カード", ""])
     lines.extend(build_stock_cards(buys, None))
@@ -965,20 +965,51 @@ def build_chatgpt_note(discipline: pd.DataFrame, screening: pd.DataFrame, source
 
 
 def build_claude_note(screening: pd.DataFrame, discipline: pd.DataFrame, backtest: dict | None, sources: SourceFiles) -> str:
-    """②Claude版。既存の本文をそのまま使い、タイトルだけ4本構成に合わせる。"""
-    body = build_note_body(screening, discipline, backtest, sources)
-    out_lines = body.splitlines()
-    if out_lines and out_lines[0].startswith("# "):
-        today = datetime.now().strftime("%Y-%m-%d")
-        out_lines[0] = f"# {NOTE4_TITLES['claude']} {today}"
-    if not any("Claude候補TOP10カード" in line for line in out_lines):
-        card_lines = ["", "## Claude候補TOP10カード", ""]
-        card_lines.extend(build_stock_cards(top_buy_candidates(screening, 10), 10))
-        out_lines[1:1] = card_lines
-    if not any(line.startswith(PORTFOLIO_SECTION_HOLDINGS) for line in out_lines):
-        out_lines.append("")
-        out_lines.extend(_portfolio_status_block(discipline))
-    return "\n".join(out_lines)
+    """②Claude版。
+
+    T-K改稿(2026-08-03): 高重さんの指摘（同じ10銘柄がカード・表・箇条書きで3回出る／
+    「そのままnoteに貼れる文章」という記事内記事がある／source_*= のデバッグ行が本文に残る／
+    一番読みたい運用状況が最下部）を受けて、構成を上から一本道に作り直した。
+      タイトル → 市場ステータス(後段で挿入) → いまの運用状況(台帳) → 本日の候補(未約定)
+      → 買い候補TOP10(表1回) → 上位3銘柄カード → 選定ルール → 免責
+    """
+    today = datetime.now().strftime("%Y-%m-%d")
+    lines = [f"# {NOTE4_TITLES['claude']} {today}", ""]
+
+    # ① いまの運用状況（本物の台帳）＋② 本日の候補（未約定・当日試算）
+    lines.extend(_portfolio_status_block(discipline, operation="claude"))
+
+    # ③ 買い候補TOP10。表は1回だけ。カードは上位3銘柄に絞る（同じ銘柄の3回掲載をやめる）
+    lines.extend(["## 買い候補TOP10（一覧表）", ""])
+    lines.extend(_top10_block(screening))
+    lines.extend(["", "## 上位3銘柄カード", ""])
+    lines.extend(build_stock_cards(top_buy_candidates(screening, 3), 3))
+
+    # ④ 選定ルール
+    lines.extend([
+        "",
+        "## 候補の選定ルール",
+        "",
+        "- Sランク上位から最大3銘柄・1枠100万円（地合いCAUTIONは1銘柄、RISK/STOPは新規停止）",
+        "- 損切 -7% / 利確 +15% / 10営業日タイムアウト",
+        "- 出来高フィルタ electric_volume_min=1.1 / selection_rule=current",
+        "",
+    ])
+    lines.extend(build_backtest_section(backtest))
+
+    # ⑤ 免責（社内向けの参照ファイル名はHTMLコメントに隠す）
+    lines.extend([
+        "",
+        "## 免責",
+        "",
+        "- これは投資助言ではありません。スクリーニング結果（事実）です。",
+        "- 架空資金によるペーパー運用の記録です。",
+        "",
+        "※これは投資助言ではなく、スクリーニング結果です。売買判断は自己責任で行ってください。",
+        "",
+        f"<!-- source_screening={sources.screening.name} source_discipline={sources.discipline.name} -->",
+    ])
+    return "\n".join(lines)
 
 
 def _discipline_holdings_table(discipline: pd.DataFrame) -> list[str]:
@@ -1017,93 +1048,87 @@ PORTFOLIO_SECTION_REASONS = "## 売買理由"
 PORTFOLIO_SECTION_VALUATION = "## 評価額・現金比率"
 PORTFOLIO_SECTION_PNL = "## 損益（未実現損益）"
 PORTFOLIO_SECTION_NEXT_DAY = "## 次営業日の方針"
+# T-K修正(2026-08-03): 「その日の配分案」を保有と誤読させないための独立見出し
+PORTFOLIO_SECTION_CANDIDATES = "## 本日の買い候補（未約定・当日試算）"
+
+# 本物の運用台帳。Claude運用とCodex(ChatGPT)運用は完全に別勘定なので取り違えない。
+LEDGER_PATHS = {
+    "claude": (
+        PROJECT_ROOT / "data" / "claude_300man_orders.csv",
+        PROJECT_ROOT / "data" / "claude_300man_journal.csv",
+    ),
+    "chatgpt": (
+        PROJECT_ROOT / "data" / "chatgpt_300man_orders.csv",
+        PROJECT_ROOT / "data" / "chatgpt_300man_journal.csv",
+    ),
+}
 
 
-def _portfolio_status_block(discipline: pd.DataFrame) -> list[str]:
-    """300万円運用の運用状況セクション（ChatGPT版・Claude版の両方に共通で入れる事実データ）。
-    discipline CSVから機械的に作れる事実のみ記載し、無いものは「データ不足」と明記する。"""
-    lines: list[str] = []
-    empty = discipline is None or discipline.empty
-    buys = (
-        discipline[discipline.get("action", pd.Series(dtype=str)).astype(str).str.upper() == "BUY"]
-        if not empty else pd.DataFrame()
+def _read_ledger(path: Path) -> pd.DataFrame:
+    """本物の運用台帳を読む。無い・壊れているときは空を返す（推測で埋めない）。"""
+    if not path.exists() or path.stat().st_size == 0:
+        return pd.DataFrame()
+    try:
+        return pd.read_csv(path, dtype=str).fillna("")
+    except Exception:
+        return pd.DataFrame()
+
+
+def _ledger_rows(journal: pd.DataFrame, status: str) -> pd.DataFrame:
+    if journal.empty or "status" not in journal.columns:
+        return pd.DataFrame()
+    return journal[journal["status"].astype(str).str.upper().eq(status)]
+
+
+def _sum_col(df: pd.DataFrame, column: str) -> float:
+    """列が無い／空なら0。台帳の列構成が運用ごとに違うため必ずこれを通す。"""
+    if df is None or df.empty or column not in df.columns:
+        return 0.0
+    return float(pd.to_numeric(df[column], errors="coerce").fillna(0).sum())
+
+
+def _today_candidate_block(discipline: pd.DataFrame) -> list[str]:
+    """その日のスクリーニングから機械的に作った配分案。
+
+    T-K修正(2026-08-03): これを「## 保有銘柄・CASH判断」の下に書いていたため、
+    2026-07-16配信分で 9861 吉野家ホールディングス を1株も買っていないのに
+    「枠2: 9861 吉野家ホールディングス 200株 @ 3626.0円」と保有のように配信した。
+    paper_portfolio_discipline.build_discipline_portfolio() は当日のスクリーニングと
+    地合いだけを入力にして毎回ゼロから作り直す（過去の注文も保有も読まない）ので、
+    翌日には候補が入れ替わって消える。約定記録ではないことを見出しと各行で明示する。
+    """
+    lines = [PORTFOLIO_SECTION_CANDIDATES, ""]
+    if discipline is None or discipline.empty:
+        lines.append("- データ不足：本日の候補CSVが未生成のため、買い候補を表示できません。")
+        lines.append("")
+        return lines
+    action = discipline.get("action", pd.Series(dtype=str)).astype(str).str.upper()
+    buys = discipline[action == "BUY"]
+    cashes = discipline[action == "CASH"]
+    lines.append(
+        "- ここは「もし本日ゼロから300万円を配分したら」という当日限りの試算です。"
+        "**まだ約定していません**。実際の保有は上の運用台帳が正です。"
     )
-    cashes = (
-        discipline[discipline.get("action", pd.Series(dtype=str)).astype(str).str.upper() == "CASH"]
-        if not empty else pd.DataFrame()
-    )
-
-    # ① 保有銘柄・CASH判断
-    lines.extend([PORTFOLIO_SECTION_HOLDINGS, ""])
-    if empty:
-        lines.append("- データ不足：discipline CSVが未生成または空のため、保有/CASH判断を表示できません。")
-    elif buys.empty:
-        lines.append(f"- 本日は新規買いなし → CASH判断（現金維持 / CASH枠 {len(cashes)}件）")
+    if buys.empty:
+        lines.append(f"- 本日の買い候補: なし（CASH判断 {len(cashes)}枠）")
     else:
         for _, row in buys.iterrows():
             lines.append(
-                f"- 枠{_val(row,'slot')}: {_val(row,'code')} {_val(row,'name')} "
-                f"{_val(row,'shares')}株 @ {_val(row,'entry_price')}円（投資額 {_val(row,'position_value')}円）"
+                f"- 候補枠{_val(row,'slot')}（未約定）: {_val(row,'code')} {_val(row,'name')} "
+                f"{_val(row,'shares')}株 @ {_val(row,'entry_price')}円"
+                f"（想定投資額 {_val(row,'position_value')}円）"
             )
         if not cashes.empty:
             lines.append(f"- 残り {len(cashes)}枠はCASH（現金）")
     lines.append("")
+    return lines
 
-    # ② 売買理由
-    lines.extend([PORTFOLIO_SECTION_REASONS, ""])
-    if empty:
-        lines.append("- データ不足：discipline CSVが未生成のため、売買理由を表示できません。")
-    else:
-        wrote = False
-        for _, row in buys.iterrows():
-            rule = _val(row, "rule")
-            if rule and rule != "未取得":
-                lines.append(f"- BUY {_val(row,'code')} {_val(row,'name')}: {rule}")
-                wrote = True
-        cash_reasons = [
-            _val(row, "cash_reason") for _, row in cashes.iterrows()
-            if _val(row, "cash_reason") not in ("", "未取得")
-        ]
-        for reason in dict.fromkeys(cash_reasons):  # 重複除去・順序維持
-            lines.append(f"- CASH: {reason}")
-            wrote = True
-        if not wrote:
-            lines.append("- データ不足：rule / cash_reason 列が未出力のため、売買理由を表示できません。")
-    lines.append("")
 
-    # ③ 評価額・現金比率
-    lines.extend([PORTFOLIO_SECTION_VALUATION, ""])
-    invested = None
-    if not empty and "position_value" in discipline.columns:
-        invested = int(pd.to_numeric(discipline["position_value"], errors="coerce").fillna(0).sum())
-    if invested is None:
-        lines.append("- データ不足：position_value 列が未出力のため、評価額・現金比率を算出できません。")
-    else:
-        cash = PORTFOLIO_CAPITAL - invested
-        cash_pct = cash / PORTFOLIO_CAPITAL * 100
-        lines.append(f"- 運用資金: {PORTFOLIO_CAPITAL:,}円")
-        lines.append(f"- 投資額合計（取得想定）: {invested:,}円")
-        lines.append(f"- 現金: {cash:,}円（現金比率 {cash_pct:.1f}%）")
-        lines.append(f"- 想定評価額: {PORTFOLIO_CAPITAL:,}円（当日取得想定のため取得額ベース）")
-    lines.append("")
-
-    # ④ 損益（未実現損益）
-    lines.extend([PORTFOLIO_SECTION_PNL, ""])
-    pnl_col = next((c for c in ("unrealized_pnl", "pnl", "profit_loss") if not empty and c in discipline.columns), None)
-    if pnl_col:
-        pnl = pd.to_numeric(discipline[pnl_col], errors="coerce").fillna(0).sum()
-        lines.append(f"- 未実現損益合計: {pnl:+,.0f}円")
-    elif not empty and not buys.empty:
-        lines.append("- 未実現損益: 0円（本日取得想定＝エントリー直後のため）")
-        lines.append("- データ不足：現値ベースの未実現損益列（unrealized_pnl）は本CSVに未出力です。翌日以降はMac側の検証で更新されます。")
-    else:
-        lines.append("- 未実現損益: 0円（保有なし・現金のみ）")
-    lines.append("")
-
-    # ⑤ 次営業日の方針（paper_portfolio_discipline.py の規律ルールをそのまま記載。新規判断は書かない）
-    lines.extend([PORTFOLIO_SECTION_NEXT_DAY, ""])
+def _next_day_block(discipline: pd.DataFrame) -> list[str]:
+    """次営業日の規律方針。paper_portfolio_discipline.py のルールをそのまま書く（新規判断は書かない）。"""
+    lines = [PORTFOLIO_SECTION_NEXT_DAY, ""]
     regime = ""
-    if not empty and "regime" in discipline.columns:
+    if discipline is not None and not discipline.empty and "regime" in discipline.columns:
         vals = discipline["regime"].astype(str).replace("nan", "").tolist()
         regime = next((v for v in vals if v), "")
     next_day_policy = {
@@ -1118,6 +1143,89 @@ def _portfolio_status_block(discipline: pd.DataFrame) -> list[str]:
     else:
         lines.append("- データ不足：regime 列が未出力のため、次営業日の規律方針を確定できません（安全側＝新規買い見送り）。")
     lines.append("")
+    return lines
+
+
+def _portfolio_status_block(discipline: pd.DataFrame, operation: str = "claude") -> list[str]:
+    """300万円運用の運用状況セクション。
+
+    T-K修正(2026-08-03): 保有・売買理由・評価額・損益は data/*_300man_journal.csv と
+    data/*_300man_orders.csv（実際に約定した本物の台帳）から出す。
+    以前は discipline CSV（その日の配分案・記憶なし）を「保有銘柄」として書いていた。
+    当日の配分案は _today_candidate_block() に分離した。
+    operation は "claude" / "chatgpt" のどちらの勘定かを指定する（取り違え防止）。
+    """
+    orders_path, journal_path = LEDGER_PATHS.get(operation, LEDGER_PATHS["claude"])
+    orders = _read_ledger(orders_path)
+    journal = _read_ledger(journal_path)
+    open_rows = _ledger_rows(journal, "OPEN")
+    closed_rows = _ledger_rows(journal, "CLOSED")
+
+    invested = _sum_col(open_rows, "position_value")
+    bought = _sum_col(journal, "position_value")
+    sold = _sum_col(journal, "exit_value")
+    realized = _sum_col(closed_rows, "realized_pnl")
+    cash = PORTFOLIO_CAPITAL - bought + sold
+    exit_value_missing = (
+        not closed_rows.empty and "exit_value" not in closed_rows.columns
+    )
+
+    lines: list[str] = []
+
+    # ① 保有銘柄・CASH判断（台帳＝約定した記録だけ）
+    lines.extend([PORTFOLIO_SECTION_HOLDINGS, ""])
+    lines.append(f"- 出所: `{journal_path.name}`（実際に約定した記録だけを載せています）")
+    if journal.empty:
+        lines.append(f"- 約定はまだありません → CASH（現金 {PORTFOLIO_CAPITAL:,}円）")
+    elif open_rows.empty:
+        lines.append(f"- 保有なし → CASH（現金 {cash:,.0f}円）")
+    else:
+        for _, row in open_rows.iterrows():
+            lines.append(
+                f"- {_val(row,'entry_date')} 約定: {_val(row,'code')} {_val(row,'name')} "
+                f"{_val(row,'shares')}株 @ {_val(row,'entry_price')}円"
+                f"（投資額 {_val(row,'position_value')}円）"
+            )
+        lines.append(f"- 現金: {cash:,.0f}円")
+    lines.append("")
+
+    # ② 売買理由（宣告ログ＝注文の理由。無ければ無いと書く）
+    lines.extend([PORTFOLIO_SECTION_REASONS, ""])
+    if orders.empty:
+        lines.append("- 台帳に注文がないため、売買理由はありません（約定ゼロ）。")
+    else:
+        for _, row in orders.iterrows():
+            lines.append(
+                f"- {_val(row,'decision_date')}宣告 → {_val(row,'execution_date')}執行 "
+                f"{_val(row,'side')} {_val(row,'code')} {_val(row,'name')} {_val(row,'shares')}株"
+                f"（{_val(row,'status')}）: {_val(row,'reason')}"
+            )
+    lines.append("")
+
+    # ③ 評価額・現金比率
+    lines.extend([PORTFOLIO_SECTION_VALUATION, ""])
+    lines.append(f"- 運用資金: {PORTFOLIO_CAPITAL:,}円")
+    lines.append(f"- 投資額（取得原価・保有中）: {invested:,.0f}円")
+    lines.append(f"- 現金: {cash:,.0f}円（現金比率 {cash / PORTFOLIO_CAPITAL * 100:.1f}%）")
+    if exit_value_missing:
+        lines.append("- データ不足：台帳に exit_value 列が無いため、売却代金を現金に反映できていません。")
+    lines.append("- データ不足：現値ベースの時価評価は本記事では未取得です（取得原価ベースで表示しています）。")
+    lines.append("")
+
+    # ④ 損益
+    lines.extend([PORTFOLIO_SECTION_PNL, ""])
+    lines.append(f"- 実現損益（累計）: {realized:+,.0f}円")
+    if open_rows.empty:
+        lines.append("- 未実現損益: 0円（保有なし）")
+    else:
+        lines.append("- データ不足：現値が未取得のため、未実現損益は算出していません（推測では書きません）。")
+    lines.append("")
+
+    # ⑤ 次営業日の方針
+    lines.extend(_next_day_block(discipline))
+
+    # ⑥ 本日の買い候補（未約定・当日試算）— 台帳と混ぜない
+    lines.extend(_today_candidate_block(discipline))
     return lines
 
 
