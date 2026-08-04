@@ -69,6 +69,7 @@ def main() -> None:
     _test_claude_note_holdings_come_from_ledger()
     _test_claude_note_structure_is_readable()
     _test_intraday_mail_is_capped()
+    _test_intraday_mail_time_is_jst()
     print("self-test: OK")
 
 
@@ -2246,7 +2247,7 @@ def _test_intraday_summary_counts_today_only() -> None:
     src = Path(__file__).resolve().parent / "intraday_high_alert.py"
     text = src.read_text(encoding="utf-8")
     assert "intraday_alerts_detected={len(alerts)} new={len(new_alerts)} " in text
-    assert "date={_jst_today().isoformat()}" in text
+    assert "date={jst_today().isoformat()}" in text
     print("self-test: intraday_summary(当日分だけ集計・旧ログ互換) OK")
 
 
@@ -2441,6 +2442,53 @@ def _test_intraday_mail_is_capped() -> None:
     # 件名は従来どおり件数を伝える
     assert "ほか346件" in build_subject(alerts)
     print("self-test: ザラ場メールは上位N件に制限され件数とCSV案内が残る OK")
+
+
+def _test_intraday_mail_time_is_jst() -> None:
+    """メール本文の「検知時刻」は必ず日本時間で書く（2026-08-04の9時間ズレ事故の再発防止）。
+
+    GitHub Actionsのランナーは UTC で動くため、datetime.now() をそのまま使うと
+    15:36 JST に届いたメールの本文が「06:36」と表示されていた。
+    TZ=UTC のランナーを模した状態で本文を作り、実際のJSTと一致することを確かめる。
+    """
+    import importlib
+    import os
+    import time as _time
+    from datetime import datetime as _dt
+    from zoneinfo import ZoneInfo
+
+    from intraday_high_alert import Alert
+
+    alert = Alert(
+        code="1001", name="テスト", current_price=100.0,
+        alert_type="直近高値ブレイク", high_type="RECENT_BREAK",
+        line_label="直近高値", line_price=100.0, dist_pct=0.0, is_break=True,
+        volume_ratio=1.0, turnover_20d=100_000_000, reason="直近高値を更新・ブレイク",
+    )
+
+    old_tz = os.environ.get("TZ")
+    os.environ["TZ"] = "UTC"
+    try:
+        if hasattr(_time, "tzset"):
+            _time.tzset()
+        module = importlib.import_module("intraday_high_alert")
+        importlib.reload(module)
+        body = module.build_body([alert])
+        expected = _dt.now(ZoneInfo("Asia/Tokyo")).strftime("%Y-%m-%d %H:%M")
+        assert f"検知時刻: {expected} JST" in body, body.splitlines()[:3]
+        # UTC表記（9時間前）が本文に混ざっていないこと
+        utc_text = _dt.now(ZoneInfo("UTC")).strftime("%Y-%m-%d %H:%M")
+        assert f"検知時刻: {utc_text}" not in body, body.splitlines()[:3]
+    finally:
+        if old_tz is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = old_tz
+        if hasattr(_time, "tzset"):
+            _time.tzset()
+        importlib.reload(importlib.import_module("intraday_high_alert"))
+
+    print("self-test: ザラ場メールの検知時刻はJST表記 OK")
 
 
 if __name__ == "__main__":

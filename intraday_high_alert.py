@@ -40,7 +40,6 @@ import os
 import re
 from dataclasses import dataclass, asdict
 from functools import lru_cache
-from datetime import date, datetime
 from pathlib import Path
 
 import pandas as pd
@@ -55,6 +54,11 @@ from scanner.prices import (
     prefetch_price_histories,
 )
 from scanner.universe import UniverseConfig, load_jpx_listed
+
+# T-K修正(2026-08-04): GitHub Actionsのランナーは UTC で動くため、datetime.now() /
+# date.today() をそのまま使うとメール本文の「検知時刻」が9時間ずれて表示されていた
+# （例: 15:36 JST に届いたメールの本文が「06:36」）。時刻・日付は必ず jptime 経由で取る。
+from jptime import jst_now, jst_today
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -225,7 +229,7 @@ def _fetch_earnings_label(code: str) -> str:
         return "未取得"
     text = d.isoformat()
     try:
-        today = pd.Timestamp(date.today())
+        today = pd.Timestamp(jst_today())
         target = pd.Timestamp(d)
         if target >= today:
             bdays = max(len(pd.bdate_range(today, target)) - 1, 0)
@@ -396,7 +400,7 @@ def build_body(new_alerts: list[Alert], max_items: int | None = None) -> str:
     shown, omitted = select_mail_alerts(new_alerts, max_items)
     lines: list[str] = [
         "ザラ場リアルタイム高値アラート",
-        f"検知時刻: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+        f"検知時刻: {jst_now().strftime('%Y-%m-%d %H:%M')} JST",
         f"新規アラート: {len(new_alerts)}件",
     ]
     if omitted:
@@ -473,7 +477,7 @@ class DedupState:
         ensure_output_dir(self.path.parent)
         payload = {
             "date": self.day,
-            "updated_at": datetime.now().isoformat(timespec="seconds"),
+            "updated_at": jst_now().isoformat(timespec="seconds"),
             "notified": sorted(self.notified),
         }
         self.path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -490,7 +494,7 @@ def write_csv(alerts: list[Alert], new_keys: set[str], output_dir: Path) -> Path
     if not alerts:
         return None
     ensure_output_dir(output_dir)
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    stamp = jst_now().strftime("%Y%m%d_%H%M%S")
     path = output_dir / f"intraday_high_alerts_{stamp}.csv"
     rows = []
     for alert in alerts:
@@ -610,7 +614,7 @@ def run(
     limit: int | None,
     dry_run: bool,
 ) -> int:
-    day = date.today().strftime("%Y%m%d")
+    day = jst_today().strftime("%Y%m%d")
     watchlist_codes: set[str] | None = None
     if _watchlist_enabled():
         watchlist_codes = load_watchlist_codes(output_dir / WATCHLIST_NAME)
@@ -632,11 +636,9 @@ def run(
     csv_path = write_csv(alerts, new_keys, output_dir)
     # T-K修正(2026-08-03): 日次サマリーが前日のログを巻き込んで同じ数字を出す事故が
     # 起きていた。集計側が当日分だけを数えられるよう、JSTの日付を必ず添える。
-    from jptime import jst_today as _jst_today
-
     print(
         f"intraday_alerts_detected={len(alerts)} new={len(new_alerts)} "
-        f"date={_jst_today().isoformat()}"
+        f"date={jst_today().isoformat()}"
     )
     if csv_path:
         print(f"intraday_csv={csv_path}")
