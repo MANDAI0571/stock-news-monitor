@@ -70,6 +70,7 @@ def main() -> None:
     _test_claude_note_structure_is_readable()
     _test_intraday_mail_is_capped()
     _test_intraday_mail_time_is_jst()
+    _test_intraday_morning_schedule_redundancy()
     print("self-test: OK")
 
 
@@ -2489,6 +2490,29 @@ def _test_intraday_mail_time_is_jst() -> None:
         importlib.reload(importlib.import_module("intraday_high_alert"))
 
     print("self-test: ザラ場メールの検知時刻はJST表記 OK")
+
+
+def _test_intraday_morning_schedule_redundancy() -> None:
+    """朝のcron欠落対策（開場前起動＋開場待ち）が消えていないことを確かめる。
+
+    2026-08-03・08-04 は 00:07 / 00:22 / 00:37 UTC の朝3本が GitHub 側で一度も
+    発火せず、午前中のアラートメールが1通も出なかった。00時台UTCは最混雑帯で、
+    スケジュールが丸ごと落ちることがある。そこで前日23時台UTC（＝JST 08:41 /
+    08:53）にも起動し、09:00 JST まで待ってから巡回に入る保険を足した。
+    この保険が将来の編集で外れないよう固定する。
+    """
+    from pathlib import Path
+
+    text = Path(".github/workflows/intraday_high_alert.yml").read_text(encoding="utf-8")
+    for cron in ('cron: "41 23 * * 0-4"', 'cron: "53 23 * * 0-4"'):
+        assert cron in text, f"開場前cronが無い: {cron}"
+    assert "[PREOPEN]" in text, "開場待ちの処理が無い"
+    assert 'if [ "$pre" -ge 820 ] && [ "$pre" -lt 900 ]' in text, "開場待ちの条件が無い"
+    assert 'if [ "$cur" -ge 900 ]; then break; fi' in text, "開場待ちの解除条件が無い"
+    # 既存の朝3本も残っていること（保険は足すだけで、置き換えではない）。
+    for cron in ('cron: "7 0 * * 1-5"', 'cron: "22 0 * * 1-5"', 'cron: "37 0 * * 1-5"'):
+        assert cron in text, f"既存の朝cronが消えている: {cron}"
+    print("self-test: ザラ場の朝cron欠落対策（開場前起動＋開場待ち） OK")
 
 
 if __name__ == "__main__":
