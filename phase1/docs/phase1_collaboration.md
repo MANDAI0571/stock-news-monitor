@@ -126,7 +126,14 @@ Claude: 配信文生成
 表示項目（各役割カード）: 担当AI／稼働状態／配信権限／最終成功日時／次の実行予定／エラー状態。
 実測のない項目（最終成功日時・エラー状態など）は「未記録」と表示し、値を捏造しない。
 
-## 10. セキュリティ原則（両者厳守）
+## 10. クラウド下書き接続
+
+- GitHub Actions Secret `PHASE1_SIGNUP_BASE_URL` に正式なメール登録URLを設定すると、平日16:30の `note_draft_cloud.yml` が52週新高値noteと同時にX・LINE下書きを生成する。
+- 生成物は `note-draft-cloud` artifact の `outputs/phase1_distribution/` に保存する。外部投稿やメール送信は行わず、人の確認後に使用する。
+- URL未設定時は失敗させず、`status.txt` に無効理由を記録する。
+- `data/metron_daily.csv` が存在する場合だけ実測KPIサマリーを生成する。サンプルCSVは本番処理に使用しない。
+
+## 11. セキュリティ原則（両者厳守）
 
 - メールアドレス・パスワード・APIキー等の秘密情報を **HTML／Markdown／CSV に書かない**。
 - 認証情報は各実行環境のシークレット管理（GitHub Secrets等）に置き、成果物ファイルには載せない。
