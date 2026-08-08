@@ -40,6 +40,10 @@ on:
     # 毎時00分付近の混雑を避ける。09:07 と 12:37 JST に起動する。
     # 保険として15分後・30分後にも起こす。GitHub側でスケジュールが落ちる事故に備える。
     # 先行の回が生きていれば concurrency で待たされ、直後に場外判定で即終了する。
+    # 【2026-08-08 追加】00時台UTC（＝JST09時台）のcronがGitHub側で丸ごと落ちる事故が続いたため、
+    # 前日23時台UTC（＝JST 08:41 / 08:53）にも起動し、ジョブ内で09:00 JSTまで待ってから巡回に入る。
+    - cron: "41 23 * * 0-4"
+    - cron: "53 23 * * 0-4"
     - cron: "7 0 * * 1-5"
     - cron: "22 0 * * 1-5"
     - cron: "37 0 * * 1-5"
@@ -152,6 +156,8 @@ jobs:
           exec > >(tee -a "$log_file") 2>&1
           start=$(date +%s)
           scan=0
+          # 開場前（JST 08:20〜08:59）に起動した回は、09:00 JST まで待ってから巡回に入る。朝のcron欠落対策。
+          pre=$((10#$(TZ=Asia/Tokyo date +%H%M))); if [ "$pre" -ge 820 ] && [ "$pre" -lt 900 ]; then echo "[PREOPEN] jst=$pre -> wait until 09:00 JST"; while :; do cur=$((10#$(TZ=Asia/Tokyo date +%H%M))); if [ "$cur" -ge 900 ]; then break; fi; sleep 30; done; echo "[PREOPEN] market open jst=$(TZ=Asia/Tokyo date '+%H:%M:%S')"; fi
           while true; do
             hm0=$(TZ=Asia/Tokyo date +%H%M); n0=$((10#$hm0)); if { [ "$n0" -ge 900 ] && [ "$n0" -lt 1130 ]; } || { [ "$n0" -ge 1230 ] && [ "$n0" -lt 1530 ]; }; then :; elif [ "$scan" -eq 0 ] && [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then echo "[GUARD] outside market hours jst=$hm0 but manual run -> single scan"; else echo "[GUARD] outside market hours jst=$hm0 -> exit without scanning (scans=$scan)"; break; fi
             scan=$((scan+1))
