@@ -102,14 +102,28 @@ def build_digest(output_dir: Path, now: datetime | None = None) -> DigestMail:
         "",
     ]
 
+    # T-P(2026-08-10): 本文が重い記事は複数の下書きに分割されるため、
+    # note_draft_url_highs2.txt のような続きのURLも順番に拾う。
     note_urls = (
-        ("統合版", "note_draft_url_cloud.txt"),
-        ("300万円 Claude版", "note_draft_url_claude.txt"),
-        ("押し目候補版", "note_draft_url_pullback.txt"),
-        ("52週新高値版", "note_draft_url_highs.txt"),
+        ("統合版", "cloud"),
+        ("300万円 Claude版", "claude"),
+        ("押し目候補版", "pullback"),
+        ("52週新高値版", "highs"),
     )
-    available_urls = [(label, _read_optional(output_dir / filename)) for label, filename in note_urls]
-    available_urls = [(label, url) for label, url in available_urls if url]
+    available_urls: list[tuple[str, str]] = []
+    for label, key in note_urls:
+        first = _read_optional(output_dir / f"note_draft_url_{key}.txt")
+        if not first:
+            continue
+        parts = [first]
+        for index in range(2, 21):
+            more = _read_optional(output_dir / f"note_draft_url_{key}{index}.txt")
+            if not more:
+                break
+            parts.append(more)
+        total = len(parts)
+        for index, url in enumerate(parts, start=1):
+            available_urls.append((label if total == 1 else f"{label}（{index}/{total}）", url))
     if available_urls:
         lines.append("## Note下書きURL（iPhone Safari用・記事別）")
         lines.append("noteアプリが落ちる場合に備え、Safariを経由して開くリンクです。")

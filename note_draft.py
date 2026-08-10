@@ -1895,6 +1895,103 @@ def build_highs_note(highs: pd.DataFrame, source: Path | None) -> str:
     return _scrub_forbidden_tokens("\n".join(lines))
 
 
+# ============================================================================
+# T-P(2026-08-10): noteの下書きがスマホで開けない問題への対策。
+#   note本文が3万字級になるとnoteのエディタ（ProseMirror）が描画しきれず、
+#   スマホでは開けない／保存後の再確認も失敗する（52週新高値の保存失敗）。
+#   そこで「見出し単位で複数の下書きに分割」する。内容は一切削らない。
+# ============================================================================
+
+NOTE_SPLIT_MAX_CHARS = int(os.getenv("NOTE_SPLIT_MAX_CHARS", "12000") or "12000")
+NOTE_SPLIT_KEYS = tuple(
+    k.strip() for k in os.getenv("NOTE_SPLIT_KEYS", "highs,pullback").split(",") if k.strip()
+)
+
+
+def _split_by_heading(text: str, prefix: str) -> list[str]:
+    """指定した見出し記号（'## ' など）で本文を塊に分ける。見出し前の文章は先頭の塊に残す。"""
+    parts: list[str] = []
+    cur: list[str] = []
+    for line in text.split("\n"):
+        if line.startswith(prefix) and cur:
+            parts.append("\n".join(cur))
+            cur = [line]
+        else:
+            cur.append(line)
+    if cur:
+        parts.append("\n".join(cur))
+    return parts
+
+
+def _atomize_markdown(text: str, max_chars: int) -> list[str]:
+    """max_chars を超えない塊のリストにする。'## ' → '### ' → 行 の順に細かくする。"""
+    if len(text) <= max_chars:
+        return [text]
+    for prefix in ("## ", "### "):
+        chunks = _split_by_heading(text, prefix)
+        if len(chunks) > 1:
+            out: list[str] = []
+            for chunk in chunks:
+                out.extend(_atomize_markdown(chunk, max_chars))
+            return out
+    # 見出しで割れない（巨大な表など）→ 行単位で詰める
+    out = []
+    cur: list[str] = []
+    size = 0
+    for line in text.split("\n"):
+        if cur and size + len(line) + 1 > max_chars:
+            out.append("\n".join(cur))
+            cur = []
+            size = 0
+        cur.append(line)
+        size += len(line) + 1
+    if cur:
+        out.append("\n".join(cur))
+    return out
+
+
+def split_note_markdown(body: str, max_chars: int | None = None) -> list[str]:
+    """noteの本文を複数の下書きに分割する。短ければ1本のまま返す（内容は削らない）。"""
+    limit = NOTE_SPLIT_MAX_CHARS if max_chars is None else max_chars
+    if limit <= 0 or len(body) <= limit:
+        return [body]
+    lines = body.split("\n")
+    if lines and lines[0].startswith("# "):
+        title_line = lines[0]
+        rest = "\n".join(lines[1:]).lstrip("\n")
+    else:
+        title_line = ""
+        rest = body
+    budget = max(limit - 200, 1000)
+    packed: list[str] = []
+    cur: list[str] = []
+    size = 0
+    for block in _atomize_markdown(rest, budget):
+        if cur and size + len(block) + 1 > budget:
+            packed.append("\n".join(cur))
+            cur = []
+            size = 0
+        cur.append(block)
+        size += len(block) + 1
+    if cur:
+        packed.append("\n".join(cur))
+    if len(packed) <= 1:
+        return [body]
+    total = len(packed)
+    out: list[str] = []
+    for index, part in enumerate(packed, start=1):
+        head: list[str] = []
+        if title_line:
+            head.append(f"{title_line}（{index}/{total}）")
+            head.append("")
+        head.append(
+            f"※ スマホでも開けるように、この記事は全{total}本に分割しています。これは{index}本目です。"
+        )
+        head.append("")
+        out.append("\n".join(head) + part.strip("\n") + "\n")
+    return out
+
+
 def write_one_note(key: str, note_markdown: str, chart_rel: str | None = None) -> dict[str, str]:
     title = extract_note_title(note_markdown)
     # タイトル直下に画像マーカーを差し込む（.md は記録として保持・.html はコメント無視で崩れない）
@@ -1938,7 +2035,13 @@ def build_note4(sources: SourceFiles, screening: pd.DataFrame, discipline: pd.Da
     # 4本すべての冒頭に市場ステータスを挿入（空欄禁止）
     status_lines = _market_status_block()
     notes = {key: _insert_market_status(body, status_lines) for key, body in notes.items()}
-    manifest = [write_one_note(key, body, chart_rel_path(key)) for key, body in notes.items()]
+    manifest: list[dict[str, str]] = []
+    for key, body in notes.items():
+        parts = split_note_markdown(body) if key in NOTE_SPLIT_KEYS else [body]
+        print(f"note_chars[{key}]={len(body)} split={len(parts)}")
+        for index, part in enumerate(parts, start=1):
+            part_key = key if index == 1 else f"{key}{index}"
+            manifest.append(write_one_note(part_key, part, chart_rel_path(key) if index == 1 else None))
     # v10(2026-07-19): ③ChatGPT版はCodexの独自ワークフロー
     # （chatgpt-300man-note.yml・毎営業日16:45）が生成・保存するため、
     # 日次autosaveのmanifestからは chatgpt を除外して3本保存にする（2重保存防止）。
@@ -1956,7 +2059,7 @@ def build_note4(sources: SourceFiles, screening: pd.DataFrame, discipline: pd.Da
         text = md_path.read_text(encoding="utf-8")
         if "## 市場ステータス" not in text or not any(f"**{v}**" in text for v in NOTE4_VALID_REGIMES):
             broken.append(f"note_{key}.md 市場ステータス欠落")
-    if len(manifest) != len(NOTE4_TITLES) or broken:
+    if len(manifest) < len(NOTE4_TITLES) or broken:
         raise RuntimeError(f"note4 generation incomplete: {', '.join(broken) or 'manifest不足'}")
     print("note4=4本生成OK（各冒頭に市場ステータス入り）")
     return manifest

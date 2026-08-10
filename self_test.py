@@ -72,6 +72,7 @@ def main() -> None:
     _test_intraday_mail_time_is_jst()
     _test_intraday_morning_schedule_redundancy()
     _test_intraday_openwork_link_only()
+    _test_note_split_for_mobile()
     print("self-test: OK")
 
 
@@ -2558,6 +2559,89 @@ def _test_intraday_openwork_link_only() -> None:
 
     print("self-test: OpenWorkは検索リンクのみ（規約遵守・評価値を取得しない） OK")
 
+
+
+def _test_note_split_for_mobile() -> None:
+    """T-P(2026-08-10): noteの下書きが重くてスマホで開けない件の再発防止。
+
+    - 短い本文は分割しない
+    - 長い本文は見出し単位で分割され、1本あたりの文字数が上限以内に収まる
+    - 分割しても本文の中身は1文字も欠けない（捏造も欠落もしない）
+    - 分割後の下書きURLがメール本文に全部載る
+    """
+    import importlib
+
+    note_draft = importlib.import_module("note_draft")
+
+    short = "# タイトル\n\n## みだし\n\n短い本文です。"
+    assert note_draft.split_note_markdown(short, 12000) == [short]
+
+    rows = "\n".join(f"| {i:04d} | 銘柄{i} | 1,234 | +1.23% | -0.45% | 未取得 | 1.2億円 | |" for i in range(400))
+    long_body = "\n".join([
+        "# 2026年8月10日 52週新高値 接近・到達銘柄",
+        "",
+        "## 市場ステータス",
+        "",
+        "**通常**",
+        "",
+        "## 【A】到達",
+        "",
+        rows,
+        "",
+        "## 【B】接近",
+        "",
+        rows,
+        "",
+        "## おわりに",
+        "",
+        "以上です。",
+    ])
+    parts = note_draft.split_note_markdown(long_body, 8000)
+    assert len(parts) >= 4, len(parts)
+    for part in parts:
+        assert len(part) <= 8000 + 400, len(part)
+    # タイトルに通し番号が入り、1本目に市場ステータスが残る
+    assert parts[0].startswith(f"# 2026年8月10日 52週新高値 接近・到達銘柄（1/{len(parts)}）")
+    assert "## 市場ステータス" in parts[0]
+    assert parts[-1].startswith(f"# 2026年8月10日 52週新高値 接近・到達銘柄（{len(parts)}/{len(parts)}）")
+    # 本文の行が1行も落ちていない
+    original_rows = [line for line in long_body.split("\n") if line.startswith("| 0")]
+    joined = "\n".join(parts)
+    kept = [line for line in joined.split("\n") if line.startswith("| 0")]
+    assert len(kept) == len(original_rows), f"{len(kept)} != {len(original_rows)}"
+    assert "## おわりに" in joined
+
+    # 分割された下書きURLがメール本文に全部載ること
+    import tempfile
+
+    cloud_mail_digest = importlib.import_module("cloud_mail_digest")
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp)
+        (out / "note_draft_url_highs.txt").write_text("https://editor.note.com/notes/naaa/edit/", encoding="utf-8")
+        (out / "note_draft_url_highs2.txt").write_text("https://editor.note.com/notes/nbbb/edit/", encoding="utf-8")
+        (out / "note_draft_url_highs3.txt").write_text("https://editor.note.com/notes/nccc/edit/", encoding="utf-8")
+        body = cloud_mail_digest.build_digest(out).body
+    for needle in ("naaa", "nbbb", "nccc"):
+        assert needle in body, needle
+    assert "52週新高値版（1/3）" in body, body
+
+    # 分割しても保存判定は「記事3本」で数える（note_draft_saved=3/3 が成立する）
+    note_autosave = importlib.import_module("note_autosave")
+    plain = [
+        ("claude", "https://editor.note.com/notes/n1/edit/", None, "ok"),
+        ("pullback", "https://editor.note.com/notes/n2/edit/", None, "ok"),
+        ("highs", "https://editor.note.com/notes/n3/edit/", None, "ok"),
+    ]
+    assert note_autosave.aggregate_article_saved(plain) == (3, 3)
+    split_ok = plain + [
+        ("highs2", "https://editor.note.com/notes/n4/edit/", None, "none"),
+        ("highs3", "https://editor.note.com/notes/n5/edit/", None, "none"),
+    ]
+    assert note_autosave.aggregate_article_saved(split_ok) == (3, 3)
+    split_ng = plain + [("highs2", None, "保存できません", "none")]
+    assert note_autosave.aggregate_article_saved(split_ng) == (2, 3)
+
+    print("self-test: noteの下書きは見出し単位で分割され、内容は欠けない OK")
 
 if __name__ == "__main__":
     main()

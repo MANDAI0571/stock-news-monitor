@@ -1141,6 +1141,23 @@ def _chart_marker_from_md(output_dir: Path, entry: dict) -> str | None:
     return match.group(1).strip() if match else None
 
 
+def aggregate_article_saved(results) -> tuple[int, int]:
+    """T-P(2026-08-10): 分割した下書きを「記事」単位にまとめて数える。
+
+    本文が長い記事は複数の下書き（highs / highs2 / highs3 …）に分けて保存するため、
+    下書きの本数と記事の本数が一致しなくなる。ワークフローの合格判定は
+    「記事が3本そろって保存できたか」で見たいので、末尾の数字を落として集約する。
+    記事の一部でも保存に失敗していれば、その記事は未保存として数える。
+    """
+    article_ok: dict[str, bool] = {}
+    for item in results:
+        key = str(item[0])
+        url = item[1]
+        base = re.sub(r"\d+$", "", key) or key
+        article_ok[base] = article_ok.get(base, True) and bool(url)
+    return sum(1 for value in article_ok.values() if value), len(article_ok)
+
+
 def _run_multi(output_dir: Path, entries: list[dict], headless: bool) -> int:
     payloads: list[tuple[str, NoteDraftPayload]] = []
     for entry in entries:
@@ -1165,7 +1182,9 @@ def _run_multi(output_dir: Path, entries: list[dict], headless: bool) -> int:
             if image_status == "ok":
                 img_ok += 1
         print(f"note_draft_image[{key}]={image_status}")
-    print(f"note_draft_saved={ok}/{len(results)}")
+    saved_articles, total_articles = aggregate_article_saved(results)
+    print(f"note_draft_parts_saved={ok}/{len(results)}")
+    print(f"note_draft_saved={saved_articles}/{total_articles}")
     print(f"note_draft_image_uploaded={img_ok}/{img_total}")
     return ok
 
