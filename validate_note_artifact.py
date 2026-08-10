@@ -408,6 +408,14 @@ def _validate_note4(result: ArtifactValidation) -> None:
             result.note4_status[label] = "未生成"
             continue
         text = _read_text(md_path)
+        # T-P(2026-08-10): スマホでも開けるように本文を複数の下書きへ分割したため、
+        #   続き（note_pullback2.md など）も連結して「1本の記事」として検証する。
+        #   これが無いと、1本目に候補表が無いだけでゲートが落ちる（run #70の停止原因）。
+        for part_index in range(2, 21):
+            part_path = result.artifact_dir / f"note_{key}{part_index}.md"
+            if not part_path.exists() or part_path.stat().st_size == 0:
+                break
+            text += "\n" + _read_text(part_path)
         if "## 市場ステータス" not in text:
             result.fail(f"note_{key}.md: 冒頭の市場ステータスがありません")
             result.note4_status[label] = "市場ステータス欠落"

@@ -73,6 +73,7 @@ def main() -> None:
     _test_intraday_morning_schedule_redundancy()
     _test_intraday_openwork_link_only()
     _test_note_split_for_mobile()
+    _test_note_split_passes_quality_gate()
     print("self-test: OK")
 
 
@@ -2642,6 +2643,62 @@ def _test_note_split_for_mobile() -> None:
     assert note_autosave.aggregate_article_saved(split_ng) == (2, 3)
 
     print("self-test: noteの下書きは見出し単位で分割され、内容は欠けない OK")
+
+
+def _test_note_split_passes_quality_gate() -> None:
+    """T-P(2026-08-10): 分割した下書きが品質ゲートで落ちない（run #70の再発防止）。
+
+    分割すると1本目には候補表が入らない。ゲートは続きも連結して見る必要がある。
+    """
+    import importlib
+    import tempfile
+
+    validate_note_artifact = importlib.import_module("validate_note_artifact")
+
+    status = "\n".join([
+        "## 市場ステータス",
+        "",
+        "- 本日の地合い: **NORMAL**",
+        "",
+    ])
+    part1 = "\n".join([
+        "# 52週新高値後の押し目候補（1/2）",
+        "",
+        "※ スマホでも開けるように、この記事は全2本に分割しています。これは1本目です。",
+        status,
+        "リテスト候補が**105銘柄**、押し目候補が**287銘柄**です。",
+        "",
+    ])
+    part2 = "\n".join([
+        "# 52週新高値後の押し目候補（2/2）",
+        "",
+        "## 【52週新高値後リテスト】",
+        "",
+        "### 従来表",
+        "",
+        "| コード | 銘柄 | 現在値 | 新高値ライン |",
+        "|---|---|---:|---:|",
+        "| 7011 | 三菱重工業 | 4000 | 3980 |",
+        "",
+    ])
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp)
+        (out / "note_pullback.md").write_text(part1, encoding="utf-8")
+        assert validate_note_artifact._note4_content_issue("pullback", part1) is not None
+
+        result = validate_note_artifact.ArtifactValidation(artifact_dir=out)
+        (out / "note_pullback2.md").write_text(part2, encoding="utf-8")
+        text = validate_note_artifact._read_text(out / "note_pullback.md")
+        for part_index in range(2, 21):
+            part_path = result.artifact_dir / f"note_pullback{part_index}.md"
+            if not part_path.exists() or part_path.stat().st_size == 0:
+                break
+            text += "\n" + validate_note_artifact._read_text(part_path)
+        assert "### 従来表" in text
+        assert validate_note_artifact._note4_content_issue("pullback", text) is None
+
+    print("self-test: 分割した下書きは連結して品質ゲートを通る OK")
 
 if __name__ == "__main__":
     main()
