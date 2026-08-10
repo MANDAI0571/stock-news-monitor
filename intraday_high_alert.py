@@ -217,6 +217,32 @@ def _code_text(code: object) -> str:
     return text[:-2] if text.endswith(".0") else text
 
 
+def earnings_label(d: object, today: object) -> str:
+    """決算予定日の表示文字列を作る。外部通信をしないので自己テストできる。
+
+    調査(2026-08-10): 取得元の Yahoo Finance は、次回の発表予定が未定のとき
+    「前回の実績日」を返すことがある（例: 2607 不二製油 = 2026-08-07。当日は 8/10）。
+    それをそのまま「決算予定日」として出すと、過ぎた日を予定日だと誤解させる。
+    そこで過去日は「次回未定（前回 YYYY-MM-DD）」と書き分ける。捏造はしない。
+    """
+    if d is None:
+        return "未取得"
+    text = d.isoformat()
+    try:
+        t0 = pd.Timestamp(today)
+        t1 = pd.Timestamp(d)
+        if pd.isna(t0) or pd.isna(t1):
+            return text
+        if t1 < t0:
+            return f"次回未定（前回 {text}）"
+        bdays = max(len(pd.bdate_range(t0, t1)) - 1, 0)
+        if bdays <= 7:
+            return f"{text} ⚠️ 決算接近"
+    except Exception:
+        pass
+    return text
+
+
 @lru_cache(maxsize=1024)
 def _fetch_earnings_label(code: str) -> str:
     """決算予定日を取得。失敗時は未取得。7営業日以内は警告を付ける。"""
@@ -224,19 +250,11 @@ def _fetch_earnings_label(code: str) -> str:
         d = fetch_next_earnings_date(f"{_code_text(code)}.T")
     except Exception:
         d = None
-    if d is None:
-        return "未取得"
-    text = d.isoformat()
     try:
-        today = pd.Timestamp(jst_today())
-        target = pd.Timestamp(d)
-        if target >= today:
-            bdays = max(len(pd.bdate_range(today, target)) - 1, 0)
-            if bdays <= 7:
-                return f"{text} ⚠️ 決算接近"
+        today = jst_today()
     except Exception:
-        pass
-    return text
+        today = None
+    return earnings_label(d, today)
 
 
 OPENWORK_SEARCH_BASE = "https://www.openwork.jp/search.php?src_str="
@@ -783,6 +801,17 @@ def _self_test() -> int:
     assert "OpenWork評価" not in body, body
     assert "👥 OpenWork:https://www.openwork.jp/search.php?src_str=" in body, body
     assert quote("三井松島HD", safe="") in body, body
+    # --- 決算予定日: 過去日を「予定日」と偽らない（2026-08-10 の誤表示の再発防止）---
+    import datetime as _dt
+    _today = _dt.date(2026, 8, 10)
+    assert earnings_label(None, _today) == "未取得"
+    assert earnings_label(_dt.date(2026, 8, 7), _today) == "次回未定（前回 2026-08-07）", \
+        earnings_label(_dt.date(2026, 8, 7), _today)
+    assert earnings_label(_dt.date(2026, 8, 12), _today) == "2026-08-12 ⚠️ 決算接近", \
+        earnings_label(_dt.date(2026, 8, 12), _today)
+    assert earnings_label(_dt.date(2026, 11, 5), _today) == "2026-11-05", \
+        earnings_label(_dt.date(2026, 11, 5), _today)
+    print("self-test: 決算予定日は過去日を「次回未定（前回…）」と書き分ける OK")
     assert DISCLAIMER in body
     assert "ほか2件" in build_subject(multi)
     assert "52週高値更新" in build_subject(multi), build_subject(multi)
