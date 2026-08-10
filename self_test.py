@@ -71,6 +71,7 @@ def main() -> None:
     _test_intraday_mail_is_capped()
     _test_intraday_mail_time_is_jst()
     _test_intraday_morning_schedule_redundancy()
+    _test_intraday_openwork_link_only()
     print("self-test: OK")
 
 
@@ -2513,6 +2514,49 @@ def _test_intraday_morning_schedule_redundancy() -> None:
     for cron in ('cron: "7 0 * * 1-5"', 'cron: "22 0 * * 1-5"', 'cron: "37 0 * * 1-5"'):
         assert cron in text, f"既存の朝cronが消えている: {cron}"
     print("self-test: ザラ場の朝cron欠落対策（開場前起動＋開場待ち） OK")
+
+
+def _test_intraday_openwork_link_only() -> None:
+    """OpenWorkは「評価値の掲載」ではなく「検索リンク」だけであることを固定する。
+
+    OpenWork利用規約(第11条)は、断続的な機械的アクセス・一括ダウンロード、入手した
+    情報の複製/転載/公衆送信/配布/提供、および商業目的での利用を禁止している。
+    2026-08-10に規約原文を確認し、評価値を取得してメールに載せる実装は行わないと決めた。
+    将来の編集でスクレイピングや評価値の埋め込みが復活しないよう、ここで固定する。
+    """
+    import importlib
+    from urllib.parse import quote
+
+    module = importlib.import_module("intraday_high_alert")
+
+    # 1) 社名からURLを組み立てるだけ。通信しない。
+    assert module.openwork_search_url("ブラザー工業") == (
+        "https://www.openwork.jp/search.php?src_str=" + quote("ブラザー工業", safe="")
+    )
+    # 2) 社名が無い場合はリンクを作らない（空文字）
+    for empty in ("", "   ", None, "nan"):
+        assert module.openwork_search_url(empty) == "", empty
+    # 3) 全角英数・中黒もそのままURLエンコードされる
+    assert quote("ジェイ・エス・ビー", safe="") in module.openwork_search_url("ジェイ・エス・ビー")
+
+    # 4) メール本文にはリンクが載り、評価値の欄は存在しない
+    alert = module.Alert(
+        code="1518", name="三井松島HD", current_price=1000.0,
+        alert_type="52週高値更新", high_type="52W_NEW_HIGH", line_label="52週高値",
+        line_price=1000.0, dist_pct=0.0, is_break=True, volume_ratio=1.5,
+        turnover_20d=1_000_000_000, reason="52週高値更新",
+    )
+    body = module.build_body([alert])
+    assert "👥 OpenWork:https://www.openwork.jp/search.php?src_str=" in body, body
+    assert "OpenWork評価" not in body, body
+    assert "未取得" not in body.split("👥 OpenWork:")[1].splitlines()[0], body
+
+    # 5) スクレイピング手段がモジュールに存在しないこと（規約遵守）
+    src = Path("intraday_high_alert.py").read_text(encoding="utf-8")
+    for banned in ("playwright", "selenium", "BeautifulSoup", "import requests", "import httpx"):
+        assert banned not in src, f"intraday_high_alert.py に取得手段が存在: {banned}"
+
+    print("self-test: OpenWorkは検索リンクのみ（規約遵守・評価値を取得しない） OK")
 
 
 if __name__ == "__main__":

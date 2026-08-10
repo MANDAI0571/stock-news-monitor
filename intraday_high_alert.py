@@ -40,13 +40,13 @@ import os
 import re
 from dataclasses import dataclass, asdict
 from functools import lru_cache
+from urllib.parse import quote
 from pathlib import Path
 
 import pandas as pd
 
 from scanner.highs import classify_high_profile
 from scanner.indicators import calculate_indicators
-from scanner.openwork import format_openwork_score, load_openwork_scores
 from scanner.prices import (
     ensure_output_dir,
     fetch_next_earnings_date,
@@ -179,7 +179,6 @@ class Alert:
     turnover_20d: int        # 20日平均売買代金（円）
     reason: str              # 判定理由
     earnings_date: str = "未取得"    # 決算予定日（7営業日以内なら警告付き）
-    openwork_score: str = "未取得"   # OpenWork評価
 
     def dedup_key(self) -> str:
         return f"{self.code}|{self.alert_type}"
@@ -240,25 +239,25 @@ def _fetch_earnings_label(code: str) -> str:
     return text
 
 
-def _load_openwork_map() -> dict[str, str]:
-    """data/openwork_scores.csv を code で引く。無ければ空。"""
-    try:
-        scores = load_openwork_scores()
-    except Exception:
-        return {}
-    if scores.empty:
-        return {}
-    out: dict[str, str] = {}
-    for _, row in scores.iterrows():
-        code = _code_text(row.get("code"))
-        out[code] = format_openwork_score(row.get("openwork_score"))
-    return out
+OPENWORK_SEARCH_BASE = "https://www.openwork.jp/search.php?src_str="
 
 
-def _apply_extra_fields(alert: Alert, code: object, openwork_map: dict[str, str]) -> Alert:
-    code_text = _code_text(code)
-    alert.earnings_date = _fetch_earnings_label(code_text)
-    alert.openwork_score = openwork_map.get(code_text, "未取得") or "未取得"
+def openwork_search_url(name: object) -> str:
+    """社名からOpenWorkの検索URLを組み立てる。外部通信は一切しない。
+
+    OpenWorkの利用規約(第11条)は、断続的な機械的アクセス・コンテンツの一括ダウンロード、
+    本サービスを通じて入手した情報の複製/編集/掲載/転載/公衆送信/配布/提供、および
+    商業目的での利用を禁止している。したがって評価値そのものは取得も保存も掲載もせず、
+    受け取った人が利用者として自分でOpenWorkを見に行くためのリンクだけを載せる。
+    """
+    text = str(name or "").strip()
+    if not text or text.lower() in ("nan", "none", "null"):
+        return ""
+    return OPENWORK_SEARCH_BASE + quote(text, safe="")
+
+
+def _apply_extra_fields(alert: Alert, code: object) -> Alert:
+    alert.earnings_date = _fetch_earnings_label(_code_text(code))
     return alert
 
 # --------------------------------------------------------------------------
@@ -433,16 +432,19 @@ def _format_alert(alert: Alert) -> list[str]:
         dist_text = "更新済み（乖離0%）"
     else:
         dist_text = f"あと{alert.dist_pct:.1f}%"
-    return [
+    lines = [
         f"{alert.code} {alert.name}",
         f"  現在値:{alert.current_price:,.1f}円 / 種別:{alert.alert_type}",
         f"  {alert.line_label}ライン:{alert.line_price:,.1f}円 / ラインまで:{dist_text}",
         f"  出来高比:{alert.volume_ratio:.2f}倍 / 売買代金:{alert.turnover_20d / 100_000_000:.1f}億円",
         f"  🗓 決算予定日:{alert.earnings_date}",
-        f"  👥 OpenWork評価:{alert.openwork_score}",
-        f"  理由:{alert.reason}",
-        "",
     ]
+    url = openwork_search_url(alert.name)
+    if url:
+        lines.append(f"  👥 OpenWork:{url}")
+    lines.append(f"  理由:{alert.reason}")
+    lines.append("")
+    return lines
 
 
 # --------------------------------------------------------------------------
@@ -541,7 +543,6 @@ def scan(
             [str(t) for t in universe["ticker"].tolist()], period=period
         )
         print(f"intraday_prefetch={prefetch_stats}", flush=True)
-    openwork_map = _load_openwork_map()
     alerts: list[Alert] = []
     out_of_scope = 0
     for idx, stock in enumerate(universe.itertuples(index=False), start=1):
@@ -565,7 +566,7 @@ def scan(
             if not alert_in_scope(alert, scope):
                 out_of_scope += 1
                 continue
-            alerts.append(_apply_extra_fields(alert, stock.code, openwork_map))
+            alerts.append(_apply_extra_fields(alert, stock.code))
         except Exception as exc:  # 1銘柄の失敗で全体を止めない
             print(f"skip {stock.ticker}: {exc}", flush=True)
             continue
@@ -778,7 +779,10 @@ def _self_test() -> int:
     assert "直近高値ブレイク（1件）" in body and "直近高値接近（1件）" in body, body
     # 52週更新が本文の先頭グループに来る
     assert body.index("52週高値更新") < body.index("直近高値ブレイク"), body
-    assert "決算予定日" in body and "OpenWork評価" in body, body
+    assert "決算予定日" in body, body
+    assert "OpenWork評価" not in body, body
+    assert "👥 OpenWork:https://www.openwork.jp/search.php?src_str=" in body, body
+    assert quote("三井松島HD", safe="") in body, body
     assert DISCLAIMER in body
     assert "ほか2件" in build_subject(multi)
     assert "52週高値更新" in build_subject(multi), build_subject(multi)
