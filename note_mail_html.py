@@ -1,0 +1,513 @@
+"""note下書きをメールで「ワンクリックでコピー」＋「note風プレビュー」にするための描画部品。
+
+T-P(2026-08-11): 依頼「note下書きはメールでHTMLでワンクリックでコピーできるようにして、
+それで実際のnoteに出るプレビューもメールで出るようにして」への対応。
+
+実測にもとづく制約と、その回避:
+- Gmailはメール本文中の <script> と onclick を必ず落とす。
+  → 本文だけでは「ボタンを押してコピー」は成立しない。
+    実際のコピーボタンは添付の note_copy_pack.html（ブラウザで開けばJSが動く）に置く。
+    本文には、そのまま長押し全選択できるコピー用テキスト枠を置く。
+- Gmailは約102KBで本文を打ち切る（Message clipped）。
+  → 本文には予算（MAIL_HTML_BUDGET_BYTES）を設ける。全文は必ず添付側に入る。
+- 途中で切れたテキストをnoteに貼ると記事が欠ける。
+  → 本文のコピー枠は「全文が収まるときだけ」出す。収まらない本は添付へ誘導する。
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime
+from html import escape
+from pathlib import Path
+from urllib.parse import quote
+import re
+
+
+# メール本文HTMLの予算（バイト）。Gmailの102KB打ち切りに対する安全側の値。
+MAIL_HTML_BUDGET_BYTES = 78_000
+# メール本文にコピー用テキストを「全文」載せられる上限（文字）。超える本は添付へ。
+MAIL_COPY_BLOCK_MAX_CHARS = 4_000
+# メール本文のnote風プレビューに使う1本あたりの上限（文字）。
+MAIL_PREVIEW_MAX_CHARS = 2_000
+
+NOTE_ARTICLES = (
+    ("chatgpt", "300万円 ChatGPT"),
+    ("claude", "300万円 Claude"),
+    ("pullback", "25MA/押し目・200MA/240MA"),
+    ("highs", "52週新高値"),
+)
+
+_BODY_FONT = (
+    "-apple-system,BlinkMacSystemFont,'Hiragino Sans','Yu Gothic',"
+    "'Noto Sans JP',sans-serif"
+)
+_MONO_FONT = "ui-monospace,SFMono-Regular,Menlo,Consolas,monospace"
+
+# note本文の見た目に寄せたCSS。Gmailはヘッダの<style>を解釈する。
+# 落とされた場合でも素のHTMLとして読めるよう、装飾だけをCSSに置いている。
+NOTE_CSS = (
+    "body{margin:0;padding:0;background:#eef1f4;}"
+    ".wrap{max-width:840px;margin:0 auto;padding:16px 14px 40px;background:#fff;"
+    "color:#111;font-family:" + _BODY_FONT + ";line-height:1.8;}"
+    ".nt h1{font-size:23px;line-height:1.45;font-weight:700;margin:18px 0 12px;}"
+    ".nt h2{font-size:18px;line-height:1.5;font-weight:700;margin:26px 0 10px;"
+    "padding-left:10px;border-left:4px solid #1f745f;}"
+    ".nt h3{font-size:16px;line-height:1.5;font-weight:700;margin:18px 0 8px;}"
+    ".nt p{font-size:15px;line-height:1.85;margin:10px 0;}"
+    ".nt ul{margin:10px 0;padding-left:22px;}"
+    ".nt li{font-size:15px;line-height:1.85;}"
+    ".nt a{color:#1f745f;}"
+    # スマホで横スクロールが出ないよう、長いURLは途中で折り返す。
+    ".nt p,.nt li,.nt a,.lnk{word-break:break-word;overflow-wrap:anywhere;}"
+    ".nt blockquote{margin:14px 0;padding:8px 14px;border-left:4px solid #d4dbe1;color:#4a5560;}"
+    ".nt hr{border:0;border-top:1px solid #e3e8ec;margin:22px 0;}"
+    ".nt .scroll{overflow-x:auto;margin:12px 0;}"
+    ".nt table{border-collapse:collapse;width:100%;}"
+    ".nt th,.nt td{border:1px solid #dfe5ea;padding:6px 8px;font-size:13px;line-height:1.6;"
+    "white-space:nowrap;text-align:left;}"
+    ".nt th{background:#eef3f1;}"
+    ".nt .img{margin:14px 0;padding:10px 12px;border:1px dashed #c8d2da;border-radius:6px;"
+    "background:#f7f9fa;color:#5b6b78;font-size:13px;}"
+    ".nt .cut{font-size:13px;color:#8a949c;}"
+    ".card{border:1px solid #e3e8ec;border-radius:8px;padding:12px 14px;margin:0 0 16px;}"
+    ".meta{font-size:12px;color:#8a949c;margin:0 0 4px;}"
+    ".ttl{font-size:15px;font-weight:700;margin:0 0 8px;}"
+    ".lnk{font-size:12px;margin:0 0 8px;word-break:break-all;}"
+    ".ng{color:#b23c17;}"
+    ".hint{font-size:12px;color:#5b6b78;margin:12px 0 4px;}"
+    ".copy{white-space:pre-wrap;word-break:break-all;font-family:" + _MONO_FONT + ";"
+    "font-size:11px;line-height:1.55;background:#fbfcfd;border:1px solid #d4dbe1;"
+    "border-radius:6px;padding:8px;margin:0;color:#111;}"
+)
+
+
+@dataclass(frozen=True)
+class NotePart:
+    """note下書き1本ぶん（分割記事なら1パート）。"""
+
+    key: str
+    label: str
+    index: int
+    total: int
+    title: str
+    markdown: str
+    url: str
+
+    @property
+    def part_label(self) -> str:
+        if self.total <= 1:
+            return self.label
+        return f"{self.label}（{self.index}/{self.total}）"
+
+    @property
+    def dom_id(self) -> str:
+        return f"{self.key}_{self.index}"
+
+
+# ---------------------------------------------------------------------------
+# 収集
+# ---------------------------------------------------------------------------
+
+
+def _read_optional(path: Path) -> str:
+    if not path.exists():
+        return ""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        text = path.read_text(encoding="utf-8-sig", errors="replace")
+    return text.replace("\x00", "").replace("\r\n", "\n").replace("\r", "\n").strip()
+
+
+def _part_stem(key: str, index: int) -> str:
+    return key if index == 1 else f"{key}{index}"
+
+
+def collect_note_parts(output_dir: Path) -> list[NotePart]:
+    """outputs/ にある note_*.md（分割ぶんを含む）を順番どおりに拾う。
+
+    1本目の保存に失敗してURLが無くても、2本目以降を落とさない。
+    """
+    parts: list[NotePart] = []
+    for key, label in NOTE_ARTICLES:
+        stems: list[tuple[int, str]] = []
+        for index in range(1, 21):
+            stem = _part_stem(key, index)
+            if not (output_dir / f"note_{stem}.md").exists():
+                if index == 1:
+                    continue
+                break
+            stems.append((index, stem))
+        total = len(stems)
+        if total == 0:
+            continue
+        for index, stem in stems:
+            markdown = _read_optional(output_dir / f"note_{stem}.md")
+            if not markdown:
+                continue
+            title = _read_optional(output_dir / f"note_{stem}_title.txt")
+            if not title:
+                title = _first_heading(markdown) or label
+            parts.append(
+                NotePart(
+                    key=key,
+                    label=label,
+                    index=index,
+                    total=total,
+                    title=title,
+                    markdown=markdown,
+                    url=_read_optional(output_dir / f"note_draft_url_{stem}.txt"),
+                )
+            )
+    return parts
+
+
+def _first_heading(markdown: str) -> str:
+    for line in markdown.split("\n"):
+        if line.startswith("# "):
+            return line[2:].strip()
+    return ""
+
+
+def safari_url(note_url: str) -> str:
+    return f"https://www.google.com/url?q={quote(note_url, safe='')}"
+
+
+# ---------------------------------------------------------------------------
+# Markdown → note風HTML
+# ---------------------------------------------------------------------------
+
+_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)\s]+)\)")
+_BOLD_RE = re.compile(r"\*\*([^*]+)\*\*")
+
+
+def render_inline(text: str) -> str:
+    out = escape(text)
+    out = _BOLD_RE.sub(lambda m: f"<strong>{m.group(1)}</strong>", out)
+
+    def link(match: re.Match[str]) -> str:
+        label, href = match.group(1), match.group(2)
+        if not href.lower().startswith(("http://", "https://", "mailto:")):
+            return label
+        return f'<a href="{href}">{label}</a>'
+
+    return _LINK_RE.sub(link, out)
+
+
+def _is_table_row(line: str) -> bool:
+    return line.startswith("|") and line.count("|") >= 2
+
+
+def _is_table_sep(line: str) -> bool:
+    return _is_table_row(line) and set(line.replace("|", "").strip()) <= set("-: ")
+
+
+def _cells(line: str) -> list[str]:
+    return [cell.strip() for cell in line.strip().strip("|").split("|")]
+
+
+def render_note_html(markdown: str, max_chars: int | None = None) -> str:
+    """noteの記事に近い見た目のHTML断片を返す（装飾はNOTE_CSS側）。"""
+    truncated = False
+    if max_chars is not None and len(markdown) > max_chars:
+        markdown = markdown[:max_chars]
+        truncated = True
+
+    lines = markdown.split("\n")
+    out: list[str] = ['<div class="nt">']
+    in_list = False
+    i = 0
+
+    def close_list() -> None:
+        nonlocal in_list
+        if in_list:
+            out.append("</ul>")
+            in_list = False
+
+    while i < len(lines):
+        line = lines[i].rstrip()
+        if _is_table_row(line) and i + 1 < len(lines) and _is_table_sep(lines[i + 1]):
+            close_list()
+            header = _cells(line)
+            i += 2
+            rows: list[list[str]] = []
+            while i < len(lines) and _is_table_row(lines[i].rstrip()):
+                rows.append(_cells(lines[i].rstrip()))
+                i += 1
+            out.append(_render_table(header, rows))
+            continue
+        if not line.strip():
+            close_list()
+            i += 1
+            continue
+        if line.startswith("# "):
+            close_list()
+            out.append("<h1>" + render_inline(line[2:]) + "</h1>")
+        elif line.startswith("## "):
+            close_list()
+            out.append("<h2>" + render_inline(line[3:]) + "</h2>")
+        elif line.startswith("### "):
+            close_list()
+            out.append("<h3>" + render_inline(line[4:]) + "</h3>")
+        elif line.startswith("![") and "](" in line and line.endswith(")"):
+            close_list()
+            alt = line[2:].split("](", 1)[0]
+            out.append(
+                '<div class="img">画像：'
+                + escape(alt)
+                + "（note側に貼り付け済み。メールでは表示しません）</div>"
+            )
+        elif line.startswith("> "):
+            close_list()
+            out.append("<blockquote>" + render_inline(line[2:]) + "</blockquote>")
+        elif line.strip() in {"---", "***", "___"}:
+            close_list()
+            out.append("<hr>")
+        elif line.startswith("- ") or line.startswith("* "):
+            if not in_list:
+                out.append("<ul>")
+                in_list = True
+            out.append("<li>" + render_inline(line[2:]) + "</li>")
+        else:
+            close_list()
+            out.append("<p>" + render_inline(line) + "</p>")
+        i += 1
+    close_list()
+    if truncated:
+        out.append(
+            '<p class="cut">…（ここまで抜粋。全文は添付 note_copy_pack.html と note_*.md にあります）</p>'
+        )
+    out.append("</div>")
+    return "\n".join(out)
+
+
+def _render_table(header: list[str], rows: list[list[str]]) -> str:
+    width = max([len(header)] + [len(row) for row in rows]) if rows else len(header)
+    parts = ['<div class="scroll"><table><thead><tr>']
+    for index in range(width):
+        parts.append("<th>" + render_inline(header[index] if index < len(header) else "") + "</th>")
+    parts.append("</tr></thead><tbody>")
+    for row in rows:
+        parts.append("<tr>")
+        for index in range(width):
+            parts.append("<td>" + render_inline(row[index] if index < len(row) else "") + "</td>")
+        parts.append("</tr>")
+    parts.append("</tbody></table></div>")
+    return "".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# 添付する「コピー用ページ」（ブラウザで開けばボタン1つでコピーできる）
+# ---------------------------------------------------------------------------
+
+_COPY_PACK_SCRIPT = """
+document.addEventListener('click', function (event) {
+  var button = event.target;
+  while (button && button.tagName !== 'BUTTON') { button = button.parentElement; }
+  if (!button || button.className.indexOf('copybtn') < 0) { return; }
+  var area = document.getElementById(button.getAttribute('data-target'));
+  if (!area) { return; }
+  var label = button.getAttribute('data-label') || 'コピー';
+  var text = area.value;
+  var done = function (ok) {
+    button.textContent = ok ? 'コピーしました' : '枠の中を長押しして全選択してください';
+    setTimeout(function () { button.textContent = label; }, 2500);
+  };
+  var legacy = function () {
+    var ok = false;
+    try {
+      area.readOnly = false;
+      area.focus();
+      area.setSelectionRange(0, text.length);
+      ok = document.execCommand('copy');
+      area.readOnly = true;
+    } catch (error) { ok = false; }
+    done(ok);
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(function () { done(true); }, legacy);
+  } else {
+    legacy();
+  }
+});
+"""
+
+_COPY_PACK_CSS = (
+    "h1.pk{font-size:22px;margin:8px 0 4px;}"
+    "p.lead{font-size:13px;color:#5b6b78;margin:0 0 18px;}"
+    "section{border-top:1px solid #e3e8ec;padding-top:18px;margin-top:26px;}"
+    "section h2.pk{font-size:18px;margin:0 0 8px;}"
+    "details{margin-top:14px;}"
+    "summary{font-size:14px;color:#1f745f;cursor:pointer;padding:6px 0;}"
+    ".row{margin-bottom:8px;}"
+    "button.copybtn{-webkit-appearance:none;appearance:none;border:0;border-radius:8px;"
+    "background:#1f745f;color:#fff;font-size:15px;font-weight:700;padding:12px 16px;"
+    "margin:0 8px 8px 0;cursor:pointer;}"
+    "button.copybtn:active{background:#17594a;}"
+    "textarea{width:100%;box-sizing:border-box;height:150px;font-family:" + _MONO_FONT + ";"
+    "font-size:12px;line-height:1.6;border:1px solid #d4dbe1;border-radius:6px;padding:8px;"
+    "background:#fbfcfd;}"
+    "textarea.short{height:56px;}"
+    "ul.toc{padding-left:20px;font-size:14px;}"
+)
+
+
+def build_copy_pack_html(parts: list[NotePart], now: datetime) -> str:
+    """note下書きを全文ぶん、ボタン1つでコピーできる単体HTMLにする。"""
+    blocks: list[str] = []
+    toc: list[str] = []
+    for part in parts:
+        toc.append(
+            f'<li><a href="#{part.dom_id}">{escape(part.part_label)}'
+            f"（{len(part.markdown):,}文字）</a></li>"
+        )
+        if part.url:
+            url_line = (
+                '<p class="lnk">note下書き: '
+                f'<a href="{escape(safari_url(part.url))}">{escape(part.url)}</a></p>'
+            )
+        else:
+            url_line = (
+                '<p class="lnk ng">この本はnote側の下書き保存が未完了です。'
+                "下のボタンでコピーして、noteの新規記事に貼り付けてください。</p>"
+            )
+        blocks.append(
+            f'<section id="{part.dom_id}">'
+            f'<h2 class="pk">{escape(part.part_label)}</h2>'
+            f"{url_line}"
+            '<div class="row">'
+            f'<button type="button" class="copybtn" data-target="title_{part.dom_id}" '
+            'data-label="タイトルをコピー">タイトルをコピー</button>'
+            f'<button type="button" class="copybtn" data-target="body_{part.dom_id}" '
+            'data-label="本文をコピー">本文をコピー</button>'
+            "</div>"
+            f'<textarea id="title_{part.dom_id}" class="short" readonly>{escape(part.title)}</textarea>'
+            f'<textarea id="body_{part.dom_id}" readonly>{escape(part.markdown)}</textarea>'
+            "<details><summary>noteでの見え方（プレビュー）を開く</summary>"
+            f"{render_note_html(part.markdown)}</details>"
+            "</section>"
+        )
+
+    if not blocks:
+        blocks.append('<section><h2 class="pk">note下書きが見つかりませんでした</h2></section>')
+        toc.append("<li>なし</li>")
+
+    return (
+        '<!doctype html>\n<html lang="ja">\n<head>\n'
+        '<meta charset="utf-8">\n'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
+        "<title>note下書き コピー用</title>\n"
+        "<style>" + NOTE_CSS + _COPY_PACK_CSS + "</style>\n"
+        "</head>\n<body>\n"
+        '<div class="wrap">\n'
+        '<h1 class="pk">note下書き コピー用</h1>\n'
+        f'<p class="lead">作成: {now.strftime("%Y-%m-%d %H:%M JST")} ／ '
+        "ボタンを押すとクリップボードに入ります。noteの新規記事に貼り付けてください。"
+        "（ボタンが効かないときは枠の中を長押しして全選択してください）</p>\n"
+        '<ul class="toc">\n' + "\n".join(toc) + "\n</ul>\n"
+        + "\n".join(blocks)
+        + "\n</div>\n<script>"
+        + _COPY_PACK_SCRIPT
+        + "</script>\n</body>\n</html>\n"
+    )
+
+
+# ---------------------------------------------------------------------------
+# メール本文HTML
+# ---------------------------------------------------------------------------
+
+
+def _copy_block(part: NotePart) -> str:
+    """メール本文に置くコピー用テキスト枠。途中で切れる本は出さない（貼ると記事が欠けるため）。"""
+    if len(part.markdown) > MAIL_COPY_BLOCK_MAX_CHARS:
+        return (
+            '<p class="hint ng">本文が長い（'
+            f"{len(part.markdown):,}文字）ので、コピー用テキストは添付 note_copy_pack.html "
+            "の「本文をコピー」ボタンにまとめています。</p>"
+        )
+    return (
+        '<p class="hint">コピー用テキスト（この枠を長押し→全選択→コピーで、そのままnoteに貼れます）</p>'
+        '<pre class="copy">' + escape(part.markdown) + "</pre>"
+    )
+
+
+def build_note_mail_section(parts: list[NotePart]) -> str:
+    """メール本文の「note下書き（コピー用＋プレビュー）」ブロック。予算内で詰める。"""
+    header = (
+        '<div class="nt"><h2>note下書き（コピー用とプレビュー）</h2></div>'
+        '<p class="hint">添付の <strong>note_copy_pack.html</strong> をブラウザで開くと、'
+        "ボタン1つで全文をコピーできます。ここには、noteでの見え方のプレビューを載せています。</p>"
+    )
+    if not parts:
+        return header + '<p class="hint ng">note下書きが見つかりませんでした。</p>'
+
+    chunks: list[str] = [header]
+    used = len(header.encode("utf-8"))
+    for part in parts:
+        pieces = [
+            '<div class="card">',
+            '<p class="meta">' + escape(part.part_label) + f"／{len(part.markdown):,}文字</p>",
+            '<p class="ttl">' + escape(part.title) + "</p>",
+        ]
+        if part.url:
+            pieces.append(
+                '<p class="lnk"><a href="'
+                + escape(safari_url(part.url))
+                + '">noteの下書きを開く（Safari経由）</a></p>'
+            )
+        else:
+            pieces.append(
+                '<p class="lnk ng">note側の下書き保存が未完了です。'
+                "添付 note_copy_pack.html からコピーして貼り付けてください。</p>"
+            )
+        pieces.append(_copy_block(part))
+        pieces.append('<p class="hint">noteでの見え方（プレビュー）</p>')
+        pieces.append(render_note_html(part.markdown, max_chars=MAIL_PREVIEW_MAX_CHARS))
+        pieces.append("</div>")
+        block = "".join(pieces)
+        size = len(block.encode("utf-8"))
+        if used + size > MAIL_HTML_BUDGET_BYTES:
+            chunks.append(
+                '<p class="hint ng">これ以降（'
+                + escape(part.part_label)
+                + " 以降）は、メールが長くなりすぎるため省略しました。"
+                "添付 note_copy_pack.html に全文が入っています。</p>"
+            )
+            break
+        chunks.append(block)
+        used += size
+    return "".join(chunks)
+
+
+def wrap_mail_html(title: str, sections: list[str]) -> str:
+    return (
+        '<!doctype html>\n<html lang="ja">\n<head>\n'
+        '<meta charset="utf-8">\n'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
+        f"<title>{escape(title)}</title>\n"
+        "<style>" + NOTE_CSS + "</style>\n"
+        "</head>\n<body>\n"
+        '<div class="wrap">\n' + "\n".join(sections) + "\n</div>\n</body>\n</html>\n"
+    )
+
+
+def build_mail_html(subject: str, text_body: str, parts: list[NotePart]) -> str:
+    """プレーン本文（Markdown）をHTML化し、note下書きのコピー枠とプレビューを先頭に足す。"""
+    note_section = build_note_mail_section(parts)
+    remaining = max(MAIL_HTML_BUDGET_BYTES - len(note_section.encode("utf-8")), 8_000)
+    rest = render_note_html(_strip_preview_section(text_body), max_chars=remaining)
+    return wrap_mail_html(subject, [note_section, rest])
+
+
+def _strip_preview_section(text_body: str) -> str:
+    """プレーン本文の「## 本文プレビュー」以下は、上のプレビューと重複するのでHTML側では省く。"""
+    marker = "\n## 本文プレビュー"
+    head, sep, tail = text_body.partition(marker)
+    if not sep:
+        return text_body
+    keep_marker = "\n## 添付"
+    _, sep2, attachments = tail.partition(keep_marker)
+    if sep2:
+        return head + keep_marker + attachments
+    return head

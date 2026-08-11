@@ -114,6 +114,7 @@ def send_gmail(
     config: GmailConfig,
     attachments: list[Path] | None = None,
     allow_non_business_day: bool = False,
+    html_body: str | None = None,
 ) -> bool:
     today = jst_today()
     if not allow_non_business_day and not is_jpx_business_day(today):
@@ -126,6 +127,10 @@ def send_gmail(
     message["Importance"] = "high"
     message["X-Priority"] = "1"
     message.set_content(body)
+    # T-P(2026-08-11): HTML版を足すと multipart/alternative になる。
+    #   HTMLを読めないクライアントには従来どおりプレーン本文が届く。
+    if html_body:
+        message.add_alternative(html_body, subtype="html")
 
     for attachment in _expand_attachments(attachments):
         path = Path(attachment)

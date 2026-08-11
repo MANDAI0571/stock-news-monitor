@@ -59,6 +59,7 @@ def main() -> None:
     _test_intraday_watchlist()
     _test_intraday_cloud_workflow_contract()
     _test_cloud_digest_mail()
+    _test_note_mail_copy_and_preview()
     _test_metron_kpi()
     _test_learning_log()
     _test_csv_schema_contract()
@@ -1584,6 +1585,88 @@ def _test_intraday_cloud_workflow_contract() -> None:
     assert "Check Gmail secrets" not in workflow
     assert "ENABLE_INTRADAY_MAIL" not in workflow
     assert "INTRADAY_STATUS_MAIL_ON_NO_NEW" not in workflow
+
+def _test_note_mail_copy_and_preview() -> None:
+    """note下書きはメールからワンクリックでコピーでき、noteでの見え方もメールに出る。"""
+    import inspect
+    import tempfile
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from cloud_mail_digest import build_digest
+    from gmail_notify import DISCLAIMER, send_gmail
+
+    # HTML版を渡せる口があり、multipart/alternativeになる実装であること
+    assert "html_body" in inspect.signature(send_gmail).parameters
+    assert "add_alternative" in inspect.getsource(send_gmail)
+
+    table = "\n".join(
+        ["| コード | 銘柄 | 現在値 |", "|---|---|---:|"]
+        + [f"| {7000 + i} | 銘柄{i} | {1000 + i} |" for i in range(40)]
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp)
+        (out / "note_claude.md").write_text(
+            "# Claude案\n\n![アイキャッチ](note_header_claude_300man.png)\n\n"
+            "## 市場ステータス\n\n**強気**。\n",
+            encoding="utf-8",
+        )
+        (out / "note_claude_title.txt").write_text("300万円Claude運用 2026-08-10", encoding="utf-8")
+        (out / "note_draft_url_claude.txt").write_text(
+            "https://editor.note.com/notes/nclaude/edit/", encoding="utf-8"
+        )
+        # 1本目だけ保存に失敗した分割記事（run #72で実際に起きた状態）
+        for index in range(1, 4):
+            stem = "highs" if index == 1 else f"highs{index}"
+            (out / f"note_{stem}.md").write_text(
+                f"# 52週新高値（{index}/3）\n\n## 候補\n\n{table}\n", encoding="utf-8"
+            )
+            (out / f"note_{stem}_title.txt").write_text(f"52週新高値（{index}/3）", encoding="utf-8")
+            if index >= 2:
+                (out / f"note_draft_url_{stem}.txt").write_text(
+                    f"https://editor.note.com/notes/nhigh{index}/edit/", encoding="utf-8"
+                )
+
+        digest = build_digest(out, now=datetime(2026, 8, 10, 19, 15, tzinfo=ZoneInfo("Asia/Tokyo")))
+
+        # 1本目が保存失敗でも、2本目以降のURLは消えない
+        assert "nhigh2" in digest.body
+        assert "nhigh3" in digest.body
+        assert "52週新高値版（2/3）" in digest.body
+        assert "## note下書きの保存に失敗した本" in digest.body
+        assert "52週新高値版（1/3）" in digest.body
+
+        # ワンクリックでコピーできる単体HTMLが添付される
+        pack_path = out / "note_copy_pack.html"
+        assert pack_path.exists()
+        assert any(path.name == "note_copy_pack.html" for path in digest.attachments)
+        pack = pack_path.read_text(encoding="utf-8")
+        assert pack.count("本文をコピー") >= 4 * 2  # ボタン文言 + data-label
+        assert "navigator.clipboard" in pack
+        assert "document.execCommand('copy')" in pack
+        # 本文は途中で切らずに全文が入る（貼り付けて記事が欠けないこと）
+        for index in range(1, 4):
+            stem = "highs" if index == 1 else f"highs{index}"
+            last_row = (out / f"note_{stem}.md").read_text(encoding="utf-8").rstrip().splitlines()[-1]
+            assert last_row in pack, last_row
+            assert f"52週新高値（{index}/3）" in pack
+
+        # メール本文はHTMLで、noteでの見え方（表・見出し・画像位置）が出る
+        html = digest.html_body
+        assert html.startswith("<!doctype html>")
+        assert "<table>" in html
+        assert "<h2>市場ステータス</h2>" in html
+        assert "noteでの見え方（プレビュー）" in html
+        assert "note_copy_pack.html" in html
+        assert "&lt;script&gt;" not in html  # 本文に生スクリプトは置かない
+        assert "<script" not in html
+        assert len(html.encode("utf-8")) < 100_000  # Gmailの本文打ち切り(約102KB)を避ける
+        # プレーン本文も従来どおり残る（HTMLを読めない環境向け）
+        assert digest.body.startswith("DUKEクラウド 結果まとめ")
+        assert DISCLAIMER in digest.body
+
+    print("self-test: note下書きのワンクリックコピーとnoteプレビュー OK")
+
 
 def _test_cloud_digest_mail() -> None:
     """25MA/押し目などの引け後クラウド結果はGmailで届き、手動再送もできる。"""

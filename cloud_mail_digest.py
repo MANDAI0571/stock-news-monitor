@@ -10,6 +10,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from gmail_notify import DISCLAIMER, load_gmail_config, send_gmail
+from note_mail_html import build_copy_pack_html, build_mail_html, collect_note_parts
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -36,6 +37,7 @@ FIXED_ATTACHMENTS = (
     "note_claude_title.txt",
     "note_pullback_title.txt",
     "note_highs_title.txt",
+    "note_copy_pack.html",
     "note_drafts_manifest.json",
     "note_cloud_artifact_manifest.json",
     "note_draft_url_cloud.txt",
@@ -68,6 +70,7 @@ class DigestMail:
     subject: str
     body: str
     attachments: list[Path]
+    html_body: str = ""
 
 
 def safari_note_url(note_url: str) -> str:
@@ -91,6 +94,12 @@ def parse_args() -> argparse.Namespace:
 def build_digest(output_dir: Path, now: datetime | None = None) -> DigestMail:
     now = now or datetime.now(JST)
     subject = f"【DUKEクラウド】25MA/200MA・本日のスクリーニング結果 {now.date().isoformat()}"
+
+    # T-P(2026-08-11): note下書きをワンクリックでコピーできるページを先に書き出し、
+    #   添付収集に間に合わせる（添付一覧は note_copy_pack.html を含む）。
+    note_parts = collect_note_parts(output_dir)
+    _write_copy_pack(output_dir, note_parts, now)
+
     attachments = collect_attachments(output_dir)
 
     lines: list[str] = [
@@ -110,25 +119,37 @@ def build_digest(output_dir: Path, now: datetime | None = None) -> DigestMail:
         ("押し目候補版", "pullback"),
         ("52週新高値版", "highs"),
     )
+    # T-P(2026-08-11): 1本目の保存が失敗しても2本目以降のURLを落とさない。
+    #   （run #72 では pullback/highs の1本目だけ保存に失敗し、
+    #     旧実装では続きの7本ぶんのURLがメールから丸ごと消えていた）
     available_urls: list[tuple[str, str]] = []
+    missing_parts: list[str] = []
     for label, key in note_urls:
-        first = _read_optional(output_dir / f"note_draft_url_{key}.txt")
-        if not first:
-            continue
-        parts = [first]
-        for index in range(2, 21):
-            more = _read_optional(output_dir / f"note_draft_url_{key}{index}.txt")
-            if not more:
-                break
-            parts.append(more)
-        total = len(parts)
-        for index, url in enumerate(parts, start=1):
-            available_urls.append((label if total == 1 else f"{label}（{index}/{total}）", url))
+        total = _count_note_parts(output_dir, key)
+        found: list[tuple[int, str]] = []
+        for index in range(1, max(total, 1) + 1):
+            stem = key if index == 1 else f"{key}{index}"
+            url = _read_optional(output_dir / f"note_draft_url_{stem}.txt")
+            if url:
+                found.append((index, url))
+            elif total > 0:
+                missing_parts.append(label if total == 1 else f"{label}（{index}/{total}）")
+        for index, url in found:
+            available_urls.append((label if total <= 1 else f"{label}（{index}/{total}）", url))
     if available_urls:
         lines.append("## Note下書きURL（iPhone Safari用・記事別）")
         lines.append("noteアプリが落ちる場合に備え、Safariを経由して開くリンクです。")
         lines.extend(f"- {label}: {safari_note_url(url)}" for label, url in available_urls)
         lines.append("")
+    if missing_parts:
+        lines.append("## note下書きの保存に失敗した本")
+        lines.append("下記はnote側に保存できていません。添付 note_copy_pack.html からコピーして貼り付けてください。")
+        lines.extend(f"- {label}" for label in missing_parts)
+        lines.append("")
+    lines.append("## note下書きのコピー")
+    lines.append("添付の note_copy_pack.html をSafariで開くと、ボタン1つで本文をコピーできます。")
+    lines.append("HTMLメールとして表示すると、noteでの見え方のプレビューも本文に出ます。")
+    lines.append("")
 
     lines.extend(_ma_touch_summary(output_dir))
     lines.append("")
@@ -151,7 +172,39 @@ def build_digest(output_dir: Path, now: datetime | None = None) -> DigestMail:
         DISCLAIMER,
     ])
     body = "\n".join(lines)
-    return DigestMail(subject=subject, body=body, attachments=attachments)
+    html_body = build_mail_html(subject, body, note_parts)
+    return DigestMail(subject=subject, body=body, attachments=attachments, html_body=html_body)
+
+
+def _count_note_parts(output_dir: Path, key: str) -> int:
+    """note_{key}.md / note_draft_url_{key}.txt の連番から、その記事の本数を数える。
+
+    1本目が欠けていても（保存失敗）2本目以降を数え漏らさない。
+    """
+    total = 0
+    for index in range(1, 21):
+        stem = key if index == 1 else f"{key}{index}"
+        exists = (output_dir / f"note_{stem}.md").exists() or (
+            output_dir / f"note_draft_url_{stem}.txt"
+        ).exists()
+        if exists:
+            total = index
+        elif index > 1:
+            break
+    return total
+
+
+def _write_copy_pack(output_dir: Path, note_parts: list, now: datetime) -> Path | None:
+    """ワンクリックでコピーできる単体HTMLを outputs/note_copy_pack.html に書く。"""
+    path = output_dir / "note_copy_pack.html"
+    try:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        path.write_text(build_copy_pack_html(note_parts, now), encoding="utf-8")
+    except OSError as error:
+        print(f"note_copy_pack=failed reason={error}")
+        return None
+    print(f"note_copy_pack={path} parts={len(note_parts)}")
+    return path
 
 
 def collect_attachments(output_dir: Path) -> list[Path]:
@@ -180,6 +233,8 @@ def write_digest_artifacts(output_dir: Path, digest: DigestMail) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "cloud_digest_mail_subject.txt").write_text(digest.subject + "\n", encoding="utf-8")
     (output_dir / "cloud_digest_mail_body.md").write_text(digest.body + "\n", encoding="utf-8")
+    if digest.html_body:
+        (output_dir / "cloud_digest_mail_body.html").write_text(digest.html_body, encoding="utf-8")
 
 
 def _section_title(output_dir: Path, key: str, fallback: str) -> str:
@@ -342,16 +397,26 @@ def main() -> None:
         print(digest.subject)
         print(digest.body)
         print(f"attachments={len(digest.attachments)}")
+        print(f"html_body_bytes={len(digest.html_body.encode('utf-8'))}")
         return
 
     config = load_gmail_config()
     if config is None:
         raise RuntimeError("GMAIL_USER/GMAIL_APP_PASSWORD/MAIL_TO が未設定です")
 
-    if not send_gmail(digest.subject, digest.body, config, attachments=digest.attachments):
+    if not send_gmail(
+        digest.subject,
+        digest.body,
+        config,
+        attachments=digest.attachments,
+        html_body=digest.html_body,
+    ):
         print("cloud_digest_mail=skipped reason=jpx_holiday")
         return
-    print(f"cloud_digest_mail=sent attachments={len(digest.attachments)}")
+    print(
+        f"cloud_digest_mail=sent attachments={len(digest.attachments)} "
+        f"html_body_bytes={len(digest.html_body.encode('utf-8'))}"
+    )
 
 
 if __name__ == "__main__":
