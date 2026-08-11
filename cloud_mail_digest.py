@@ -88,6 +88,13 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="クラウド生成済みのスクリーニング結果をGmailで送る")
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR))
     parser.add_argument("--dry-run", action="store_true", help="送信せず本文だけ生成する")
+    # T-P(2026-08-11): 休場日でも手動で1通だけ送れるようにする（手動再送・動作確認用）。
+    #   既定はOFFなので、定時運用の休場日スキップはこれまでどおり効く。
+    parser.add_argument(
+        "--force-send",
+        action="store_true",
+        help="休場日でも送る（手動再送用。既定はOFF）",
+    )
     return parser.parse_args()
 
 
@@ -410,6 +417,7 @@ def main() -> None:
         config,
         attachments=digest.attachments,
         html_body=digest.html_body,
+        allow_non_business_day=args.force_send,
     ):
         print("cloud_digest_mail=skipped reason=jpx_holiday")
         return
