@@ -30,6 +30,10 @@ MAIL_HTML_BUDGET_BYTES = 78_000
 MAIL_COPY_BLOCK_MAX_CHARS = 4_000
 # メール本文のnote風プレビューに使う1本あたりの上限（文字）。
 MAIL_PREVIEW_MAX_CHARS = 2_000
+# T-P(2026-08-13): コピー用プレーンメール1通あたりの本文予算（バイト）。
+#   Gmailは約102KBで本文を打ち切る。切られた本文を貼ると記事が欠けるので、
+#   余裕をもって切り、超える本は 1/2、2/2 のように分けて送る。
+COPY_MAIL_BUDGET_BYTES = 60_000
 
 NOTE_ARTICLES = (
     ("chatgpt", "300万円 ChatGPT"),
@@ -258,6 +262,10 @@ def render_note_html(markdown: str, max_chars: int | None = None) -> str:
                 + escape(alt)
                 + "（note側に貼り付け済み。メールでは表示しません）</div>"
             )
+        elif line.startswith("<!--") and line.endswith("-->"):
+            # T-P(2026-08-13): note本文中のHTMLコメント（chart_image など）は
+            #   note側では表示されない。プレビューでも文字として出さない。
+            close_list()
         elif line.startswith("> "):
             close_list()
             out.append("<blockquote>" + render_inline(line[2:]) + "</blockquote>")
@@ -511,3 +519,54 @@ def _strip_preview_section(text_body: str) -> str:
     if sep2:
         return head + keep_marker + attachments
     return head
+
+
+# ---------------------------------------------------------------------------
+# コピー用プレーンメール（iPhoneで確実に貼り付けられる経路）
+# ---------------------------------------------------------------------------
+
+
+def split_copy_text(text: str, budget: int = COPY_MAIL_BUDGET_BYTES) -> list[str]:
+    """本文を、1通あたり budget バイト以内の塊に行単位で分ける。
+
+    表の行や段落の途中では切らない（行の切れ目でだけ分ける）ので、
+    貼り付けたときに文字が欠けない。
+    """
+    if budget <= 0 or len(text.encode("utf-8")) <= budget:
+        return [text]
+    chunks: list[str] = []
+    current: list[str] = []
+    size = 0
+    for line in text.split("\n"):
+        line_bytes = len(line.encode("utf-8")) + 1
+        if current and size + line_bytes > budget:
+            chunks.append("\n".join(current))
+            current = []
+            size = 0
+        current.append(line)
+        size += line_bytes
+    if current:
+        chunks.append("\n".join(current))
+    return chunks
+
+
+def build_copy_mails(
+    parts: list[NotePart], budget: int = COPY_MAIL_BUDGET_BYTES
+) -> list[tuple[str, str]]:
+    """note下書き1本につき (件名, 本文) を返す。長い本は 1/2、2/2 に分ける。
+
+    本文は記事テキストだけにする。前置きも免責も付けない。
+    iPhoneのGmailで本文を長押し→すべてを選択→コピー、をそのまま
+    noteの本文に貼れる状態にするため。
+    """
+    mails: list[tuple[str, str]] = []
+    for part in parts:
+        text = part.markdown.strip()
+        if not text:
+            continue
+        chunks = split_copy_text(text, budget)
+        total = len(chunks)
+        for index, chunk in enumerate(chunks, start=1):
+            head = "【コピー用】" if total == 1 else f"【コピー用 {index}/{total}】"
+            mails.append((f"{head}{part.part_label}｜{part.title}", chunk))
+    return mails

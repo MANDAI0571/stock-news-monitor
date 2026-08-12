@@ -60,6 +60,7 @@ def main() -> None:
     _test_intraday_cloud_workflow_contract()
     _test_cloud_digest_mail()
     _test_note_mail_copy_and_preview()
+    _test_note_copy_mails()
     _test_metron_kpi()
     _test_learning_log()
     _test_csv_schema_contract()
@@ -2782,6 +2783,74 @@ def _test_note_split_passes_quality_gate() -> None:
         assert validate_note_artifact._note4_content_issue("pullback", text) is None
 
     print("self-test: 分割した下書きは連結して品質ゲートを通る OK")
+
+def _test_note_copy_mails() -> None:
+    """note下書きは1本1通、本文だけのプレーンメールでも届く（iPhone用の逃げ道）。"""
+    import tempfile
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from cloud_mail_digest import build_digest, parse_args
+    from note_mail_html import (
+        COPY_MAIL_BUDGET_BYTES,
+        build_copy_mails,
+        collect_note_parts,
+        render_note_html,
+        split_copy_text,
+    )
+
+    # 送らない口が用意されていること（既定は送る）
+    import inspect
+
+    source = inspect.getsource(parse_args)
+    assert "--no-copy-mails" in source
+
+    # 分けても文字は欠けない
+    long_text = "\n".join(f"| {7000 + i} | 銘柄{i} | {1000 + i} |" for i in range(4000))
+    chunks = split_copy_text(long_text, budget=20_000)
+    assert len(chunks) >= 2
+    for chunk in chunks:
+        assert len(chunk.encode("utf-8")) <= 20_000
+    assert "\n".join(chunks) == long_text
+
+    # プレビューにHTMLコメントを出さない
+    html = render_note_html("# 見出し\n\n<!-- chart_image: outputs/x.png -->\n\n本文\n")
+    assert "chart_image" not in html
+    assert "<h1>見出し</h1>" in html
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp)
+        body = "# 押し目\n\n## 候補\n\n" + "\n".join(
+            f"| {7000 + i} | 銘柄{i} | {1000 + i} |" for i in range(3000)
+        )
+        (out / "note_pullback.md").write_text(body, encoding="utf-8")
+        (out / "note_pullback_title.txt").write_text("25MA押し目 2026-08-13", encoding="utf-8")
+        (out / "note_chatgpt.md").write_text("# 短い本\n\n本文。\n", encoding="utf-8")
+        (out / "note_chatgpt_title.txt").write_text("300万円 ChatGPT 2026-08-13", encoding="utf-8")
+
+        build_digest(out, now=datetime(2026, 8, 13, 19, 0, tzinfo=ZoneInfo("Asia/Tokyo")))
+        mails = build_copy_mails(collect_note_parts(out))
+
+        assert mails, "コピー用メールが1通も作られていない"
+        for subject, text in mails:
+            # 本文は記事そのものだけ。前置き・免責を混ぜない（そのまま貼れること）
+            assert not text.startswith("DUKE")
+            assert DISCLAIMER not in text
+            # Gmailの打ち切り（約102KB）に掛からない
+            assert len(text.encode("utf-8")) <= COPY_MAIL_BUDGET_BYTES, subject
+
+        short = [item for item in mails if "300万円 ChatGPT" in item[0]]
+        assert len(short) == 1
+        assert short[0][0].startswith("【コピー用】")
+        assert short[0][1] == "# 短い本\n\n本文。"
+
+        long_mails = [item for item in mails if "25MA押し目" in item[0]]
+        assert len(long_mails) >= 2
+        assert long_mails[0][0].startswith("【コピー用 1/")
+        assert "\n".join(text for _, text in long_mails) == body.strip()
+
+    print("self-test: note下書きのコピー用メール OK")
+
 
 if __name__ == "__main__":
     main()

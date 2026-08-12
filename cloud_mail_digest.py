@@ -10,7 +10,12 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from gmail_notify import DISCLAIMER, load_gmail_config, send_gmail
-from note_mail_html import build_copy_pack_html, build_mail_html, collect_note_parts
+from note_mail_html import (
+    build_copy_mails,
+    build_copy_pack_html,
+    build_mail_html,
+    collect_note_parts,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -94,6 +99,15 @@ def parse_args() -> argparse.Namespace:
         "--force-send",
         action="store_true",
         help="休場日でも送る（手動再送用。既定はOFF）",
+    )
+    # T-P(2026-08-13): note下書きは本編メールとは別に、1本ごとに
+    #   「本文だけ」のプレーンメールでも送る。iPhoneのGmailは添付HTMLを
+    #   開けず、file:// ではコピー機能も動かないため、本文を長押し→
+    #   すべてを選択→コピー、で確実に貼り付けられる経路を用意する。
+    parser.add_argument(
+        "--no-copy-mails",
+        action="store_true",
+        help="note下書きのコピー用メールを送らない（既定は送る）",
     )
     return parser.parse_args()
 
@@ -405,6 +419,8 @@ def main() -> None:
         print(digest.body)
         print(f"attachments={len(digest.attachments)}")
         print(f"html_body_bytes={len(digest.html_body.encode('utf-8'))}")
+        for subject, text in build_copy_mails(collect_note_parts(output_dir)):
+            print(f"copy_mail bytes={len(text.encode('utf-8'))} subject={subject}")
         return
 
     config = load_gmail_config()
@@ -425,6 +441,17 @@ def main() -> None:
         f"cloud_digest_mail=sent attachments={len(digest.attachments)} "
         f"html_body_bytes={len(digest.html_body.encode('utf-8'))}"
     )
+
+    copy_mails = build_copy_mails(collect_note_parts(output_dir))
+    if args.no_copy_mails:
+        print(f"note_copy_mails=skipped reason=disabled count={len(copy_mails)}")
+        return
+    sent = 0
+    for subject, text in copy_mails:
+        # ここに来た時点で本編は送れている＝休場日ゲートは通過済み。
+        if send_gmail(subject, text, config, allow_non_business_day=True):
+            sent += 1
+    print(f"note_copy_mails=sent {sent}/{len(copy_mails)}")
 
 
 if __name__ == "__main__":
