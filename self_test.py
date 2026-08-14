@@ -2818,18 +2818,32 @@ def _test_note_copy_mails() -> None:
     assert "chart_image" not in html
     assert "<h1>見出し</h1>" in html
 
+    # Gmailは約102KBで本文を打ち切る。予算はその内側に収まっていること
+    assert COPY_MAIL_BUDGET_BYTES <= 100_000
+
     with tempfile.TemporaryDirectory() as tmp:
         out = Path(tmp)
-        body = "# 押し目\n\n## 候補\n\n" + "\n".join(
-            f"| {7000 + i} | 銘柄{i} | {1000 + i} |" for i in range(3000)
-        )
-        (out / "note_pullback.md").write_text(body, encoding="utf-8")
+        rows = ["| {} | 銘柄{} | {} |".format(7000 + i, i, 1000 + i) for i in range(3000)]
+        head = "# 押し目（1/3）\n\n<!-- chart_image: note_header_pullback.png -->\n\n"
+        head += "※ スマホでも開けるように、この記事は全3本に分割しています。これは1本目です。\n\n"
+        head += "## 候補\n\n"
+        (out / "note_pullback.md").write_text(head + "\n".join(rows[:1000]), encoding="utf-8")
         (out / "note_pullback_title.txt").write_text("25MA押し目 2026-08-13", encoding="utf-8")
+        for index, start in ((2, 1000), (3, 2000)):
+            part = "# 押し目（{}/3）\n\n".format(index)
+            part += "※ スマホでも開けるように、この記事は全3本に分割しています。これは{}本目です。\n\n".format(index)
+            part += "\n".join(rows[start : start + 1000])
+            (out / "note_pullback{}.md".format(index)).write_text(part, encoding="utf-8")
+            (out / "note_pullback{}_title.txt".format(index)).write_text(
+                "25MA押し目 2026-08-13", encoding="utf-8"
+            )
         (out / "note_chatgpt.md").write_text("# 短い本\n\n本文。\n", encoding="utf-8")
         (out / "note_chatgpt_title.txt").write_text("300万円 ChatGPT 2026-08-13", encoding="utf-8")
 
         build_digest(out, now=datetime(2026, 8, 13, 19, 0, tzinfo=ZoneInfo("Asia/Tokyo")))
-        mails = build_copy_mails(collect_note_parts(out))
+        parts = collect_note_parts(out)
+        assert len([item for item in parts if item.key == "pullback"]) == 3
+        mails = build_copy_mails(parts)
 
         assert mails, "コピー用メールが1通も作られていない"
         for subject, text in mails:
@@ -2844,10 +2858,28 @@ def _test_note_copy_mails() -> None:
         assert short[0][0].startswith("【コピー用】")
         assert short[0][1] == "# 短い本\n\n本文。"
 
+        # 記事1本＝メール1通。分割ぶんは連結されていること
         long_mails = [item for item in mails if "25MA押し目" in item[0]]
-        assert len(long_mails) >= 2
-        assert long_mails[0][0].startswith("【コピー用 1/")
-        assert "\n".join(text for _, text in long_mails) == body.strip()
+        assert len(long_mails) == 1, [subject for subject, _ in long_mails]
+        subject, text = long_mails[0]
+        assert subject.startswith("【コピー用】")
+        assert "（1/3）" not in subject
+        assert text.startswith("# 押し目\n")
+        # 貼り付けに邪魔な行が消えていること
+        assert "chart_image" not in text
+        assert "分割しています" not in text
+        assert "（2/3）" not in text
+        # 3本ぶんの中身が最後まで入っていること
+        for row in (rows[0], rows[999], rows[1000], rows[1999], rows[2000], rows[2999]):
+            assert row in text, row
+        assert text.count("# 押し目") == 1
+
+        # 予算を超える記事だけ分ける。つないだ結果は元と同じ
+        split_mails = build_copy_mails(parts, budget=20_000)
+        pullback = [item for item in split_mails if "25MA押し目" in item[0]]
+        assert len(pullback) >= 2
+        assert pullback[0][0].startswith("【コピー用 1/")
+        assert "\n".join(item[1] for item in pullback) == text
 
     print("self-test: note下書きのコピー用メール OK")
 

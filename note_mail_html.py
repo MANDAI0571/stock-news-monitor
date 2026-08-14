@@ -33,7 +33,7 @@ MAIL_PREVIEW_MAX_CHARS = 2_000
 # T-P(2026-08-13): コピー用プレーンメール1通あたりの本文予算（バイト）。
 #   Gmailは約102KBで本文を打ち切る。切られた本文を貼ると記事が欠けるので、
 #   余裕をもって切り、超える本は 1/2、2/2 のように分けて送る。
-COPY_MAIL_BUDGET_BYTES = 60_000
+COPY_MAIL_BUDGET_BYTES = 90_000
 
 NOTE_ARTICLES = (
     ("chatgpt", "300万円 ChatGPT"),
@@ -550,23 +550,73 @@ def split_copy_text(text: str, budget: int = COPY_MAIL_BUDGET_BYTES) -> list[str
     return chunks
 
 
+SPLIT_NOTICE_RE = re.compile(
+    r"^※\s*スマホでも開けるように、この記事は全\d+本に分割しています。これは\d+本目です。\s*$"
+)
+PART_SUFFIX_RE = re.compile(r"（\d+/\d+）\s*$")
+
+
+def _copy_body(part: NotePart) -> str:
+    """1本ぶんの本文から、noteに貼るとき邪魔になる行を落とす。
+
+    T-P(2026-08-14): 落とすのは3種類。
+      - <!-- chart_image: ... --> などのHTMLコメント行（note側では表示されない）
+      - 「※ スマホでも開けるように…全N本に分割しています」の案内行
+        （連結して1通にするので、もう嘘になる）
+      - 2本目以降の先頭に付いている見出し行（1本目の見出しだけ残す）
+    1本目の見出しからは（1/N）を外す。
+    """
+    out: list[str] = []
+    for line in part.markdown.strip().split("\n"):
+        stripped = line.strip()
+        if stripped.startswith("<!--") and stripped.endswith("-->"):
+            continue
+        if SPLIT_NOTICE_RE.match(stripped):
+            continue
+        if not out and stripped.startswith("# "):
+            if part.index > 1:
+                continue
+            out.append(PART_SUFFIX_RE.sub("", line).rstrip())
+            continue
+        out.append(line)
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip("\n")
+
+
 def build_copy_mails(
     parts: list[NotePart], budget: int = COPY_MAIL_BUDGET_BYTES
 ) -> list[tuple[str, str]]:
-    """note下書き1本につき (件名, 本文) を返す。長い本は 1/2、2/2 に分ける。
+    """記事1本につき (件名, 本文) を1つ返す。分割ぶんは連結してから1通にする。
+
+    T-P(2026-08-14): 以前は part ごとに1通作っていたので、押し目が6通、
+    新高値が4通に散っていた。iPhoneでは1通ぶんずつしかコピーできないので、
+    同じ key の part を index 順につないでから1通にする。
+    Gmailは約102KBで本文を打ち切るため、そこに収まらない記事だけ
+    【コピー用 1/2】のように分ける（普段は1通で収まる）。
 
     本文は記事テキストだけにする。前置きも免責も付けない。
     iPhoneのGmailで本文を長押し→すべてを選択→コピー、をそのまま
     noteの本文に貼れる状態にするため。
     """
-    mails: list[tuple[str, str]] = []
+    order: list[str] = []
+    grouped: dict[str, list[NotePart]] = {}
     for part in parts:
-        text = part.markdown.strip()
+        if part.key not in grouped:
+            grouped[part.key] = []
+            order.append(part.key)
+        grouped[part.key].append(part)
+
+    mails: list[tuple[str, str]] = []
+    for key in order:
+        group = sorted(grouped[key], key=lambda item: item.index)
+        text = "\n\n".join(body for body in (_copy_body(item) for item in group) if body)
+        text = text.strip()
         if not text:
             continue
+        label = group[0].label
+        title = PART_SUFFIX_RE.sub("", group[0].title).strip() or label
         chunks = split_copy_text(text, budget)
         total = len(chunks)
         for index, chunk in enumerate(chunks, start=1):
             head = "【コピー用】" if total == 1 else f"【コピー用 {index}/{total}】"
-            mails.append((f"{head}{part.part_label}｜{part.title}", chunk))
+            mails.append((f"{head}{label}｜{title}", chunk))
     return mails
