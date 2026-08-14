@@ -59,7 +59,7 @@ jobs:
             echo "::warning::successful note_draft_cloud run was not found"
             exit 0
           fi
-          gh run download "$run_id" -n note-draft-cloud -D outputs || echo "::warning::note-draft-cloud artifact download failed"
+          rm -rf .note_artifact; mkdir -p .note_artifact; gh run download "$run_id" -n note-draft-cloud -D .note_artifact || echo "::warning::note-draft-cloud artifact download failed"; cp -a .note_artifact/. outputs/ 2>/dev/null || true; rm -rf .note_artifact
           find outputs -maxdepth 1 -type f | sort
 
       - name: Check Gmail secrets
