@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import csv
+import os
 import re
+import subprocess
 from urllib.parse import quote
 from dataclasses import dataclass
 from datetime import datetime
@@ -11,6 +13,7 @@ from zoneinfo import ZoneInfo
 
 from gmail_notify import DISCLAIMER, load_gmail_config, send_gmail
 from note_mail_html import (
+    COPY_PAGE_URL,
     build_copy_mails,
     build_copy_pack_html,
     build_mail_html,
@@ -112,6 +115,135 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+# ---------------------------------------------------------------------------
+# T-Q(2026-08-15): コピー用ページを GitHub Pages（docs/copy/）に公開する。
+#   iPhoneのSafariは添付HTMLではクリップボードAPIが使えないため、
+#   https:// の実ページを用意して、メールからワンタップで開けるようにする。
+# ---------------------------------------------------------------------------
+
+DOCS_COPY_DIR = PROJECT_ROOT / "docs" / "copy"
+
+COPY_INDEX_HTML = """<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>note下書き コピー用</title>
+<style>
+body{font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans",sans-serif;
+margin:0;padding:24px;line-height:1.9;color:#1b2733;}
+a.big{display:inline-block;background:#1f745f;color:#fff;text-decoration:none;
+font-weight:700;font-size:18px;padding:14px 20px;border-radius:8px;}
+p.small{font-size:13px;color:#5b6b78;}
+</style>
+</head>
+<body>
+<h1>note下書き コピー用</h1>
+<p><a class="big" href="latest.html">最新の下書きを開く</a></p>
+<p class="small">更新: __UPDATED__</p>
+<p class="small">このページは自動生成です。銘柄の記載は機械的なスクリーニング結果であり、
+投資助言ではありません。売買判断はご自身の責任で行ってください。</p>
+</body>
+</html>
+"""
+
+
+def publish_copy_page(note_parts: list, now: datetime, output_dir: Path) -> str | None:
+    """コピー用HTMLを docs/copy/ に書き、GitHub Pages で開けるようにする。
+
+    セルフテストは一時ディレクトリを --output-dir に渡すので、
+    本番の outputs/ 以外では絶対に公開しない（テスト用の中身を公開しないため）。
+    """
+    if output_dir.resolve() != DEFAULT_OUTPUT_DIR.resolve():
+        print(f"copy_page=skipped reason=not_production_output_dir dir={output_dir}")
+        return None
+    if not note_parts:
+        print("copy_page=skipped reason=no_note_parts")
+        return None
+    try:
+        html = build_copy_pack_html(note_parts, now)
+    except Exception as error:  # noqa: BLE001 - 公開に失敗してもメールは送る
+        print(f"copy_page=failed reason=build:{error}")
+        return None
+    try:
+        DOCS_COPY_DIR.mkdir(parents=True, exist_ok=True)
+        (DOCS_COPY_DIR / "latest.html").write_text(html, encoding="utf-8")
+        (DOCS_COPY_DIR / f"{now.date().isoformat()}.html").write_text(html, encoding="utf-8")
+        stamp = now.strftime("%Y-%m-%d %H:%M JST")
+        (DOCS_COPY_DIR / "index.html").write_text(
+            COPY_INDEX_HTML.replace("__UPDATED__", stamp), encoding="utf-8"
+        )
+        prune_copy_pages()
+    except OSError as error:
+        print(f"copy_page=failed reason=write:{error}")
+        return None
+    print(f"copy_page=written dir={DOCS_COPY_DIR} parts={len(note_parts)}")
+    if push_copy_page(now):
+        print(f"copy_page=published url={COPY_PAGE_URL}")
+        return COPY_PAGE_URL
+    print("copy_page=not_pushed（メールのリンクは前回公開分を指します）")
+    return COPY_PAGE_URL
+
+
+def prune_copy_pages(keep: int = 14) -> None:
+    """日付つきページは直近 keep 日ぶんだけ残す（リポジトリを太らせない）。"""
+    dated = sorted(
+        (path for path in DOCS_COPY_DIR.glob("20*.html")),
+        key=lambda path: path.name,
+        reverse=True,
+    )
+    for path in dated[keep:]:
+        try:
+            path.unlink()
+            print(f"copy_page=pruned {path.name}")
+        except OSError:
+            pass
+
+
+def push_copy_page(now: datetime) -> bool:
+    """docs/copy/ の変更を main に push する。失敗してもメール送信は続ける。"""
+
+    def run(*args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            args, cwd=str(PROJECT_ROOT), capture_output=True, text=True, timeout=120
+        )
+
+    try:
+        if run("git", "rev-parse", "--is-inside-work-tree").returncode != 0:
+            print("copy_page=push_skipped reason=not_a_git_repo")
+            return False
+        run("git", "config", "user.name", "github-actions[bot]")
+        run(
+            "git",
+            "config",
+            "user.email",
+            "github-actions[bot]@users.noreply.github.com",
+        )
+        add = run("git", "add", "docs/copy")
+        if add.returncode != 0:
+            print(f"copy_page=push_failed step=add err={add.stderr.strip()[:200]}")
+            return False
+        if run("git", "diff", "--cached", "--quiet").returncode == 0:
+            print("copy_page=push_skipped reason=no_change")
+            return True
+        message = f"chore: publish note copy page {now.date().isoformat()} [skip ci]"
+        commit = run("git", "commit", "-m", message)
+        if commit.returncode != 0:
+            print(f"copy_page=push_failed step=commit err={commit.stderr.strip()[:200]}")
+            return False
+        branch = os.environ.get("GITHUB_REF_NAME") or "main"
+        run("git", "pull", "--rebase", "origin", branch)
+        push = run("git", "push", "origin", f"HEAD:{branch}")
+        if push.returncode != 0:
+            print(f"copy_page=push_failed step=push err={push.stderr.strip()[:200]}")
+            return False
+    except Exception as error:  # noqa: BLE001 - 公開失敗でメールを止めない
+        print(f"copy_page=push_failed reason={error}")
+        return False
+    print("copy_page=pushed")
+    return True
+
+
 def build_digest(output_dir: Path, now: datetime | None = None) -> DigestMail:
     now = now or datetime.now(JST)
     subject = f"【DUKEクラウド】25MA/200MA・本日のスクリーニング結果 {now.date().isoformat()}"
@@ -120,6 +252,7 @@ def build_digest(output_dir: Path, now: datetime | None = None) -> DigestMail:
     #   添付収集に間に合わせる（添付一覧は note_copy_pack.html を含む）。
     note_parts = collect_note_parts(output_dir)
     _write_copy_pack(output_dir, note_parts, now)
+    page_url = publish_copy_page(note_parts, now, output_dir)
 
     attachments = collect_attachments(output_dir)
 
@@ -131,6 +264,11 @@ def build_digest(output_dir: Path, now: datetime | None = None) -> DigestMail:
         "Markdown/HTML/CSVの元ファイルは添付に入れています。",
         "",
     ]
+    if page_url:
+        lines.append("## コピー用ページ（iPhoneはここから）")
+        lines.append("下のURLをSafariで開くと、ボタン1つで本文をコピーできます。")
+        lines.append(page_url)
+        lines.append("")
 
     # T-P(2026-08-10): 本文が重い記事は複数の下書きに分割されるため、
     # note_draft_url_highs2.txt のような続きのURLも順番に拾う。
@@ -168,7 +306,8 @@ def build_digest(output_dir: Path, now: datetime | None = None) -> DigestMail:
         lines.extend(f"- {label}" for label in missing_parts)
         lines.append("")
     lines.append("## note下書きのコピー")
-    lines.append("添付の note_copy_pack.html をSafariで開くと、ボタン1つで本文をコピーできます。")
+    lines.append(f"コピー用ページ: {COPY_PAGE_URL}")
+    lines.append("添付の note_copy_pack.html も同じ内容ですが、iPhoneではページのほうが確実です。")
     lines.append("HTMLメールとして表示すると、noteでの見え方のプレビューも本文に出ます。")
     lines.append("")
 

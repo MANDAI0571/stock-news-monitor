@@ -35,6 +35,10 @@ MAIL_PREVIEW_MAX_CHARS = 2_000
 #   余裕をもって切り、超える本は 1/2、2/2 のように分けて送る。
 COPY_MAIL_BUDGET_BYTES = 90_000
 
+# T-Q(2026-08-15): iPhoneのSafariは添付HTMLからクリップボードAPIを使えないため、
+#   同じ内容を GitHub Pages に公開し、そのURLをメール先頭に置く。
+COPY_PAGE_URL = "https://mandai0571.github.io/stock-news-monitor/copy/latest.html"
+
 NOTE_ARTICLES = (
     ("chatgpt", "300万円 ChatGPT"),
     ("claude", "300万円 Claude"),
@@ -444,8 +448,12 @@ def build_note_mail_section(parts: list[NotePart]) -> str:
     """メール本文の「note下書き（コピー用＋プレビュー）」ブロック。予算内で詰める。"""
     header = (
         '<div class="nt"><h2>note下書き（コピー用とプレビュー）</h2></div>'
-        '<p class="hint">添付の <strong>note_copy_pack.html</strong> をブラウザで開くと、'
-        "ボタン1つで全文をコピーできます。ここには、noteでの見え方のプレビューを載せています。</p>"
+        '<p class="hint"><a href="' + COPY_PAGE_URL + '" '
+        'style="display:inline-block;background:#1f745f;color:#ffffff;'
+        'text-decoration:none;font-weight:700;font-size:17px;'
+        'padding:14px 18px;border-radius:8px;">コピー用ページを開く（iPhone可）</a></p>'
+        '<p class="hint">上のリンクを開くと、ボタン1つで本文をコピーできます。'
+        "添付の note_copy_pack.html も同じ内容ですが、iPhoneではリンクのほうが確実です。</p>"
     )
     if not parts:
         return header + '<p class="hint ng">note下書きが見つかりませんでした。</p>'
