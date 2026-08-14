@@ -283,6 +283,9 @@ jobs:
             outputs/note_claude_title.txt
             outputs/note_pullback_title.txt
             outputs/note_highs_title.txt
+            outputs/note_*.md
+            outputs/note_*.html
+            outputs/note_*_title.txt
             outputs/note_drafts_manifest.json
             outputs/note_cloud_artifact_manifest.json
             outputs/note_draft_url_cloud.txt
