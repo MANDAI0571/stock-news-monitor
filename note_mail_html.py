@@ -590,10 +590,10 @@ def _copy_body(part: NotePart) -> str:
     return re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip("\n")
 
 
-def build_copy_mails(
+def build_copy_mail_items(
     parts: list[NotePart], budget: int = COPY_MAIL_BUDGET_BYTES
-) -> list[tuple[str, str]]:
-    """記事1本につき (件名, 本文) を1つ返す。分割ぶんは連結してから1通にする。
+) -> list[tuple[str, str, str]]:
+    """記事1本につき (件名, 本文, アンカー) を1つ返す。分割ぶんは連結してから1通にする。
 
     T-P(2026-08-14): 以前は part ごとに1通作っていたので、押し目が6通、
     新高値が4通に散っていた。iPhoneでは1通ぶんずつしかコピーできないので、
@@ -613,7 +613,7 @@ def build_copy_mails(
             order.append(part.key)
         grouped[part.key].append(part)
 
-    mails: list[tuple[str, str]] = []
+    mails: list[tuple[str, str, str]] = []
     for key in order:
         group = sorted(grouped[key], key=lambda item: item.index)
         text = "\n\n".join(body for body in (_copy_body(item) for item in group) if body)
@@ -626,5 +626,57 @@ def build_copy_mails(
         total = len(chunks)
         for index, chunk in enumerate(chunks, start=1):
             head = "【コピー用】" if total == 1 else f"【コピー用 {index}/{total}】"
-            mails.append((f"{head}{label}｜{title}", chunk))
+            mails.append((f"{head}{label}｜{title}", chunk, group[0].dom_id))
     return mails
+
+
+def build_copy_mails(
+    parts: list[NotePart], budget: int = COPY_MAIL_BUDGET_BYTES
+) -> list[tuple[str, str]]:
+    """(件名, 本文) だけが要る呼び出し向けの薄い包み。"""
+    return [(subject, text) for subject, text, _ in build_copy_mail_items(parts, budget)]
+
+
+# Gmailは約102KBで本文を打ち切る。HTML版はその内側に収める。
+COPY_MAIL_HTML_BUDGET_BYTES = 99_000
+
+
+def build_copy_mail_html(text: str, anchor: str) -> str:
+    """【コピー用】メールのHTML版。先頭にワンクリックコピーのボタンを置く。
+
+    T-P(2026-08-18): 件名に「コピー用」と書いてあるメールにこそボタンが無く、
+    「どこにもワンクリックコピペがない」状態になっていた。ここで直す。
+    プレーン本文は記事テキストだけのまま（HTMLを読めない環境の逃げ道）。
+    """
+    link = COPY_PAGE_URL + ("#" + anchor if anchor else "")
+    head = (
+        "<!doctype html><html><head><meta charset=\"utf-8\">"
+        "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+        "</head><body style=\"margin:0;padding:16px;background:#ffffff;"
+        f"font-family:{_BODY_FONT};color:#111111;\">"
+        f'<p style="margin:0 0 14px 0"><a href="{escape(link)}" '
+        'style="display:block;background:#1f745f;color:#ffffff;text-decoration:none;'
+        'font-weight:700;font-size:20px;line-height:1.4;padding:18px 16px;'
+        'border-radius:10px;text-align:center;">ここを押す → ワンクリックでコピー</a></p>'
+        '<p style="margin:0 0 18px 0;font-size:15px;line-height:1.6;color:#333333;">'
+        "上のボタンでコピー用ページが開きます。"
+        "「本文をコピー」を1回押すだけで、そのままnoteに貼れます。</p>"
+    )
+    tail = "</body></html>"
+    fallback = (
+        '<p style="margin:0 0 6px 0;font-size:13px;color:#666666;">'
+        "↓ 予備（ボタンが使えないとき用の同じ本文）</p>"
+        '<pre style="white-space:pre-wrap;word-break:break-word;font-size:13px;'
+        "line-height:1.6;background:#f6f7f8;border:1px solid #dddddd;"
+        'border-radius:8px;padding:12px;margin:0;">' + escape(text) + "</pre>"
+    )
+    full = head + fallback + tail
+    if len(full.encode("utf-8")) <= COPY_MAIL_HTML_BUDGET_BYTES:
+        return full
+    return (
+        head
+        + '<p style="margin:0;font-size:13px;color:#666666;">'
+        + "本文が長いので、このHTML版では省いています。"
+        + "上のボタン、または下のテキスト版をお使いください。</p>"
+        + tail
+    )

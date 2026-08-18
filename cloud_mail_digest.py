@@ -14,6 +14,8 @@ from zoneinfo import ZoneInfo
 from gmail_notify import DISCLAIMER, load_gmail_config, send_gmail
 from note_mail_html import (
     COPY_PAGE_URL,
+    build_copy_mail_html,
+    build_copy_mail_items,
     build_copy_mails,
     build_copy_pack_html,
     build_mail_html,
@@ -581,14 +583,22 @@ def main() -> None:
         f"html_body_bytes={len(digest.html_body.encode('utf-8'))}"
     )
 
-    copy_mails = build_copy_mails(collect_note_parts(output_dir))
+    copy_mails = build_copy_mail_items(collect_note_parts(output_dir))
     if args.no_copy_mails:
         print(f"note_copy_mails=skipped reason=disabled count={len(copy_mails)}")
         return
     sent = 0
-    for subject, text in copy_mails:
+    for subject, text, anchor in copy_mails:
         # ここに来た時点で本編は送れている＝休場日ゲートは通過済み。
-        if send_gmail(subject, text, config, allow_non_business_day=True):
+        # HTML版の先頭にワンクリックコピーのボタンを載せる。
+        # プレーン本文は記事テキストのまま（貼り付け用の逃げ道）。
+        if send_gmail(
+            subject,
+            text,
+            config,
+            allow_non_business_day=True,
+            html_body=build_copy_mail_html(text, anchor),
+        ):
             sent += 1
     print(f"note_copy_mails=sent {sent}/{len(copy_mails)}")
 
