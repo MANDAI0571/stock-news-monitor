@@ -574,6 +574,15 @@ def save_note_drafts(
                         verification = _verify_saved_draft(context, url, payload, image_status, key=key)
                         verification["draft_list"] = _verify_draft_list(context, payload.title, key=key)
                         verification["ok"] = _cloud_verify_ok(verification, url)
+                        if not verification["ok"]:
+                            # T-P(2026-08-20): 下書き自体は保存できているのに、
+                            # 確認のときだけ編集画面が空で返ることがある。
+                            # 作り直すとnote.comに使われない下書きが残るので、
+                            # 先に同じURLをもう一度だけ確かめる。
+                            verification = _verify_saved_draft(context, url, payload, image_status, key=key)
+                            verification["draft_list"] = _verify_draft_list(context, payload.title, key=key)
+                            verification["ok"] = _cloud_verify_ok(verification, url)
+                            print(f"note_draft_reverify[{key}]={verification['ok']}")
                         print(f"note_draft_reopen_verified[{key}]={verification['ok']}")
                         if not verification["ok"]:
                             raise RuntimeError(f"保存後に編集画面を開き直せませんでした: {verification}")
@@ -699,14 +708,19 @@ def _verify_saved_draft(
         except Exception as exc:  # noqa: BLE001 - 再読込失敗でも記録を残し、最終判定は _cloud_verify_ok に委ねる
             result["error"] = str(exc)
 
-        # note.com は連続保存の3本目だけ編集画面の描画が遅れることがある。
-        # 保存URLが発行済みでもタイトルがまだDOMに出ない場合は、
-        # 同じ下書きを一度だけ再読込してから最終判定する。
-        if not result["title_found"] or result["image_count"] < payload.min_image_count:
+        # note.com は保存直後に編集画面を開き直すと、中身がまだ描画されず
+        # 空で返ってくることがある（特に画像を貼った1本目）。
+        # T-P(2026-08-20): 以前は1回しか読み直さず、そこで失敗すると
+        # 下書きを丸ごと作り直していた。使われない下書きがたまる原因だったので、
+        # 待ち時間を伸ばしながら最大3回粘る。確認できた時点で抜けるので、
+        # うまくいっているときの速さは変わらない。
+        for _retry_wait_ms in (5000, 9000, 15000):
+            if result["title_found"] and result["image_count"] >= payload.min_image_count:
+                break
             try:
                 page.reload(wait_until="domcontentloaded", timeout=60_000)
                 _wait_for_editor_ready(page, timeout_ms=60_000)
-                page.wait_for_timeout(5000)
+                page.wait_for_timeout(_retry_wait_ms)
                 retry_text = _page_visible_text(page)
                 retry_title = _read_title_text(page)
                 retry_images = _count_editor_images(page)
