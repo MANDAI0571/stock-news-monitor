@@ -11,6 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from claude_300man_declare import declare_production
 from gmail_notify import DISCLAIMER, load_gmail_config, send_gmail
 from note_mail_html import (
     COPY_PAGE_URL,
@@ -221,7 +222,7 @@ def push_copy_page(now: datetime) -> bool:
             "user.email",
             "github-actions[bot]@users.noreply.github.com",
         )
-        add = run("git", "add", "docs/copy")
+        add = run("git", "add", "docs/copy", "data/claude_300man_orders.csv")
         if add.returncode != 0:
             print(f"copy_page=push_failed step=add err={add.stderr.strip()[:200]}")
             return False
@@ -552,6 +553,9 @@ def _chart_url(code: str) -> str:
 def main() -> None:
     args = parse_args()
     output_dir = Path(args.output_dir)
+    # 規律ルールどおりに翌営業日の注文を宣告してから記事・メールを組む。
+    # 本番の outputs/ のときだけ動く。
+    declare_production(output_dir)
     digest = build_digest(output_dir)
     write_digest_artifacts(output_dir, digest)
 

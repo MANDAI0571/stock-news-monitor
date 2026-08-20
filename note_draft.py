@@ -1027,16 +1027,53 @@ def _discipline_holdings_table(discipline: pd.DataFrame) -> list[str]:
     return lines
 
 
+# ランクの色。noteはHTML/CSSを受け付けないので、色は絵文字で付ける。
+RANK_MARKS = {"S": "\U0001F7E2", "A": "\U0001F535", "B": "\U0001F7E1", "C": "\U0001F7E0", "D": "\U0001F534"}
+
+
+def rank_mark(rank: object) -> str:
+    """ランク文字（S/A/B…）を色つきの丸に変える。未知は白丸。"""
+    key = str(rank or "").strip().upper()[:1]
+    return RANK_MARKS.get(key, "\u26AA")
+
+
+def _top10_price(value: object) -> str:
+    """現在値を「4,200円」の形にする。小数の .0 は出さない。"""
+    try:
+        return f"{float(value):,.0f}\u5186"
+    except (TypeError, ValueError):
+        return safe_text(value)
+
+
+def _top10_score(value: object) -> str:
+    """スコアの末尾の .0 を落とす。"""
+    text = safe_text(value)
+    return text[:-2] if text.endswith(".0") else text
+
+
 def _top10_block(screening: pd.DataFrame) -> list[str]:
+    """買い候補TOP10。
+
+    T-P(2026-08-18): 高重さんの指示「コード・銘柄・ランク・スコアなど色分けして、
+    縦の仕切りはいらない」。マークダウンの表（| 区切り）をやめて、
+    1銘柄を数行の色つき表示にする。noteでもメールでも同じ見え方になる。
+    """
     top10 = top_buy_candidates(screening, 10)
     if top10.empty:
         return ["- 該当なし"]
-    lines = ["| コード | 銘柄名 | ランク | スコア | 現在値 | 理由 |", "|---|---|---:|---:|---:|---|"]
-    for _, row in top10.iterrows():
-        lines.append(
-            f"| {safe_text(row.get('code'))} | {safe_text(row.get('name'))} | {safe_text(row.get('rank'))} | "
-            f"{safe_text(row.get('score'))} | {safe_text(row.get('current_price'))} | {safe_text(row.get('reason'))} |"
-        )
+    lines: list[str] = []
+    for order, (_, row) in enumerate(top10.iterrows(), start=1):
+        rank = safe_text(row.get("rank"))
+        code = safe_text(row.get("code"))
+        name = safe_text(row.get("name"))
+        score = _top10_score(row.get("score"))
+        price = _top10_price(row.get("current_price"))
+        reason = safe_text(row.get("reason"))
+        lines.append(f"**{order}. {rank_mark(rank)} {rank}\u30E9\u30F3\u30AF\u3000{code}\u3000{name}**")
+        lines.append(f"\u3000\U0001F4CA \u30B9\u30B3\u30A2 {score}\u3000\U0001F4B4 {price}")
+        if reason and reason != "\u672A\u53D6\u5F97":
+            lines.append(f"\u3000\U0001F4DD {reason}")
+        lines.append("")
     return lines
 
 

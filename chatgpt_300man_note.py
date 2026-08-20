@@ -825,6 +825,14 @@ def _summary_lines(portfolio: pd.DataFrame) -> list[str]:
     return lines
 
 
+_RANK_MARKS = {"S": "\U0001F7E2", "A": "\U0001F535", "B": "\U0001F7E1", "C": "\U0001F7E0", "D": "\U0001F534"}
+
+
+def _rank_mark(rank: object) -> str:
+    """ランク文字を色つきの丸に変える（noteはCSSを受け付けないため）。"""
+    return _RANK_MARKS.get(str(rank or "").strip().upper()[:1], "\u26AA")
+
+
 def _candidate_lines(screening: pd.DataFrame, limit: int = 10) -> list[str]:
     if screening.empty or "rank" not in screening.columns:
         return ["- 候補データなし"]
@@ -837,13 +845,23 @@ def _candidate_lines(screening: pd.DataFrame, limit: int = 10) -> list[str]:
     out["_rank_order"] = out["rank"].map(rank_order).fillna(9)
     out["score"] = pd.to_numeric(out.get("score"), errors="coerce").fillna(0)
     out = out.sort_values(["_rank_order", "score"], ascending=[True, False]).head(limit)
-    lines = ["| コード | 銘柄 | ランク | スコア | 現在値 | 理由 |", "|---|---|---:|---:|---:|---|"]
-    for _, row in out.iterrows():
+    # T-P(2026-08-18): 縦の仕切り（表）をやめて色つき1行にする。
+    lines: list[str] = []
+    for order, (_, row) in enumerate(out.iterrows(), start=1):
         code = _text(row.get("code"))
+        rank = _text(row.get("rank")) or "-"
+        name = _text(row.get("name")) or "-"
         lines.append(
-            f"| {_chart_link(code)} | {_text(row.get('name')) or '-'} | {_text(row.get('rank')) or '-'} | "
-            f"{_text(row.get('score')) or '-'} | {_yen(row.get('current_price'))} | {_text(row.get('reason')) or '-'} |"
+            f"**{order}. {_rank_mark(rank)} {rank}\u30E9\u30F3\u30AF\u3000{_chart_link(code)}\u3000{name}**"
         )
+        lines.append(
+            f"\u3000\U0001F4CA \u30B9\u30B3\u30A2 {_text(row.get('score')) or '-'}"
+            f"\u3000\U0001F4B4 {_yen(row.get('current_price'))}"
+        )
+        reason = _text(row.get("reason"))
+        if reason:
+            lines.append(f"\u3000\U0001F4DD {reason}")
+        lines.append("")
     return lines
 
 
