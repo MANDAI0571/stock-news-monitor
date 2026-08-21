@@ -4,6 +4,7 @@ import argparse
 import csv
 import os
 import re
+import shutil
 import subprocess
 from urllib.parse import quote
 from dataclasses import dataclass
@@ -15,6 +16,7 @@ from claude_300man_declare import declare_production
 from gmail_notify import DISCLAIMER, load_gmail_config, send_gmail
 from note_mail_html import (
     COPY_PAGE_URL,
+    article_images,
     build_copy_mail_html,
     build_copy_mail_items,
     build_copy_mails,
@@ -164,12 +166,18 @@ def publish_copy_page(note_parts: list, now: datetime, output_dir: Path) -> str 
         print("copy_page=skipped reason=no_note_parts")
         return None
     try:
-        html = build_copy_pack_html(note_parts, now)
+        DOCS_COPY_DIR.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        print(f"copy_page=failed reason=mkdir:{error}")
+        return None
+    # T-P(2026-08-21): 見出し画像をページの隣に置き、ページから保存・コピーできるようにする。
+    images = stage_copy_images(note_parts, DOCS_COPY_DIR)
+    try:
+        html = build_copy_pack_html(note_parts, now, images=images)
     except Exception as error:  # noqa: BLE001 - 公開に失敗してもメールは送る
         print(f"copy_page=failed reason=build:{error}")
         return None
     try:
-        DOCS_COPY_DIR.mkdir(parents=True, exist_ok=True)
         (DOCS_COPY_DIR / "latest.html").write_text(html, encoding="utf-8")
         (DOCS_COPY_DIR / f"{now.date().isoformat()}.html").write_text(html, encoding="utf-8")
         stamp = now.strftime("%Y-%m-%d %H:%M JST")
@@ -186,6 +194,29 @@ def publish_copy_page(note_parts: list, now: datetime, output_dir: Path) -> str 
         return COPY_PAGE_URL
     print("copy_page=not_pushed（メールのリンクは前回公開分を指します）")
     return COPY_PAGE_URL
+
+
+def stage_copy_images(note_parts: list, dest_dir: Path) -> dict[str, str]:
+    """記事の見出し画像を docs/copy/ にコピーし、記事キー -> ファイル名を返す。
+
+    T-P(2026-08-21): 高重さんの指示「画像もワンクリックでコピペできるように」。
+    画像が無い記事は黙って飛ばす（ページ自体は必ず出す）。
+    """
+    mapping: dict[str, str] = {}
+    for key, rel in article_images(note_parts).items():
+        source = (PROJECT_ROOT / rel).resolve()
+        if not source.exists():
+            print(f"copy_page_image=missing key={key} rel={rel}")
+            continue
+        name = f"img_{key}{source.suffix or '.png'}"
+        try:
+            shutil.copyfile(source, dest_dir / name)
+        except OSError as error:
+            print(f"copy_page_image=failed key={key} err={error}")
+            continue
+        mapping[key] = name
+        print(f"copy_page_image=ok key={key} file={name}")
+    return mapping
 
 
 def prune_copy_pages(keep: int = 14) -> None:

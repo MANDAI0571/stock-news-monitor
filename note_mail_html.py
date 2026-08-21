@@ -78,6 +78,10 @@ NOTE_CSS = (
     ".nt .img{margin:14px 0;padding:10px 12px;border:1px dashed #c8d2da;border-radius:6px;"
     "background:#f7f9fa;color:#5b6b78;font-size:13px;}"
     ".nt .cut{font-size:13px;color:#8a949c;}"
+    # T-P(2026-08-21): 買い候補は「コード=青・銘柄名=黒の太字」。
+    #   noteの本文はHTMLを受け付けないので、色が付くのはメールとコピー用ページだけ。
+    ".nt .cd{color:#1d4ed8;font-weight:700;}"
+    ".nt .nm{color:#111111;font-weight:700;}"
     ".card{border:1px solid #e3e8ec;border-radius:8px;padding:12px 14px;margin:0 0 16px;}"
     ".meta{font-size:12px;color:#8a949c;margin:0 0 4px;}"
     ".ttl{font-size:15px;font-weight:700;margin:0 0 8px;}"
@@ -183,6 +187,84 @@ def safari_url(note_url: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# note用のタグと見出し画像（T-P 2026-08-21）
+#
+# 記事ごとの固定タグに、その日の買い候補の銘柄名を最大3つ足す。
+# noteのタグは途中に空白を置けないので、銘柄名からは空白と記号を落とす。
+# ---------------------------------------------------------------------------
+
+NOTE_TAGS = {
+    "chatgpt": ("日本株", "AI投資", "株式投資", "資産運用"),
+    "claude": ("日本株", "AI投資", "株式投資", "資産運用"),
+    "pullback": ("日本株", "押し目買い", "株式投資", "テクニカル分析"),
+    "highs": ("日本株", "52週新高値", "株式投資", "テクニカル分析"),
+}
+DEFAULT_TAGS = ("日本株", "株式投資")
+TAG_NAME_LIMIT = 3
+
+# 買い候補TOP10の1行目: **1. 🟢 Sランク　7453　良品計画**
+TOP10_LINE_RE = re.compile(
+    r"^\*\*(\d+)\.\s(\S+)\s(\S*?)ランク\u3000(\S+)\u3000(.+?)\*\*$"
+)
+# 銘柄カードの見出し行: 7453 良品計画 ⚡出来高1.20倍
+CARD_HEAD_RE = re.compile(r"^(\d{4}[0-9A-Z]?)\s(\S.*?)(\s⚡.*)?$")
+# タグに使えない文字（空白・全角空白・記号）
+_TAG_DROP_RE = re.compile(r"[\s\u3000・（）()。、,，/／＆&「」【】\[\]]+")
+_CHART_MARKER_RE = re.compile(r"<!--\s*chart_image:\s*(.+?)\s*-->")
+
+
+def _stock_line_names(line: str) -> str:
+    """1行から銘柄名を取り出す。買い候補の行でなければ空文字。"""
+    match = TOP10_LINE_RE.match(line)
+    if match:
+        return match.group(5).strip()
+    match = CARD_HEAD_RE.match(line)
+    if match:
+        return match.group(2).strip()
+    return ""
+
+
+def stock_names_in(markdown: str, limit: int = TAG_NAME_LIMIT) -> list[str]:
+    """本文から買い候補の銘柄名を上から拾う（重複は除く）。"""
+    names: list[str] = []
+    for raw in markdown.split("\n"):
+        name = _stock_line_names(raw.strip())
+        if not name:
+            continue
+        token = _TAG_DROP_RE.sub("", name).strip()
+        if token and token not in names:
+            names.append(token)
+        if len(names) >= limit:
+            break
+    return names
+
+
+def build_tags(part: "NotePart") -> str:
+    """その記事に貼るタグ1行（例: #日本株 #52週新高値 #株式投資 ...）。"""
+    tokens: list[str] = []
+    for token in list(NOTE_TAGS.get(part.key, DEFAULT_TAGS)) + stock_names_in(part.markdown):
+        if token and token not in tokens:
+            tokens.append(token)
+    return " ".join("#" + token for token in tokens)
+
+
+def part_image_rel(part: "NotePart") -> str:
+    """本文の <!-- chart_image: ... --> から見出し画像の場所を読む。"""
+    match = _CHART_MARKER_RE.search(part.markdown)
+    return match.group(1).strip() if match else ""
+
+
+def article_images(parts: list["NotePart"]) -> dict[str, str]:
+    """記事キーごとの見出し画像。分割記事は1本目の画像を全パートで使う。"""
+    found: dict[str, str] = {}
+    for part in parts:
+        rel = part_image_rel(part)
+        if rel and part.key not in found:
+            found[part.key] = rel
+    return found
+
+
+# ---------------------------------------------------------------------------
 # Markdown → note風HTML
 # ---------------------------------------------------------------------------
 
@@ -201,6 +283,32 @@ def render_inline(text: str) -> str:
         return f'<a href="{href}">{label}</a>'
 
     return _LINK_RE.sub(link, out)
+
+
+def render_stock_line(text: str) -> str:
+    """買い候補の行なら、コードを青・銘柄名を黒太字にして描く。
+
+    T-P(2026-08-21): 高重さんの指示「買い候補の銘柄と銘柄コードは色をつけて」。
+    対象は買い候補TOP10の行と、銘柄カードの見出し行。
+    当てはまらない行は今までどおり普通に描く（誤爆させない）。
+    """
+    line = text.strip()
+    match = TOP10_LINE_RE.match(line)
+    if match:
+        order, mark, rank, code, name = match.groups()
+        return (
+            f"<strong>{escape(order)}. {escape(mark)} {escape(rank)}ランク\u3000"
+            f'<span class="cd">{escape(code)}</span>\u3000'
+            f'<span class="nm">{escape(name)}</span></strong>'
+        )
+    match = CARD_HEAD_RE.match(line)
+    if match:
+        code, name, tail = match.group(1), match.group(2), match.group(3) or ""
+        return (
+            f'<span class="cd">{escape(code)}</span> '
+            f'<span class="nm">{escape(name)}</span>{escape(tail)}'
+        )
+    return render_inline(text)
 
 
 def _is_table_row(line: str) -> bool:
@@ -283,7 +391,7 @@ def render_note_html(markdown: str, max_chars: int | None = None) -> str:
             out.append("<li>" + render_inline(line[2:]) + "</li>")
         else:
             close_list()
-            out.append("<p>" + render_inline(line) + "</p>")
+            out.append("<p>" + render_stock_line(line) + "</p>")
         i += 1
     close_list()
     if truncated:
@@ -294,8 +402,25 @@ def render_note_html(markdown: str, max_chars: int | None = None) -> str:
     return "\n".join(out)
 
 
+# T-P(2026-08-21): 表でも「コード」列は青、「銘柄」列は黒太字にする。
+_CODE_COLUMNS = {"コード", "銘柄コード", "code", "ticker"}
+_NAME_COLUMNS = {"銘柄", "銘柄名", "name"}
+
+
+def _column_class(header_text: str) -> str:
+    key = header_text.strip().lower()
+    if key in {item.lower() for item in _CODE_COLUMNS}:
+        return "cd"
+    if key in {item.lower() for item in _NAME_COLUMNS}:
+        return "nm"
+    return ""
+
+
 def _render_table(header: list[str], rows: list[list[str]]) -> str:
     width = max([len(header)] + [len(row) for row in rows]) if rows else len(header)
+    classes = [
+        _column_class(header[index]) if index < len(header) else "" for index in range(width)
+    ]
     parts = ['<div class="scroll"><table><thead><tr>']
     for index in range(width):
         parts.append("<th>" + render_inline(header[index] if index < len(header) else "") + "</th>")
@@ -303,7 +428,10 @@ def _render_table(header: list[str], rows: list[list[str]]) -> str:
     for row in rows:
         parts.append("<tr>")
         for index in range(width):
-            parts.append("<td>" + render_inline(row[index] if index < len(row) else "") + "</td>")
+            attr = f' class="{classes[index]}"' if classes[index] else ""
+            parts.append(
+                f"<td{attr}>" + render_inline(row[index] if index < len(row) else "") + "</td>"
+            )
         parts.append("</tr>")
     parts.append("</tbody></table></div>")
     return "".join(parts)
@@ -317,7 +445,37 @@ _COPY_PACK_SCRIPT = """
 document.addEventListener('click', function (event) {
   var button = event.target;
   while (button && button.tagName !== 'BUTTON') { button = button.parentElement; }
-  if (!button || button.className.indexOf('copybtn') < 0) { return; }
+  if (!button) { return; }
+  var flashLabel = button.getAttribute('data-label') || 'コピー';
+  var flash = function (ok, ngText) {
+    button.textContent = ok ? 'コピーしました' : ngText;
+    setTimeout(function () { button.textContent = flashLabel; }, 2500);
+  };
+  if (button.className.indexOf('imgbtn') >= 0) {
+    var src = button.getAttribute('data-image');
+    var ng = '下の画像を長押ししてコピーしてください';
+    if (!src) { return; }
+    if (!window.ClipboardItem || !navigator.clipboard || !navigator.clipboard.write) {
+      flash(false, ng);
+      return;
+    }
+    var blobOf = function () {
+      return fetch(src).then(function (res) { return res.blob(); });
+    };
+    try {
+      var item = new ClipboardItem({ 'image/png': blobOf() });
+      navigator.clipboard.write([item]).then(
+        function () { flash(true); },
+        function () { flash(false, ng); }
+      );
+    } catch (error) {
+      blobOf().then(function (blob) {
+        return navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+      }).then(function () { flash(true); }, function () { flash(false, ng); });
+    }
+    return;
+  }
+  if (button.className.indexOf('copybtn') < 0) { return; }
   var area = document.getElementById(button.getAttribute('data-target'));
   if (!area) { return; }
   var label = button.getAttribute('data-label') || 'コピー';
@@ -361,12 +519,31 @@ _COPY_PACK_CSS = (
     "font-size:12px;line-height:1.6;border:1px solid #d4dbe1;border-radius:6px;padding:8px;"
     "background:#fbfcfd;}"
     "textarea.short{height:56px;}"
+    # T-P(2026-08-21): タグ・画像ボタンと、長押し用の見出し画像。
+    "button.copybtn.tag{background:#6d4aa8;}"
+    "button.copybtn.tag:active{background:#573a87;}"
+    "button.imgbtn{-webkit-appearance:none;appearance:none;border:0;border-radius:8px;"
+    "background:#2f6f8f;color:#fff;font-size:15px;font-weight:700;padding:12px 16px;"
+    "margin:0 8px 8px 0;cursor:pointer;}"
+    "button.imgbtn:active{background:#255a75;}"
+    "a.dlbtn{display:inline-block;border-radius:8px;background:#2f6f8f;color:#fff;"
+    "text-decoration:none;font-size:15px;font-weight:700;padding:12px 16px;"
+    "margin:0 8px 8px 0;}"
+    "textarea.tags{height:70px;}"
+    "img.hdr{display:block;max-width:100%;height:auto;border:1px solid #d4dbe1;"
+    "border-radius:6px;margin:10px 0 4px;}"
     "ul.toc{padding-left:20px;font-size:14px;}"
 )
 
 
-def build_copy_pack_html(parts: list[NotePart], now: datetime) -> str:
-    """note下書きを全文ぶん、ボタン1つでコピーできる単体HTMLにする。"""
+def build_copy_pack_html(
+    parts: list[NotePart], now: datetime, images: dict[str, str] | None = None
+) -> str:
+    """note下書きを全文ぶん、ボタン1つでコピーできる単体HTMLにする。
+
+    images: 記事キー -> このHTMLと同じ場所に置いた見出し画像のファイル名。
+      渡さないときは画像ボタンを出さない（添付HTMLには画像を同梱できないため）。
+    """
     blocks: list[str] = []
     toc: list[str] = []
     for part in parts:
@@ -384,18 +561,43 @@ def build_copy_pack_html(parts: list[NotePart], now: datetime) -> str:
                 '<p class="lnk ng">この本はnote側の下書き保存が未完了です。'
                 "下のボタンでコピーして、noteの新規記事に貼り付けてください。</p>"
             )
+        # T-P(2026-08-21): タイトル・本文に加えて、タグと見出し画像も1タップで
+        #   コピー（保存）できるようにする。iPhoneは画像のクリップボードを
+        #   弾くことがあるので、保存ボタンと実物の画像も並べて逃げ道を2つ持たせる。
+        image_name = (images or {}).get(part.key, "")
+        buttons = [
+            f'<button type="button" class="copybtn" data-target="title_{part.dom_id}" '
+            'data-label="タイトルをコピー">タイトルをコピー</button>',
+            f'<button type="button" class="copybtn" data-target="body_{part.dom_id}" '
+            'data-label="本文をコピー">本文をコピー</button>',
+            f'<button type="button" class="copybtn tag" data-target="tags_{part.dom_id}" '
+            'data-label="タグをコピー">タグをコピー</button>',
+        ]
+        image_block = ""
+        if image_name:
+            buttons.append(
+                f'<button type="button" class="imgbtn" data-image="{escape(image_name)}" '
+                'data-label="画像をコピー">画像をコピー</button>'
+            )
+            buttons.append(
+                f'<a class="dlbtn" href="{escape(image_name)}" '
+                f'download="{escape(image_name)}">画像を保存</a>'
+            )
+            image_block = (
+                f'<img class="hdr" src="{escape(image_name)}" alt="見出し画像">'
+                '<p class="hint">ボタンが効かないときは、この画像を長押しして'
+                "「写真に追加」または「コピー」を選んでください。</p>"
+            )
         blocks.append(
             f'<section id="{part.dom_id}">'
             f'<h2 class="pk">{escape(part.part_label)}</h2>'
             f"{url_line}"
-            '<div class="row">'
-            f'<button type="button" class="copybtn" data-target="title_{part.dom_id}" '
-            'data-label="タイトルをコピー">タイトルをコピー</button>'
-            f'<button type="button" class="copybtn" data-target="body_{part.dom_id}" '
-            'data-label="本文をコピー">本文をコピー</button>'
-            "</div>"
+            '<div class="row">' + "".join(buttons) + "</div>"
             f'<textarea id="title_{part.dom_id}" class="short" readonly>{escape(part.title)}</textarea>'
+            f'<textarea id="tags_{part.dom_id}" class="short tags" readonly>'
+            f"{escape(build_tags(part))}</textarea>"
             f'<textarea id="body_{part.dom_id}" readonly>{escape(part.markdown)}</textarea>'
+            f"{image_block}"
             "<details><summary>noteでの見え方（プレビュー）を開く</summary>"
             f"{render_note_html(part.markdown)}</details>"
             "</section>"
@@ -416,6 +618,7 @@ def build_copy_pack_html(parts: list[NotePart], now: datetime) -> str:
         '<h1 class="pk">note下書き コピー用</h1>\n'
         f'<p class="lead">作成: {now.strftime("%Y-%m-%d %H:%M JST")} ／ '
         "ボタンを押すとクリップボードに入ります。noteの新規記事に貼り付けてください。"
+        "タイトル・本文・タグ・見出し画像を、それぞれ1タップでコピーできます。"
         "（ボタンが効かないときは枠の中を長押しして全選択してください）</p>\n"
         '<ul class="toc">\n' + "\n".join(toc) + "\n</ul>\n"
         + "\n".join(blocks)
@@ -477,6 +680,9 @@ def build_note_mail_section(parts: list[NotePart]) -> str:
                 '<p class="lnk ng">note側の下書き保存が未完了です。'
                 "添付 note_copy_pack.html からコピーして貼り付けてください。</p>"
             )
+        # T-P(2026-08-21): タグもメールに出す（コピー用ページが開けないとき用）。
+        pieces.append('<p class="hint">タグ（この枠を長押し→全選択→コピー）</p>')
+        pieces.append('<pre class="copy">' + escape(build_tags(part)) + "</pre>")
         pieces.append(_copy_block(part))
         pieces.append('<p class="hint">noteでの見え方（プレビュー）</p>')
         pieces.append(render_note_html(part.markdown, max_chars=MAIL_PREVIEW_MAX_CHARS))
