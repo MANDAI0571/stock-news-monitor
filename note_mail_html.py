@@ -200,6 +200,14 @@ NOTE_TAGS = {
 DEFAULT_TAGS = ("日本株", "株式投資")
 TAG_NAME_LIMIT = 3
 
+# fix26(2026-08-23): 52週新高値の記事は表と見出しでできているので、そこからも銘柄名を拾う。
+# 見出しの形: ### 1. 東北電力（9506）　対象営業日に52週新高値を更新
+HEADING_STOCK_RE = re.compile(r"^(\d+)\.\s*(\S.*?)（(\d{4}[0-9A-Z]?)）(.*)$")
+# 表の行の形: | 9506 | 東北電力 | 1330.5 | …
+TABLE_STOCK_ROW_RE = re.compile(r"^\|\s*(\d{4}[0-9A-Z]?)\s*\|\s*([^|]+?)\s*\|")
+# 「1,330.5」「+1.4%」のような数字だけのマスは銘柄名ではない。
+_NUMERIC_CELL_RE = re.compile(r"^[\d.,\-+%]+$")
+
 # 買い候補TOP10の1行目: **1. 🟢 Sランク　7453　良品計画**
 TOP10_LINE_RE = re.compile(
     r"^\*\*(\d+)\.\s(\S+)\s(\S*?)ランク\u3000(\S+)\u3000(.+?)\*\*$"
@@ -222,11 +230,24 @@ def _stock_line_names(line: str) -> str:
     return ""
 
 
-def stock_names_in(markdown: str, limit: int = TAG_NAME_LIMIT) -> list[str]:
-    """本文から買い候補の銘柄名を上から拾う（重複は除く）。"""
+def _fallback_line_name(line: str) -> str:
+    """表の行や「### 1. 銘柄名（コード）」の見出しから銘柄名を取り出す。"""
+    match = HEADING_STOCK_RE.match(line.lstrip("#").strip())
+    if match:
+        return match.group(2).strip()
+    match = TABLE_STOCK_ROW_RE.match(line)
+    if match:
+        name = match.group(2).strip()
+        if name and not _NUMERIC_CELL_RE.match(name):
+            return name
+    return ""
+
+
+def _collect_names(markdown: str, picker, limit: int) -> list[str]:
+    """1行ずつ picker にかけて銘柄名を上から集める（重複は除く）。"""
     names: list[str] = []
     for raw in markdown.split("\n"):
-        name = _stock_line_names(raw.strip())
+        name = picker(raw.strip())
         if not name:
             continue
         token = _TAG_DROP_RE.sub("", name).strip()
@@ -235,6 +256,21 @@ def stock_names_in(markdown: str, limit: int = TAG_NAME_LIMIT) -> list[str]:
         if len(names) >= limit:
             break
     return names
+
+
+def stock_names_in(markdown: str, limit: int = TAG_NAME_LIMIT) -> list[str]:
+    """本文から買い候補の銘柄名を上から拾う（重複は除く）。
+
+    fix26(2026-08-23): まずは今までどおりカード形式（TOP10・銘柄カード）で拾う。
+    そこで1つも拾えなかったときだけ、表の行と「### N. 銘柄名（コード）」の
+    見出しから拾う。52週新高値の記事はこの形しか持っていないため、
+    fix24のままではタグに銘柄名が1つも入らなかった。
+    すでに拾えている記事の結果は変わらない。
+    """
+    names = _collect_names(markdown, _stock_line_names, limit)
+    if names:
+        return names
+    return _collect_names(markdown, _fallback_line_name, limit)
 
 
 def build_tags(part: "NotePart") -> str:
@@ -309,6 +345,25 @@ def render_stock_line(text: str) -> str:
     return render_inline(text)
 
 
+def render_heading_line(text: str) -> str:
+    """見出しが「1. 銘柄名（コード）…」なら、コードを青・銘柄名を黒の太字にする。
+
+    fix26(2026-08-23): 52週新高値の 2/4 はこの見出しだけでできていて、
+    色が1か所も付いていなかった。
+    当てはまらない見出しは今までどおり普通に描く（誤爆させない）。
+    """
+    match = HEADING_STOCK_RE.match(text.strip())
+    if match:
+        order, name, code, tail = match.groups()
+        return (
+            f"{escape(order)}. "
+            f'<span class="nm">{escape(name)}</span>'
+            f'（<span class="cd">{escape(code)}</span>）'
+            f"{render_inline(tail)}"
+        )
+    return render_inline(text)
+
+
 def _is_table_row(line: str) -> bool:
     return line.startswith("|") and line.count("|") >= 2
 
@@ -363,7 +418,7 @@ def render_note_html(markdown: str, max_chars: int | None = None) -> str:
             out.append("<h2>" + render_inline(line[3:]) + "</h2>")
         elif line.startswith("### "):
             close_list()
-            out.append("<h3>" + render_inline(line[4:]) + "</h3>")
+            out.append("<h3>" + render_heading_line(line[4:]) + "</h3>")
         elif line.startswith("![") and "](" in line and line.endswith(")"):
             close_list()
             alt = line[2:].split("](", 1)[0]
