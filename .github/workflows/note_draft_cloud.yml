@@ -1,5 +1,5 @@
 name: Note下書き（クラウド生成）
-
+ 
 on:
   push:
     paths:
@@ -11,40 +11,40 @@ on:
     # 16:30 本ワークフロー（実績記録 → note4本の下書き自動保存）の順。
     # 注意: 日本の祝日もそのまま走る（データが薄いだけで実害なし）。
     - cron: "30 7 * * 1-5"
-
+ 
 # 手動実行と定時実行が重ならないようにする（data/ への push 競合防止）
 concurrency:
   group: note-draft-cloud
   cancel-in-progress: false
-
+ 
 permissions:
   # T-I(2026-07-10): 実績トラッキング（バックテスト博士）の記録CSVを
   # data/highs_track_record.csv にコミットするため write が必要。
   contents: write
-
+ 
 jobs:
   build-note-draft:
     runs-on: ubuntu-latest
     timeout-minutes: 90
-
+ 
     env:
-
+ 
       PROGRESS_EVERY: "25"
       # v10(2026-07-19): カードのPER/PBR/ROE等と決算予定日をYahoo Financeから補完
       # （表示対象の銘柄のみ・失敗しても記事生成は止めない・取得できない項目は未取得表示）
       NOTE_FETCH_FUNDAMENTALS: "1"
       NOTE_FETCH_EARNINGS: "1"
       SEND_CLOUD_DIGEST: "true"
-
+ 
     steps:
       - name: Checkout
         uses: actions/checkout@v7
-
+ 
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
           python-version: "3.11"
-
+ 
       - name: Restore price/universe cache
         uses: actions/cache@v6
         with:
@@ -52,7 +52,7 @@ jobs:
           key: stock-cache-${{ runner.os }}-${{ github.run_id }}
           restore-keys: |
             stock-cache-${{ runner.os }}-
-
+ 
       - name: Install dependencies
         run: |
           start=$(date +%s)
@@ -60,27 +60,27 @@ jobs:
           pip install -r requirements.txt
           python -m playwright install --with-deps chromium
           end=$(date +%s); echo "[TIMER] install_dependencies elapsed=$((end-start))s"
-
+ 
       - name: "Self test (critical: trading / fills / ledger)"
         run: python3 self_test_groups.py --group critical
-
+ 
       - name: Self test (editorial / mail / note format)
         continue-on-error: true
         run: python3 self_test_groups.py --group editorial
-
+ 
       - name: Market regime (市場監督)
         run: python3 market_regime.py
         continue-on-error: true
-
+ 
       - name: Fetch market snapshot
         run: python3 fetch_market.py
-
+ 
       - name: Run screening and discipline portfolio
         run: |
           start=$(date +%s)
           python3 daily_discipline_run.py --include-rejected
           end=$(date +%s); echo "[TIMER] daily_discipline_run elapsed=$((end-start))s"
-
+ 
       # T-I(2026-07-10): バックテスト博士。screening_highs を data/ に追記し、
       # 過去掲載銘柄の +1/+5/+20営業日の実績を outputs/track_record.json に集計する。
       # note生成（build_note_assets）より前に実行することで、記事の実績セクションに反映される。
@@ -91,40 +91,42 @@ jobs:
           start=$(date +%s)
           python3 track_record.py --update
           end=$(date +%s); echo "[TIMER] track_record elapsed=$((end-start))s"
-
-      - name: Persist track record (data/highs_track_record.csv)
+ 
+      # fix30(2026-08-23): 押し目の実績記録 data/pullback_track_record.csv も一緒に永続化する。
+      # これをコミットしないと、押し目記事の実績セクションが永久に「データ不足」のままになる。
+      - name: Persist track record (data/*_track_record.csv)
         continue-on-error: true
         run: |
-          if [ ! -f data/highs_track_record.csv ]; then
+          if ! ls data/*_track_record.csv >/dev/null 2>&1; then
             echo "track_record: 記録ファイルなし（コミットせず）"
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add data/highs_track_record.csv
+          git add data/highs_track_record.csv data/pullback_track_record.csv 2>/dev/null || true
           if git diff --cached --quiet; then
             echo "track_record: 変更なし（コミットせず）"
             exit 0
           fi
-          git commit -m "chore: update highs track record [skip ci]"
+          git commit -m "chore: update track records [skip ci]"
           git pull --rebase origin "${GITHUB_REF_NAME}" || true
           git push origin HEAD:"${GITHUB_REF_NAME}" || echo "track_record: push失敗（記事生成は継続）"
-
+ 
       - name: Run decision engine
         run: |
           start=$(date +%s)
           python3 decision_engine.py
           end=$(date +%s); echo "[TIMER] decision_engine elapsed=$((end-start))s"
-
+ 
       - name: Build Note draft assets
         run: |
           start=$(date +%s)
           python3 build_note_assets.py
           end=$(date +%s); echo "[TIMER] build_note_assets elapsed=$((end-start))s"
-
+ 
       - name: Validate Note artifact quality gate
         run: python3 validate_note_artifact.py --artifact-dir outputs
-
+ 
       # v8(2026-07-19): manifest駆動のNote下書き保存を定時実行に配線し、
       # 保存本数をゲートで検知（保存漏れの静かな失敗を防止）。
       # fix27(2026-08-23): ChatGPT(Codex)版を廃止したため、note下書きは恒久的に3本。
@@ -148,7 +150,7 @@ jobs:
           grep -q "note_draft_reopen_verified\[claude\]=True" note_autosave_multi.log || { echo "::error::Claude版を保存後に開き直せません"; exit 1; }
           grep -q "note_draft_reopen_verified\[pullback\]=True" note_autosave_multi.log || { echo "::error::押し目版を保存後に開き直せません"; exit 1; }
           grep -q "note_draft_reopen_verified\[highs\]=True" note_autosave_multi.log || { echo "::error::52週新高値版を保存後に開き直せません"; exit 1; }
-
+ 
       - name: Build Phase 1 distribution drafts (no external posting)
         env:
           PHASE1_SIGNUP_BASE_URL: ${{ secrets.PHASE1_SIGNUP_BASE_URL }}
@@ -167,7 +169,7 @@ jobs:
           import json
           import os
           from pathlib import Path
-
+ 
           note_url = ""
           for path in (Path("outputs/note_draft_url_highs.txt"), Path("note_draft_url_highs.txt")):
               if path.exists():
@@ -189,7 +191,7 @@ jobs:
             --out-dir outputs/phase1_distribution \
             --check
           echo "ready: drafts generated and compliance passed; external posting disabled" | tee "$status_file"
-
+ 
       - name: Build Phase 1 Metron daily summary when real data exists
         if: always()
         run: |
@@ -202,7 +204,7 @@ jobs:
             --csv data/metron_daily.csv \
             --out outputs/phase1_distribution/metron_daily.md
           echo "ready: real CSV summary generated" > outputs/phase1_distribution/metron_status.txt
-
+ 
       - name: Show summary
         if: always()
         run: |
@@ -227,11 +229,11 @@ jobs:
           ls -lh outputs/note_*.md outputs/note_*.html outputs/note_*.txt outputs/*manifest*.json outputs/market_snapshot.json 2>/dev/null || true
           echo "=== cloud note artifact files ==="
           ls -lh outputs/note_body.md outputs/note_preview.html outputs/warren_summary.json outputs/decision_result.csv outputs/discipline_result.csv outputs/paper_portfolio_decision.csv outputs/eyecatch.png outputs/market_status.png outputs/funnel.png outputs/buy_*.png outputs/watch.png 2>/dev/null || true
-
+ 
       - name: Metron KPI report
         if: always()
         run: python3 metron_kpi.py
-
+ 
       - name: Check Gmail secrets for cloud digest
         id: gmail_secrets
         if: always() && env.SEND_CLOUD_DIGEST == 'true'
@@ -245,7 +247,7 @@ jobs:
           [ -n "$GMAIL_APP_PASSWORD" ] || { echo "::error::GMAIL_APP_PASSWORD secret is missing"; missing=1; }
           [ -n "$MAIL_TO" ] || { echo "::error::MAIL_TO secret is missing"; missing=1; }
           exit "$missing"
-
+ 
       - name: Build or send cloud digest mail
         if: always()
         env:
@@ -258,7 +260,7 @@ jobs:
           else
             python3 cloud_mail_digest.py --output-dir outputs --dry-run
           fi
-
+ 
       - name: Upload Note draft artifact
         if: always()
         uses: actions/upload-artifact@v7
@@ -310,3 +312,4 @@ jobs:
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           MAIL_TO: ${{ secrets.MAIL_TO }}
         run: python3 notify_workflow_failure.py
+ 
