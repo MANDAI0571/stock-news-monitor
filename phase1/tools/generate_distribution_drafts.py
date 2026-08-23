@@ -199,7 +199,7 @@ def main():
     ap.add_argument("--note", required=True)
     ap.add_argument("--config", required=True)
     ap.add_argument("--content", default="morning",
-                    help="utm_content: morning/ma25/ma200/close/chatgpt300/claude300")
+                    help="utm_content: morning/ma25/ma200/close/claude300")
     ap.add_argument("--out-dir", default=".")
     ap.add_argument("--check", action="store_true", help="生成後にcompliance_check.pyを実行")
     args = ap.parse_args()

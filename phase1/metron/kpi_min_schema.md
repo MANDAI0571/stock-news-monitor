@@ -39,7 +39,9 @@
 |---|---|---|---|
 | `date` | YYYY-MM-DD | 集計日（JST） | 2026-07-20 |
 | `channel` | 文字列 | x / line / note / email | x |
-| `utm_content` | 文字列 | 記事識別子（morning / ma25 / ma200 / close / chatgpt300 / claude300） | morning |
+| `utm_content` | 文字列 | 記事識別子（morning / ma25 / ma200 / close / claude300） | morning |
+
+※ 2026-08-23: ChatGPT(Codex)の300万円運用を廃止したため、その識別子は使わない。
 | `posts_sent` | 整数 | 配信数（この行の配信本数） | 1 |
 | `impressions` | 整数 | 表示/配信到達数（取得できなければ空欄） | 1240 |
 | `clicks` | 整数 | 登録導線リンクのクリック数 | 38 |
