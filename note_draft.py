@@ -1267,16 +1267,12 @@ def build_pullback_note(pullback: pd.DataFrame, source: Path | None) -> str:
         lines.append("### カード型候補（上位10件）")
         lines.append("")
         lines.extend(build_stock_cards(rt, 10))
-        lines.append("### 従来表")
+        # fix28(2026-08-23): 従来表は高重さんの指示で廃止。全件は添付CSVで見る。
         lines.append("")
-        lines.append("| コード | 銘柄 | 現在値 | 新高値ライン | ブレイク日 | ライン乖離% | 直近天井 | 売買代金 |")
-        lines.append("|---|---|---:|---:|---|---:|---:|---:|")
-        for _, row in rt.iterrows():
-            lines.append(
-                f"| {_val(row,'code')} | {_val(row,'name')} | {_val(row,'current_price')} | "
-                f"{_val(row,'retest_line_price')} | {_val(row,'retest_breakout_date')} | "
-                f"{_val(row,'retest_dist_pct')} | {_val(row,'retest_post_high')} | {_val(row,'turnover_20d')} |"
-            )
+        lines.append(
+            f"※ この分類の候補は全{len(rt)}件です。上位10件だけカードで掲載しています"
+            f"（全件はメール添付の screening_pullback_*.csv）。"
+        )
     lines.append("")
 
     # ②③④ 25/200/240MAタッチ
@@ -1290,16 +1286,12 @@ def build_pullback_note(pullback: pd.DataFrame, source: Path | None) -> str:
             lines.append("### カード型候補（上位10件）")
             lines.append("")
             lines.extend(build_stock_cards(b, 10))
-            lines.append("### 従来表")
+            # fix28(2026-08-23): 従来表は高重さんの指示で廃止。全件は添付CSVで見る。
             lines.append("")
-            lines.append("| コード | 銘柄 | 現在値 | MA25 | MA200 | MA240 | 52週高値乖離% | 売買代金 |")
-            lines.append("|---|---|---:|---:|---:|---:|---:|---:|")
-            for _, row in b.iterrows():
-                lines.append(
-                    f"| {_val(row,'code')} | {_val(row,'name')} | {_val(row,'current_price')} | "
-                    f"{_val(row,'ma25')} | {_val(row,'ma200')} | {_val(row,'ma240')} | "
-                    f"{_val(row,'dist_52w_high_pct')} | {_val(row,'turnover_20d')} |"
-                )
+            lines.append(
+                f"※ この分類の候補は全{len(b)}件です。上位10件だけカードで掲載しています"
+                f"（全件はメール添付の screening_pullback_*.csv）。"
+            )
         lines.append("")
 
     # 編集者: 締め（読者の次の行動につなげる）

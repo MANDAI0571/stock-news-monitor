@@ -54,10 +54,12 @@ NOTE4_PORTFOLIO_SECTIONS = (
 # 配信した 2026-07-16 の事故が再発するため、機械で止める。
 NOTE4_LEDGER_MARKER = "_300man_journal.csv"
 NOTE4_HOLDINGS_SECTION = "## 保有銘柄・CASH判断"
-# highs/pullback: 候補がある場合に必須の「理由」マーカー（従来表の根拠列）
+# highs/pullback: 候補がある場合に必須の「理由」マーカー。
+# fix28(2026-08-23): 押し目の従来表を廃止したので、カードの紹介文に必ず出る
+# 「〜_PULLBACK」（52W_PULLBACK / 25MA_PULLBACK など）も根拠として認める。
 NOTE4_REASON_MARKERS = {
     "highs": ("高値乖離%",),
-    "pullback": ("新高値ライン", "MA25", "MA200", "MA240"),
+    "pullback": ("_PULLBACK", "新高値ライン", "MA25", "MA200", "MA240"),
 }
 
 MARKET_INDICATORS = [
@@ -375,8 +377,10 @@ def _note4_content_issue(key: str, text: str) -> str | None:
             1 for line in text.splitlines()
             if line.startswith("|") and "---" not in line and "コード" not in line
         )
-        if table_rows == 0:
-            return "候補カードはあるが候補銘柄一覧（表）が空です"
+        # fix28(2026-08-23): 押し目はカードだけの記事になったので、
+        # 表が1行も無くてもカードがあれば「候補一覧あり」と認める。
+        if table_rows == 0 and "### カード型候補" not in text:
+            return "候補一覧（カードも表も）が空です"
         return None
     if "該当なし" not in text and "データ不足" not in text:
         return "候補銘柄一覧が無く、「該当なし」「データ不足」の明記もありません"
