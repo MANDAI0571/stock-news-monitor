@@ -127,9 +127,8 @@ jobs:
 
       # v8(2026-07-19): manifest駆動のNote下書き保存を定時実行に配線し、
       # 保存本数をゲートで検知（保存漏れの静かな失敗を防止）。
-      # v10(2026-07-19): ③ChatGPT版はCodexの独自便（chatgpt-300man-note.yml・16:45）に分離したため、
-      # ここで保存するのは①52週新高値/②押し目/④Claudeの3本（ゲート3/3）。
-      # ③は chatgpt-300man-note.yml（Codex担当）が16:45に生成・保存する（2重保存防止）。
+      # fix27(2026-08-23): ChatGPT(Codex)版を廃止したため、note下書きは恒久的に3本。
+      # 保存するのは①52週新高値/②押し目/③Claudeの3本（ゲート3/3）。
       - name: Save 3-note drafts in note.com (manifest)
         env:
           NOTE_STORAGE_STATE: ${{ secrets.NOTE_STORAGE_STATE }}
@@ -271,15 +270,12 @@ jobs:
             outputs/note_daily.md
             outputs/note_title.txt
             outputs/note_daily.html
-            outputs/note_chatgpt.md
             outputs/note_claude.md
             outputs/note_pullback.md
             outputs/note_highs.md
-            outputs/note_chatgpt.html
             outputs/note_claude.html
             outputs/note_pullback.html
             outputs/note_highs.html
-            outputs/note_chatgpt_title.txt
             outputs/note_claude_title.txt
             outputs/note_pullback_title.txt
             outputs/note_highs_title.txt
