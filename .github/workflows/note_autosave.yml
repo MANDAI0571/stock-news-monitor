@@ -66,15 +66,12 @@ jobs:
             outputs/note_daily.md
             outputs/note_title.txt
             outputs/note_daily.html
-            outputs/note_chatgpt.md
             outputs/note_claude.md
             outputs/note_pullback.md
             outputs/note_highs.md
-            outputs/note_chatgpt.html
             outputs/note_claude.html
             outputs/note_pullback.html
             outputs/note_highs.html
-            outputs/note_chatgpt_title.txt
             outputs/note_claude_title.txt
             outputs/note_pullback_title.txt
             outputs/note_highs_title.txt
