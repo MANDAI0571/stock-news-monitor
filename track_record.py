@@ -283,6 +283,251 @@ def load_track_record_summary(summary_path: Path = SUMMARY_PATH) -> dict | None:
         return None
 
 
+# ---------------------------------------------------------------------------
+# fix30(2026-08-23): 押し目（リテスト/25MA/200MA/240MA）の実績も同じ仕組みで記録する。
+# 52週新高値と同じく「掲載した銘柄がその後どう動いたか」を毎営業日ためて集計する。
+# 分類ごとに勝率が違うはずなので、分類別にも出す（読者が一番知りたい数字）。
+# ---------------------------------------------------------------------------
+
+PULLBACK_RECORD_PATH = DATA_DIR / "pullback_track_record.csv"
+PULLBACK_SUMMARY_PATH = OUTPUT_DIR / "pullback_track_record.json"
+PULLBACK_RECORD_COLUMNS = ["date", "code", "ticker", "name", "sector", "bucket", "entry_close"]
+PULLBACK_BUCKETS = (
+    ("retest_52w", "52週新高値後リテスト"),
+    ("ma25_touch", "25MAタッチ"),
+    ("ma200_touch", "200MAタッチ"),
+    ("ma240_touch", "240MAタッチ"),
+)
+PULLBACK_BUCKET_LABELS = dict(PULLBACK_BUCKETS)
+
+
+def _truthy(value: object) -> bool:
+    return str(value).strip().lower() in ("true", "1", "yes")
+
+
+def _latest_pullback_csv(output_dir: Path) -> Path | None:
+    files = sorted(Path(output_dir).glob("screening_pullback_*.csv"))
+    return files[-1] if files else None
+
+
+def load_pullback_record(record_path: Path = PULLBACK_RECORD_PATH) -> pd.DataFrame:
+    if not record_path.exists():
+        return pd.DataFrame(columns=PULLBACK_RECORD_COLUMNS)
+    try:
+        frame = pd.read_csv(record_path, dtype={"code": str, "ticker": str})
+    except Exception:
+        return pd.DataFrame(columns=PULLBACK_RECORD_COLUMNS)
+    for column in PULLBACK_RECORD_COLUMNS:
+        if column not in frame.columns:
+            frame[column] = ""
+    return frame[PULLBACK_RECORD_COLUMNS]
+
+
+def append_pullback_snapshot(
+    output_dir: Path = OUTPUT_DIR,
+    record_path: Path = PULLBACK_RECORD_PATH,
+    today: date | None = None,
+) -> int:
+    """本日の screening_pullback を記録ファイルへ追記する。戻り値は追加件数。
+
+    1銘柄が複数の分類に入ることがあるので、分類ごとに1行として記録する。
+    同一 (date, code, bucket) は追記しない（再実行しても重複しない）。
+    """
+    today = today or date.today()
+    source = _latest_pullback_csv(Path(output_dir))
+    if source is None:
+        print("track_record(pullback): screening_pullback が無いため追記なし", flush=True)
+        return 0
+    try:
+        pullback = pd.read_csv(source, dtype={"code": str, "ticker": str})
+    except Exception as exc:
+        print(f"track_record(pullback): 読込失敗 {exc}", flush=True)
+        return 0
+    if pullback.empty or "code" not in pullback.columns:
+        print("track_record(pullback): 空のため追記なし", flush=True)
+        return 0
+
+    record = load_pullback_record(record_path)
+    existing = set(
+        zip(record["date"].astype(str), record["code"].astype(str), record["bucket"].astype(str))
+    )
+    today_text = today.isoformat()
+    added: list[dict[str, object]] = []
+    for _, row in pullback.iterrows():
+        code = str(row.get("code", "")).strip()
+        if not code:
+            continue
+        for flag, _label in PULLBACK_BUCKETS:
+            if not _truthy(row.get(flag, "")):
+                continue
+            if (today_text, code, flag) in existing:
+                continue
+            added.append(
+                {
+                    "date": today_text,
+                    "code": code,
+                    "ticker": str(row.get("ticker", f"{code}.T")),
+                    "name": str(row.get("name", "")),
+                    "sector": str(row.get("sector", "")),
+                    "bucket": flag,
+                    "entry_close": row.get("current_price", ""),
+                }
+            )
+    if not added:
+        print("track_record(pullback): 追加0件（既に記録済み）", flush=True)
+        return 0
+
+    frames = [df for df in (record, pd.DataFrame(added)) if not df.empty]
+    merged = pd.concat(frames, ignore_index=True)
+    merged["_d"] = pd.to_datetime(merged["date"], errors="coerce")
+    cutoff = pd.Timestamp(today) - pd.Timedelta(days=MAX_RECORD_DAYS * 2)
+    merged = merged[merged["_d"].isna() | (merged["_d"] >= cutoff)].drop(columns=["_d"])
+    record_path.parent.mkdir(parents=True, exist_ok=True)
+    merged[PULLBACK_RECORD_COLUMNS].to_csv(record_path, index=False, encoding="utf-8-sig")
+    print(f"track_record(pullback): {len(added)}件追記 -> {record_path}", flush=True)
+    return len(added)
+
+
+def evaluate_pullback_track_record(
+    record_path: Path = PULLBACK_RECORD_PATH,
+    summary_path: Path = PULLBACK_SUMMARY_PATH,
+    price_fetcher=None,
+    today: date | None = None,
+) -> dict:
+    """押し目の記録を集計して outputs/pullback_track_record.json に保存する。"""
+    if price_fetcher is None:
+        from scanner.prices import fetch_price_history
+        price_fetcher = fetch_price_history
+
+    today = today or date.today()
+    record = load_pullback_record(record_path)
+    summary: dict = {
+        "as_of": today.isoformat(),
+        "total_records": int(len(record)),
+        "evaluated": 0,
+        "price_missing": 0,
+        "horizons": {},
+        "buckets": {},
+    }
+    if record.empty:
+        _write_summary(summary, summary_path)
+        return summary
+
+    record = record[record["date"].astype(str) < today.isoformat()]
+    history_cache: dict[str, pd.DataFrame] = {}
+    rows: list[dict[str, object]] = []
+    for _, entry in record.iterrows():
+        ticker = str(entry.get("ticker", "")).strip()
+        if not ticker:
+            continue
+        if ticker not in history_cache:
+            try:
+                history_cache[ticker] = price_fetcher(ticker)
+            except Exception:
+                history_cache[ticker] = pd.DataFrame()
+        returns = _returns_for_entry(history_cache[ticker], str(entry["date"]))
+        if not returns:
+            summary["price_missing"] += 1
+            continue
+        rows.append(
+            {
+                "bucket": str(entry.get("bucket", "")),
+                **{f"ret_{h}d": returns.get(h) for h in HORIZONS},
+            }
+        )
+
+    summary["evaluated"] = len(rows)
+    frame = pd.DataFrame(rows)
+    for horizon in HORIZONS:
+        column = f"ret_{horizon}d"
+        if frame.empty or column not in frame.columns:
+            continue
+        values = pd.to_numeric(frame[column], errors="coerce").dropna()
+        if not values.empty:
+            summary["horizons"][str(horizon)] = _stats(values)
+    for flag, _label in PULLBACK_BUCKETS:
+        if frame.empty or "bucket" not in frame.columns:
+            break
+        subset = frame[frame["bucket"].astype(str) == flag]
+        if subset.empty:
+            continue
+        per_bucket: dict[str, dict] = {}
+        for horizon in HORIZONS:
+            column = f"ret_{horizon}d"
+            if column not in subset.columns:
+                continue
+            values = pd.to_numeric(subset[column], errors="coerce").dropna()
+            if not values.empty:
+                per_bucket[str(horizon)] = _stats(values)
+        if per_bucket:
+            summary["buckets"][flag] = per_bucket
+
+    _write_summary(summary, summary_path)
+    return summary
+
+
+def build_pullback_track_record_lines(summary: dict | None) -> list[str]:
+    """押し目記事に載せる実績セクション。データが無ければ「データ不足」と正直に書く。"""
+    lines = ["## 実績（過去に掲載した銘柄のその後）", ""]
+    horizons = (summary or {}).get("horizons") or {}
+    usable = {k: v for k, v in horizons.items() if int(v.get("n", 0)) > 0}
+    if not summary or not usable:
+        lines.append(
+            "> データ不足：押し目候補の実績は2026-08-23から記録を始めました。"
+            "営業日を重ねると自動で表示されます。良い日も悪い日もそのまま載せます。"
+        )
+        lines.append("")
+        return lines
+
+    lines.append(
+        "掲載した押し目候補がその後どう動いたかを、毎営業日同じ基準で機械集計しています"
+        "（勝率＝掲載日終値より上昇した割合）。"
+    )
+    lines.append("")
+    lines.append("| 期間 | 銘柄数 | 勝率 | 平均騰落率 | 最大 | 最小 |")
+    lines.append("|---|---:|---:|---:|---:|---:|")
+    for key in ("1", "5", "20"):
+        stats = usable.get(key)
+        if not stats:
+            continue
+        lines.append(
+            f"| {HORIZON_LABELS[key]} | {stats['n']} | {stats['win_rate_pct']}% | "
+            f"{stats['avg_return_pct']:+}% | {stats['best_pct']:+}% | {stats['worst_pct']:+}% |"
+        )
+
+    buckets = (summary or {}).get("buckets") or {}
+    bucket_rows = []
+    for flag, label in PULLBACK_BUCKETS:
+        stats = (buckets.get(flag) or {}).get("20")
+        if stats and int(stats.get("n", 0)) > 0:
+            bucket_rows.append(
+                f"| {label} | {stats['n']} | {stats['win_rate_pct']}% | {stats['avg_return_pct']:+}% |"
+            )
+    if bucket_rows:
+        lines.append("")
+        lines.append("分類別の20営業日後の成績です。どのタッチが効いているかを毎日そのまま出します。")
+        lines.append("")
+        lines.append("| 分類 | 銘柄数 | 勝率 | 平均騰落率 |")
+        lines.append("|---|---:|---:|---:|")
+        lines.extend(bucket_rows)
+
+    missing = int((summary or {}).get("price_missing", 0))
+    if missing > 0:
+        lines.append("")
+        lines.append(f"※ 価格データを取得できなかった{missing}件は集計から除外しています。")
+    lines.append("")
+    return lines
+
+
+def load_pullback_track_record_summary(summary_path: Path = PULLBACK_SUMMARY_PATH) -> dict | None:
+    if not summary_path.exists():
+        return None
+    try:
+        return json.loads(summary_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="掲載銘柄の実績トラッキング（バックテスト博士）")
     parser.add_argument("--update", action="store_true", help="本日分を追記して実績を集計する")
@@ -296,6 +541,18 @@ def main() -> None:
             f"evaluated={summary['evaluated']} horizons={list(summary['horizons'].keys())}",
             flush=True,
         )
+        # fix30(2026-08-23): 押し目も同じ流れで記録・集計する。
+        # ここが落ちても52週新高値の実績は出したいので、失敗しても止めない。
+        try:
+            pb_added = append_pullback_snapshot(output_dir=Path(args.output_dir))
+            pb_summary = evaluate_pullback_track_record()
+            print(
+                f"track_record(pullback): added={pb_added} total={pb_summary['total_records']} "
+                f"evaluated={pb_summary['evaluated']} horizons={list(pb_summary['horizons'].keys())}",
+                flush=True,
+            )
+        except Exception as exc:
+            print(f"track_record(pullback): 集計に失敗 {exc}", flush=True)
 
 
 if __name__ == "__main__":

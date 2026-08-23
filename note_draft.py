@@ -724,8 +724,11 @@ def _format_earnings_date(row, code: str) -> str:
         value = _fetch_earnings_safe(code)
     text = "未取得" if _is_missing(value) else safe_text(value)
     days = _business_days_until(text)
-    if days is not None and days <= 7:
-        return f"{text} ⚠️ 決算接近"
+    # fix30(2026-08-23): 高重さんの指示で3営業日以内に絞り、あと何日かを書く。
+    if days is not None and days <= 3:
+        if days == 0:
+            return f"{text} ⚠️ 本日決算（発表前後は値動きが荒くなります）"
+        return f"{text} ⚠️ あと{days}営業日で決算（発表前後は値動きが荒くなります）"
     return text
 
 
@@ -1247,6 +1250,39 @@ def _portfolio_status_block(discipline: pd.DataFrame, operation: str = "claude")
     return lines
 
 
+# fix30(2026-08-23): 52週新高値の記事にある「業種別の偏り」を押し目にも入れる。
+def _pullback_sector_line(pullback: pd.DataFrame) -> str:
+    """候補が多い業種を上位3つ並べた1行。数えられなければ空文字（捏造しない）。"""
+    if pullback is None or pullback.empty or "sector" not in pullback.columns:
+        return ""
+    counts = (
+        pullback["sector"].astype(str).str.strip()
+        .replace({"": None, "nan": None, "None": None})
+        .dropna()
+        .value_counts()
+    )
+    if counts.empty:
+        return ""
+    top = [f"{name}（{int(n)}銘柄）" for name, n in counts.head(3).items()]
+    return (
+        "本日の押し目候補を業種別に数えると、" + "、".join(top) + "に集まりました。"
+        "同じ業種に偏っている日は、その業種の地合いに引きずられやすい点に注意してください。"
+    )
+
+
+# fix30(2026-08-23): 新規読者が毎回ゼロから理解しなくて済むよう、読み方を固定で置く。
+PULLBACK_HOWTO_LINES = (
+    "## この記事の読み方",
+    "",
+    "- **52週新高値後リテスト**：一度新高値を取った銘柄が、その高値ラインまで戻ってきたところです。",
+    "- **25MA／200MA／240MAタッチ**：株価が25日／200日／240日移動平均線に触れたところです。",
+    "- **上向きの移動平均線に触れた銘柄だけ**を拾います。下向き（下落トレンド）は「落ちるナイフ」なので入れません。",
+    "- カードは各分類の**上位10件**です。全件はメール添付のCSVにあります。",
+    "- 掲載は毎営業日、**同じ基準で機械的に**行います。裁量で足したり引いたりしません。",
+    "",
+)
+
+
 def build_pullback_note(pullback: pd.DataFrame, source: Path | None) -> str:
     """③押し目候補。4バケット: 52週新高値リテスト / 25MAタッチ / 200MAタッチ / 240MAタッチ。
     データが無いバケットは「該当なし」。空想は作らない。"""
@@ -1270,7 +1306,11 @@ def build_pullback_note(pullback: pd.DataFrame, source: Path | None) -> str:
         "強い銘柄を高値で追いかけるのではなく、**強い銘柄が休んだところ**を狙うのがこの記事のテーマです。"
         "移動平均線が上向きのままのタッチだけを拾うので、下落トレンドの「落ちるナイフ」は含みません。"
     )
+    sector_line = _pullback_sector_line(pullback)
+    if sector_line:
+        lines.append(sector_line)
     lines.append("")
+    lines.extend(PULLBACK_HOWTO_LINES)
     if source is None or pullback.empty:
         lines.append("> データ不足：本日の押し目スクリーニング出力（screening_pullback）が未生成または空のため、候補を表示できません。下書きは規定どおり生成しています。")
         lines.append("")
@@ -1307,6 +1347,23 @@ def build_pullback_note(pullback: pd.DataFrame, source: Path | None) -> str:
                 f"（全件はメール添付の screening_pullback_*.csv）。"
             )
         lines.append("")
+
+    # fix30(2026-08-23): バックテスト博士の実績セクション（押し目版）。
+    # 記録が浅いうちは「データ不足」と正直に出る。ここが落ちても記事は止めない。
+    try:
+        from track_record import (
+            build_pullback_track_record_lines,
+            load_pullback_track_record_summary,
+        )
+
+        lines.extend(build_pullback_track_record_lines(load_pullback_track_record_summary()))
+    except Exception:
+        lines.extend([
+            "## 実績（過去に掲載した銘柄のその後）",
+            "",
+            "> データ不足：押し目候補の実績は2026-08-23から記録を始めました。営業日を重ねると自動表示されます。",
+            "",
+        ])
 
     # 編集者: 締め（読者の次の行動につなげる）
     lines.append("## おわりに")
