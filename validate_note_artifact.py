@@ -368,7 +368,14 @@ def _note4_content_issue(key: str, text: str) -> str | None:
     # highs / pullback: 候補銘柄一覧＋理由、無い場合は「該当なし」「データ不足」の明記が必須
     # 全候補がイナゴ/TOB疑いでカードが無い日でも、従来表があれば「候補あり」として扱う
     # T-K: highs新形式（A/B/C構成）は「### 一覧表」を候補ありの根拠として扱う
-    has_candidates = "### カード型候補" in text or "### 従来表" in text or "### 一覧表" in text
+    # fix29(2026-08-23): 「### カード型候補」の見出しを廃止したので、
+    # カード本体に必ず出る「📝 紹介:」でも「候補あり」と判定する。
+    has_candidates = (
+        "📝 紹介:" in text
+        or "### カード型候補" in text
+        or "### 従来表" in text
+        or "### 一覧表" in text
+    )
     if has_candidates:
         markers = NOTE4_REASON_MARKERS[key]
         if not any(m in text for m in markers):
@@ -379,7 +386,7 @@ def _note4_content_issue(key: str, text: str) -> str | None:
         )
         # fix28(2026-08-23): 押し目はカードだけの記事になったので、
         # 表が1行も無くてもカードがあれば「候補一覧あり」と認める。
-        if table_rows == 0 and "### カード型候補" not in text:
+        if table_rows == 0 and "📝 紹介:" not in text and "### カード型候補" not in text:
             return "候補一覧（カードも表も）が空です"
         return None
     if "該当なし" not in text and "データ不足" not in text:

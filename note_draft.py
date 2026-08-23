@@ -8,6 +8,7 @@ from functools import lru_cache
 from html import escape
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import quote
 
 import pandas as pd
 
@@ -543,7 +544,7 @@ def _market_status_block() -> list[str]:
         lines.append(f"- 指標ベース判定: {indicator_regime}")
     if note:
         lines.append(f"- 補足: {note}")
-    lines.append(f"- 判定元: {source}")
+    # fix29(2026-08-23): 高重さんの指示で「判定元」の行とURLは載せない。
     lines.append("")
     return lines
 
@@ -821,6 +822,20 @@ def _candidate_intro(row) -> str:
     return lead + "。".join(dict.fromkeys(facts[:3])) + "。"
 
 
+# fix29(2026-08-23): カードに OpenWork の検索リンクを置く。
+# OpenWorkの規約（第11条）は機械的アクセスと情報の転載を禁じているので、
+# 評価値そのものは取らず・載せず、読んだ人が自分で見に行くリンクだけを置く。
+OPENWORK_SEARCH_BASE = "https://www.openwork.jp/search.php?src_str="
+
+
+def _openwork_url(name: object) -> str:
+    """社名から OpenWork の検索URLを組み立てる。外部通信は一切しない。"""
+    text = str(name or "").strip()
+    if not text or text.lower() in ("nan", "none", "null"):
+        return ""
+    return OPENWORK_SEARCH_BASE + quote(text, safe="")
+
+
 def build_stock_cards(df: pd.DataFrame, max_rows: int | None = None) -> list[str]:
     """銘柄をnote向けカード型紹介にする。欠損項目は表示せず、事実ベースの紹介文で補う。"""
     if df.empty:
@@ -914,6 +929,9 @@ def build_stock_cards(df: pd.DataFrame, max_rows: int | None = None) -> list[str
         if company_parts:
             lines.append("🏢 " + " / ".join(company_parts))
         lines.append(f"[📈 チャートを見る]({_chart_url(code)})")
+        openwork_url = _openwork_url(name)
+        if openwork_url:
+            lines.append(f"[👥 OpenWorkで社員クチコミを見る]({openwork_url})")
         lines.append("")
     return lines
 
@@ -1264,8 +1282,6 @@ def build_pullback_note(pullback: pd.DataFrame, source: Path | None) -> str:
     if rt.empty:
         lines.append("- 該当なし")
     else:
-        lines.append("### カード型候補（上位10件）")
-        lines.append("")
         lines.extend(build_stock_cards(rt, 10))
         # fix28(2026-08-23): 従来表は高重さんの指示で廃止。全件は添付CSVで見る。
         lines.append("")
@@ -1283,8 +1299,6 @@ def build_pullback_note(pullback: pd.DataFrame, source: Path | None) -> str:
         if b.empty:
             lines.append("- 該当なし")
         else:
-            lines.append("### カード型候補（上位10件）")
-            lines.append("")
             lines.extend(build_stock_cards(b, 10))
             # fix28(2026-08-23): 従来表は高重さんの指示で廃止。全件は添付CSVで見る。
             lines.append("")
