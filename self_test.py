@@ -301,7 +301,7 @@ BUY条件を満たす銘柄がないため、現金を守ります。
         (out_dir / "discipline_result.csv").write_text("slot,action,cash_reason\n1,CASH,条件不足\n", encoding="utf-8")
         (out_dir / "paper_portfolio_decision.csv").write_text("slot,action,cash_reason\n1,CASH,条件不足\n", encoding="utf-8")
         (out_dir / "note_cloud_artifact_manifest.json").write_text("{}", encoding="utf-8")
-        # 正しい4本（highs/pullback/chatgpt/claude）＋各冒頭の市場ステータス＋最低限の記事内容が新契約
+        # 正しい3本（highs/pullback/claude）＋各冒頭の市場ステータス＋最低限の記事内容が新契約
         status_block = "## 市場ステータス\n\n- 本日の地合い: **NORMAL**\n- 判定元: regime.txt\n\n"
         # T-K更新(2026-08-03): 保有欄は運用台帳(*_300man_journal.csv)由来、
         # 当日の配分案は「本日の買い候補（未約定・当日試算）」に分離するのが新契約。
@@ -315,8 +315,8 @@ BUY条件を満たす銘柄がないため、現金を守ります。
             "## 本日の買い候補（未約定・当日試算）\n\n- 本日の買い候補: なし（CASH判断 3枠）\n"
         )
         note4_manifest = []
-        for key in ["highs", "pullback", "chatgpt", "claude"]:
-            if key in ("chatgpt", "claude"):
+        for key in ["highs", "pullback", "claude"]:
+            if key == "claude":
                 body = f"# ダミー {key} 2026-07-07\n\n{status_block}{portfolio_block}"
             else:
                 body = f"# ダミー {key} 2026-07-07\n\n{status_block}- 該当なし\n"
@@ -335,15 +335,15 @@ BUY条件を満たす銘柄がないため、現金を守ります。
         assert valid.watch_count == 1
         assert set(valid.note4_status.values()) == {"OK"}
 
-        # 4本のうち1本の市場ステータスが欠けたら失敗扱い
-        (out_dir / "note_chatgpt.md").write_text("# ダミー chatgpt 2026-07-07\n\n- 該当なし\n", encoding="utf-8")
+        # 3本のうち1本の市場ステータスが欠けたら失敗扱い
+        (out_dir / "note_claude.md").write_text("# ダミー claude 2026-07-07\n\n- 該当なし\n", encoding="utf-8")
         broken = validate_artifact(out_dir)
         assert broken.valid is False
-        assert any("note_chatgpt.md" in item for item in broken.missing_items)
+        assert any("note_claude.md" in item for item in broken.missing_items)
 
         # 中身が薄い300万円運用（市場ステータスのみ・運用セクションなし）は失敗扱い
-        (out_dir / "note_chatgpt.md").write_text(
-            f"# ダミー chatgpt 2026-07-07\n\n{status_block}- 該当なし\n", encoding="utf-8"
+        (out_dir / "note_claude.md").write_text(
+            f"# ダミー claude 2026-07-07\n\n{status_block}- 該当なし\n", encoding="utf-8"
         )
         thin = validate_artifact(out_dir)
         assert thin.valid is False
@@ -366,9 +366,6 @@ BUY条件を満たす銘柄がないため、現金を守ります。
         assert any("note_highs.md" in item and "該当なし" in item for item in thin3.missing_items)
 
         # 全部復元して再びPASSすること
-        (out_dir / "note_chatgpt.md").write_text(
-            f"# ダミー chatgpt 2026-07-07\n\n{status_block}{portfolio_block}", encoding="utf-8"
-        )
         (out_dir / "note_claude.md").write_text(
             f"# ダミー claude 2026-07-07\n\n{status_block}{portfolio_block}", encoding="utf-8"
         )
@@ -599,12 +596,12 @@ def _test_sns_promo() -> None:
         # manifestが無い場合はスキップ（例外を出さない）
         assert build_sns_posts(out_dir) is None
         (out_dir / "note_drafts_manifest.json").write_text("[]", encoding="utf-8")
-        for key in ("highs", "pullback", "chatgpt", "claude"):
+        for key in ("highs", "pullback", "claude"):
             (out_dir / f"note_{key}.md").write_text(f"# dummy {key}\n", encoding="utf-8")
         md_path = build_sns_posts(out_dir)
         assert md_path is not None and md_path.exists()
         posts = _json.loads((out_dir / "sns_posts.json").read_text(encoding="utf-8"))
-        assert [p["key"] for p in posts] == ["highs", "pullback", "chatgpt", "claude"]
+        assert [p["key"] for p in posts] == ["highs", "pullback", "claude"]
         assert all("{URL}" in p["text"] for p in posts)
 
 
@@ -1683,7 +1680,6 @@ def _test_cloud_digest_mail() -> None:
         (out / "note_pullback.md").write_text("# 25MAタッチ候補\n\n7011 三菱重工\n", encoding="utf-8")
         (out / "note_highs_title.txt").write_text("52週新高値候補", encoding="utf-8")
         (out / "note_highs.md").write_text("# 52週新高値候補\n\n該当なし\n", encoding="utf-8")
-        (out / "note_chatgpt.md").write_text("# ChatGPT案\n\nBUY なし\n", encoding="utf-8")
         (out / "note_claude.md").write_text("# Claude案\n\nWATCH なし\n", encoding="utf-8")
         (out / "note_draft_url_claude.txt").write_text("https://editor.note.com/notes/claude123/edit/\n", encoding="utf-8")
         (out / "metron_kpi_report.md").write_text("# メトロンKPI\n\n- note4本: OK\n", encoding="utf-8")
@@ -1742,7 +1738,7 @@ def _test_cloud_digest_mail() -> None:
 
 
 def _test_metron_kpi() -> None:
-    """メトロンはnote4本・運用・実績KPIを捏造せず日次レポートに集計する。"""
+    """メトロンはnote3本・運用・実績KPIを捏造せず日次レポートに集計する。"""
     import tempfile
     from datetime import datetime
     from zoneinfo import ZoneInfo
@@ -1790,7 +1786,7 @@ def _test_metron_kpi() -> None:
             encoding="utf-8",
         )
         manifest = []
-        for key in ["chatgpt", "claude", "pullback", "highs"]:
+        for key in ["claude", "pullback", "highs"]:
             manifest.append({"key": key, "title": f"{key}記事", "md_file": f"note_{key}.md", "title_file": f"note_{key}_title.txt", "html_file": f"note_{key}.html"})
             (out / f"note_{key}.md").write_text("本文", encoding="utf-8")
             (out / f"note_{key}_title.txt").write_text("タイトル", encoding="utf-8")
@@ -1806,10 +1802,10 @@ def _test_metron_kpi() -> None:
         assert kpi["overall_status"] == "OK"
         assert kpi["research"]["s_rank_count"] == 1
         assert kpi["operations"]["buy_count"] == 1
-        assert kpi["editorial"]["ready"] == 4
+        assert kpi["editorial"]["ready"] == 3
         report = render_markdown(kpi)
         assert "メトロン日次KPIレポート" in report
-        assert "note4本チェック" in report
+        assert "note3本チェック" in report
         for banned in ("NaN", "None", "null", "inf"):
             assert banned not in report
         md_path, json_path = write_outputs(kpi, output_dir=out)
@@ -2432,9 +2428,9 @@ def _test_claude_note_holdings_come_from_ledger() -> None:
             # 現金は台帳から: 3,000,000 - 420,600 = 2,579,400
             assert "2,579,400" in block, block
 
-            # 別勘定（Codex側）の台帳が空なら、Claudeの保有を借りてこないこと
-            nd.LEDGER_PATHS["chatgpt"] = (Path(tmp) / "none1.csv", Path(tmp) / "none2.csv")
-            other = "\n".join(nd._portfolio_status_block(discipline, operation="chatgpt"))
+            # 別勘定の台帳が空なら、Claudeの保有を借りてこないこと
+            nd.LEDGER_PATHS["other"] = (Path(tmp) / "none1.csv", Path(tmp) / "none2.csv")
+            other = "\n".join(nd._portfolio_status_block(discipline, operation="other"))
             assert "良品計画" not in other, other
             assert "約定はまだありません" in other, other
 
@@ -2837,8 +2833,8 @@ def _test_note_copy_mails() -> None:
             (out / "note_pullback{}_title.txt".format(index)).write_text(
                 "25MA押し目 2026-08-13", encoding="utf-8"
             )
-        (out / "note_chatgpt.md").write_text("# 短い本\n\n本文。\n", encoding="utf-8")
-        (out / "note_chatgpt_title.txt").write_text("300万円 ChatGPT 2026-08-13", encoding="utf-8")
+        (out / "note_claude.md").write_text("# 短い本\n\n本文。\n", encoding="utf-8")
+        (out / "note_claude_title.txt").write_text("300万円 Claude 2026-08-13", encoding="utf-8")
 
         build_digest(out, now=datetime(2026, 8, 13, 19, 0, tzinfo=ZoneInfo("Asia/Tokyo")))
         parts = collect_note_parts(out)
@@ -2853,7 +2849,7 @@ def _test_note_copy_mails() -> None:
             # Gmailの打ち切り（約102KB）に掛からない
             assert len(text.encode("utf-8")) <= COPY_MAIL_BUDGET_BYTES, subject
 
-        short = [item for item in mails if "300万円 ChatGPT" in item[0]]
+        short = [item for item in mails if "300万円 Claude" in item[0]]
         assert len(short) == 1
         assert short[0][0].startswith("【コピー用】")
         assert short[0][1] == "# 短い本\n\n本文。"

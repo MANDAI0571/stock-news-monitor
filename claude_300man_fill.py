@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
-from chatgpt_300man_note import fetch_open_price_yfinance, is_jpx_business_day
+from jpx_calendar import fetch_open_price_yfinance, is_jpx_business_day
 
 
 ROOT = Path(__file__).resolve().parent
@@ -60,7 +60,7 @@ def _write_ledger(orders: pd.DataFrame, journal: pd.DataFrame) -> None:
     lines = [
         "# Claudeが300万円運用 - 運用台帳（正本）",
         "",
-        "Claude運用専用のペーパー運用記録です。Codex運用の判断・注文・台帳とは分離しています。",
+        "Claude運用専用のペーパー運用記録です。",
         "",
         f"- 初期資金: {INITIAL_CASH:,}円",
         f"- 現金残: {_cash_balance(journal):,.0f}円",

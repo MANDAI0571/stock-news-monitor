@@ -367,11 +367,10 @@ QUICK_MODEではnote.com保存とGmail通知はスキップします。まず5�
 
 日常処理はMacのlaunchdやローカル常駐では動かさず、GitHub Actionsだけで実行します。
 
-- 日次スクリーニングとNote下書き4本生成: `.github/workflows/daily-discipline.yml`
+- 日次スクリーニングとNote下書き3本生成: `.github/workflows/daily-discipline.yml`
 - 生成物: Artifacts `stock-news-monitor-outputs`
   - `outputs/note_highs.md`（52週新高値到達・接近）
   - `outputs/note_pullback.md`（新高値後の押し目・25MA/200MA/240MA付近候補）
-  - `outputs/note_chatgpt.md`（300万円運用 ChatGPT版）
   - `outputs/note_claude.md`（300万円運用 Claude版）
 - Gmail通知: `.github/workflows/intraday_high_alert.yml` の直近高値接近・到達アラートだけ
   - 平日ザラ場中（09:00〜11:30 / 12:30〜15:30 JST）にGitHub Actionsで15分ごとに実行

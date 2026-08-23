@@ -40,7 +40,6 @@ COPY_MAIL_BUDGET_BYTES = 90_000
 COPY_PAGE_URL = "https://mandai0571.github.io/stock-news-monitor/copy/latest.html"
 
 NOTE_ARTICLES = (
-    ("chatgpt", "300万円 ChatGPT"),
     ("claude", "300万円 Claude"),
     ("pullback", "25MA/押し目・200MA/240MA"),
     ("highs", "52週新高値"),
@@ -194,7 +193,6 @@ def safari_url(note_url: str) -> str:
 # ---------------------------------------------------------------------------
 
 NOTE_TAGS = {
-    "chatgpt": ("日本株", "AI投資", "株式投資", "資産運用"),
     "claude": ("日本株", "AI投資", "株式投資", "資産運用"),
     "pullback": ("日本株", "押し目買い", "株式投資", "テクニカル分析"),
     "highs": ("日本株", "52週新高値", "株式投資", "テクニカル分析"),

@@ -6,11 +6,10 @@
 - データが取れなければ画像を作らない（捏造しない）。証拠ベース。
 - 公開・送信は一切しない。PNGを outputs/charts_YYYYMMDD/ に置くだけ。
 
-代表銘柄（高重さん指定・2026-06-28）:
-  ① note_chatgpt  7173.T 東京きらぼしフィナンシャルグループ（ChatGPT版300万 第1候補）
-  ② note_claude   8524.T 北洋銀行（Claude版 上位・銀行テーマ）
-  ③ note_pullback 7011.T 三菱重工業（52週新高値後リテスト候補）
-  ④ note_highs    6951.T 日本電子（52週新高値更新）
+代表銘柄（高重さん指定・2026-06-28。fix25 2026-08-23でChatGPT版を廃止）:
+  ① note_claude   8524.T 北洋銀行（Claude版 上位・銀行テーマ）
+  ② note_pullback 7011.T 三菱重工業（52週新高値後リテスト候補）
+  ③ note_highs    6951.T 日本電子（52週新高値更新）
 """
 from __future__ import annotations
 
@@ -38,7 +37,7 @@ FETCH_PERIOD = "600d"
 
 @dataclass(frozen=True)
 class ChartSpec:
-    key: str          # note種別（chatgpt/claude/pullback/highs）
+    key: str          # note種別（claude/pullback/highs）
     ticker: str       # yfinanceティッカー（7173.T 等）
     code: str         # 表示用コード（7173）
     name: str         # 銘柄名
@@ -47,7 +46,6 @@ class ChartSpec:
 
 
 SPECS: list[ChartSpec] = [
-    ChartSpec("chatgpt", "7173.T", "7173", "東京きらぼしフィナンシャルグループ", "trade", "chart_chatgpt_7173.png"),
     ChartSpec("claude", "8524.T", "8524", "北洋銀行", "trade", "chart_claude_8524.png"),
     ChartSpec("pullback", "7011.T", "7011", "三菱重工業", "pullback", "chart_pullback_7011.png"),
     ChartSpec("highs", "6951.T", "6951", "日本電子", "highs", "chart_highs_6951.png"),

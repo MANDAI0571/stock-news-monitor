@@ -495,16 +495,16 @@ def write_note_outputs(note_markdown: str) -> tuple[Path, Path, Path]:
 
 
 # ============================================================================
-# T-E(2026-06-28): Note 4本分割
-#   ① ChatGPTが300万円運用 ② Claudeが300万円運用
-#   ③ 52週新高値後の押し目候補(リテスト/25MA/200MA/240MAタッチ)
-#   ④ 52週新高値タッチ・接近銘柄
+# T-E(2026-06-28): Note 分割
+# fix25(2026-08-23): ChatGPT(Codex)版は高重さんの指示で廃止。以下の3本を作る。
+#   ① Claudeが300万円運用
+#   ② 52週新高値後の押し目候補(リテスト/25MA/200MA/240MAタッチ)
+#   ③ 52週新高値タッチ・接近銘柄
 # 既存の note_daily.* は後方互換のため残す（健全性チェック・CIが参照）。
 # データが無いバケットは必ず「該当なし」（捏造・空想Noteは作らない）。
 # ============================================================================
 
 NOTE4_TITLES = {
-    "chatgpt": "ChatGPTが300万円運用｜本日のAI売買候補",
     "claude": "Claudeが300万円運用｜本日のAI売買候補",
     "pullback": "52週新高値後の押し目候補｜新高値ライン戻り・25MA・200MA・240MAタッチ銘柄",
     "highs": "52週新高値タッチ・接近銘柄｜本日の高値更新候補",
@@ -558,14 +558,12 @@ def _insert_market_status(note_markdown: str, status_lines: list[str]) -> str:
 # チャートPNGは outputs/charts_YYYYMMDD/chart_<key>_<code>.png。
 # note_autosave がこの相対パスを読み、note.com本文の冒頭へ画像を挿入する。
 NOTE4_CHART_CODES = {
-    "chatgpt": "7173",
     "claude": "8524",
     "pullback": "7011",
     "highs": "6951",
 }
 
-# 日付なしで繰り返し使う固定見出し画像。③ChatGPT版は独自ワークフローの
-# 動的画像を使うため、共通パイプラインからは上書きしない。
+# 日付なしで繰り返し使う固定見出し画像。
 NOTE4_FIXED_HEADERS = {
     "claude": "note_header_claude_300man.png",
     "pullback": "note_header_pullback.png",
@@ -590,7 +588,7 @@ def chart_rel_path(key: str) -> str | None:
 
 def inject_chart_marker(note_markdown: str, chart_rel: str | None) -> str:
     """タイトル直下に画像挿入マーカーを差し込む（本文の見た目は崩さない＝HTML側はコメントを無視）。
-    例: <!-- chart_image: outputs/charts_20260628/chart_chatgpt_7173.png -->"""
+    例: <!-- chart_image: outputs/charts_20260628/chart_claude_8524.png -->"""
     if not chart_rel:
         return note_markdown
     lines = note_markdown.splitlines()
@@ -933,37 +931,6 @@ def load_aux(path: Path | None) -> pd.DataFrame:
         return pd.DataFrame()
 
 
-def build_chatgpt_note(discipline: pd.DataFrame, screening: pd.DataFrame, sources: SourceFiles) -> str:
-    """①ChatGPT版。Claudeは意見を書かず、両AI共通の事実データ(300万保有・候補)だけを枠として用意する。
-    本文の相場観・売買コメントは高重さんがChatGPTに書かせる（Claudeが捏造しない）。"""
-    today = datetime.now().strftime("%Y-%m-%d")
-    lines = [f"# {NOTE4_TITLES['chatgpt']} {today}", ""]
-    lines.append("> この記事の相場コメントはChatGPTが執筆します。以下はClaude側スクリーニングの共通素材データ（事実）です。")
-    lines.append("")
-    lines.append("## 本日の300万円運用（規律版データ）")
-    lines.append("")
-    lines.extend(summarize_discipline(discipline))
-    lines.append("")
-    lines.extend(_portfolio_status_block(discipline, operation="chatgpt"))
-    buys = discipline[discipline.get("action", pd.Series(dtype=str)).astype(str).str.upper() == "BUY"] if not discipline.empty else discipline
-    lines.extend(["## 300万円運用BUY候補カード", ""])
-    lines.extend(build_stock_cards(buys, None))
-    lines.extend(["", "## 300万円運用BUY候補（表）", ""])
-    lines.extend(_discipline_holdings_table(discipline))
-    lines.extend(["", "## 買い候補TOP10カード（共通素材）", ""])
-    lines.extend(build_stock_cards(top_buy_candidates(screening, 10), 10))
-    lines.extend(["", "## 買い候補TOP10（表）", ""])
-    lines.extend(_top10_block(screening))
-    lines.extend([
-        "",
-        "## 注意書き",
-        "",
-        "- これは投資助言ではありません。スクリーニング結果（事実）です。",
-        f"- source_screening={sources.screening.name} / source_discipline={sources.discipline.name}",
-    ])
-    return "\n".join(lines)
-
-
 def build_claude_note(screening: pd.DataFrame, discipline: pd.DataFrame, backtest: dict | None, sources: SourceFiles) -> str:
     """②Claude版。
 
@@ -1088,15 +1055,11 @@ PORTFOLIO_SECTION_NEXT_DAY = "## 次営業日の方針"
 # T-K修正(2026-08-03): 「その日の配分案」を保有と誤読させないための独立見出し
 PORTFOLIO_SECTION_CANDIDATES = "## 本日の買い候補（未約定・当日試算）"
 
-# 本物の運用台帳。Claude運用とCodex(ChatGPT)運用は完全に別勘定なので取り違えない。
+# 本物の運用台帳。fix25(2026-08-23)でCodex(ChatGPT)勘定を廃止し、Claude勘定だけにした。
 LEDGER_PATHS = {
     "claude": (
         PROJECT_ROOT / "data" / "claude_300man_orders.csv",
         PROJECT_ROOT / "data" / "claude_300man_journal.csv",
-    ),
-    "chatgpt": (
-        PROJECT_ROOT / "data" / "chatgpt_300man_orders.csv",
-        PROJECT_ROOT / "data" / "chatgpt_300man_journal.csv",
     ),
 }
 
@@ -1190,7 +1153,7 @@ def _portfolio_status_block(discipline: pd.DataFrame, operation: str = "claude")
     data/*_300man_orders.csv（実際に約定した本物の台帳）から出す。
     以前は discipline CSV（その日の配分案・記憶なし）を「保有銘柄」として書いていた。
     当日の配分案は _today_candidate_block() に分離した。
-    operation は "claude" / "chatgpt" のどちらの勘定かを指定する（取り違え防止）。
+    operation は勘定名。fix25(2026-08-23)以降は "claude" だけが本番で使われる。
     """
     orders_path, journal_path = LEDGER_PATHS.get(operation, LEDGER_PATHS["claude"])
     orders = _read_ledger(orders_path)
@@ -2064,12 +2027,11 @@ def build_note4(sources: SourceFiles, screening: pd.DataFrame, discipline: pd.Da
     highs = load_aux(highs_src)
 
     notes = {
-        "chatgpt": build_chatgpt_note(discipline, screening, sources),
         "claude": build_claude_note(screening, discipline, backtest, sources),
         "pullback": build_pullback_note(pullback, pullback_src),
         "highs": build_highs_note(highs, highs_src),
     }
-    # 4本すべての冒頭に市場ステータスを挿入（空欄禁止）
+    # 3本すべての冒頭に市場ステータスを挿入（空欄禁止）
     status_lines = _market_status_block()
     notes = {key: _insert_market_status(body, status_lines) for key, body in notes.items()}
     manifest: list[dict[str, str]] = []
@@ -2079,14 +2041,12 @@ def build_note4(sources: SourceFiles, screening: pd.DataFrame, discipline: pd.Da
         for index, part in enumerate(parts, start=1):
             part_key = key if index == 1 else f"{key}{index}"
             manifest.append(write_one_note(part_key, part, chart_rel_path(key) if index == 1 else None))
-    # v10(2026-07-19): ③ChatGPT版はCodexの独自ワークフロー
-    # （chatgpt-300man-note.yml・毎営業日16:45）が生成・保存するため、
-    # 日次autosaveのmanifestからは chatgpt を除外して3本保存にする（2重保存防止）。
-    autosave_manifest = [e for e in manifest if e.get("key") != "chatgpt"]
+    # fix25(2026-08-23): ChatGPT(Codex)版を廃止したので、作った3本をそのまま保存する。
+    autosave_manifest = list(manifest)
     NOTE4_MANIFEST_PATH.write_text(json.dumps(autosave_manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"saved={NOTE4_MANIFEST_PATH}")
     print(f"note_manifest_keys={','.join(str(e.get('key')) for e in autosave_manifest)}")
-    # 完成条件: 4本すべて生成され、各冒頭に市場ステータスが入っていなければ失敗扱い
+    # 完成条件: 3本すべて生成され、各冒頭に市場ステータスが入っていなければ失敗扱い
     broken: list[str] = []
     for key in NOTE4_TITLES:
         md_path = OUTPUT_DIR / f"note_{key}.md"

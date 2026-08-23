@@ -31,22 +31,18 @@ DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "outputs"
 JST = ZoneInfo("Asia/Tokyo")
 
 NOTE_SECTIONS = (
-    ("chatgpt", "300万円 ChatGPT"),
     ("claude", "300万円 Claude"),
     ("pullback", "25MA/押し目・200MA/240MA"),
     ("highs", "52週新高値"),
 )
 
 FIXED_ATTACHMENTS = (
-    "note_chatgpt.md",
     "note_claude.md",
     "note_pullback.md",
     "note_highs.md",
-    "note_chatgpt.html",
     "note_claude.html",
     "note_pullback.html",
     "note_highs.html",
-    "note_chatgpt_title.txt",
     "note_claude_title.txt",
     "note_pullback_title.txt",
     "note_highs_title.txt",

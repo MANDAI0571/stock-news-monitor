@@ -15,13 +15,13 @@ from pathlib import Path
 
 OUTPUT_DIR = Path(__file__).resolve().parent / "outputs"
 
-# 4本の定義（note_draft.NOTE4_TITLES と対応。定義は変更しない）
-PROMO_KEYS = ("highs", "pullback", "chatgpt", "claude")
+# 3本の定義（note_draft.NOTE4_TITLES と対応）
+# fix25(2026-08-23): ChatGPT(Codex)版を廃止したので3本にした。
+PROMO_KEYS = ("highs", "pullback", "claude")
 
 HASHTAGS = {
     "highs": "#日本株 #株式投資 #52週新高値",
     "pullback": "#日本株 #株式投資 #押し目買い",
-    "chatgpt": "#日本株 #AI投資 #ChatGPT",
     "claude": "#日本株 #AI投資 #Claude",
 }
 
@@ -60,10 +60,8 @@ def build_post(key: str, note_text: str, regime: str, today: str) -> str:
         ma_cnt = _count_from_lead(note_text, r"押し目候補が\*\*(\d+)銘柄\*\*")
         counts = f"リテスト{rt_cnt}・MAタッチ{ma_cnt}銘柄" if rt_cnt or ma_cnt else "本日の抽出結果"
         body = f"【{today} 押し目】強い銘柄が休んだ場所だけ狙う。{counts}。上向きMAタッチのみ、落ちるナイフは除外。{regime_part}"
-    elif key == "chatgpt":
-        body = f"【{today} 300万円運用×ChatGPT】本日の売買判断と保有・現金比率を公開。前日判断→翌寄付執行、信用なしの規律運用。{regime_part}"
     else:  # claude
-        body = f"【{today} 300万円運用×Claude】本日の売買判断と保有・現金比率を公開。同じルールでAI2人の判断を毎日比較できます。{regime_part}"
+        body = f"【{today} 300万円運用×Claude】本日の売買判断と保有・現金比率を公開。前日判断→翌寄付執行、信用なしの規律運用。{regime_part}"
     return f"{body}\n{{URL}}\n{HASHTAGS[key]}"
 
 

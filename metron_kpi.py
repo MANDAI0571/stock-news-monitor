@@ -11,7 +11,8 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 
-EXPECTED_NOTE_KEYS = ("chatgpt", "claude", "pullback", "highs")
+# fix25(2026-08-23): ChatGPT(Codex)版を廃止したので3本。
+EXPECTED_NOTE_KEYS = ("claude", "pullback", "highs")
 
 
 def _now_jst() -> datetime:
@@ -184,7 +185,7 @@ def build_kpi(output_dir: Path = Path("outputs"), data_dir: Path = Path("data"),
     if not screening_rows:
         alerts.append("スクリーニング結果を取得できず")
     if note["ready"] < note["expected"]:
-        alerts.append(f"note4本のうち不足: {', '.join(note['missing'])}")
+        alerts.append(f"note3本のうち不足: {', '.join(note['missing'])}")
     if not warren:
         alerts.append("ウォーレン要約を取得できず")
     if not highs_record_rows:
@@ -283,7 +284,7 @@ def render_markdown(kpi: dict[str, Any]) -> str:
             f"| 実績 | 記録済みシグナル | {_safe_int(track_record.get('records_total'))} |",
             f"| 日中監視 | 直近日中アラート行数 | {_safe_int(intraday.get('latest_alert_rows'))} |",
             "",
-            "## note4本チェック",
+            "## note3本チェック",
             "",
             "| 記事 | タイトル | MD | HTML | タイトルファイル | 下書きURL |",
             "|---|---|---|---|---|---|",

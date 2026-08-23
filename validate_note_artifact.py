@@ -24,24 +24,22 @@ REQUIRED_FILES = [
     "paper_portfolio_decision.csv",
     "note_cloud_artifact_manifest.json",
     "note_drafts_manifest.json",
-    "note_chatgpt.md",
     "note_claude.md",
     "note_pullback.md",
     "note_highs.md",
 ]
 
-# 正しい4本（この定義は変更しない）
-NOTE4_KEYS = ("highs", "pullback", "chatgpt", "claude")
+# 正しい3本（fix25 2026-08-23: ChatGPT版を廃止）
+NOTE4_KEYS = ("highs", "pullback", "claude")
 NOTE4_LABELS = {
     "highs": "52週新高値到達・接近",
     "pullback": "新高値後の押し目（25MA・200MAタッチ）",
-    "chatgpt": "300万円運用 ChatGPT",
     "claude": "300万円運用 Claude",
 }
 VALID_REGIMES = ("NORMAL", "CAUTION", "RISK", "STOP")
 
-# 4本それぞれの「最低限の記事内容」チェック（存在するだけではPASSにしない）
-# 300万円運用（chatgpt/claude）に必須のセクション見出し
+# 3本それぞれの「最低限の記事内容」チェック（存在するだけではPASSにしない）
+# 300万円運用（claude）に必須のセクション見出し
 NOTE4_PORTFOLIO_SECTIONS = (
     "## 保有銘柄・CASH判断",
     "## 売買理由",
@@ -353,7 +351,7 @@ def _md_section_body(text: str, header: str) -> str:
 
 def _note4_content_issue(key: str, text: str) -> str | None:
     """4本それぞれの最低限の記事内容を確認。問題があれば理由文字列を返す（None=OK）。"""
-    if key in ("chatgpt", "claude"):
+    if key == "claude":
         # 300万円運用: 保有/CASH判断・売買理由・評価額/現金比率・損益・次営業日方針の5点
         for header in NOTE4_PORTFOLIO_SECTIONS:
             if header not in text:
@@ -386,7 +384,7 @@ def _note4_content_issue(key: str, text: str) -> str | None:
 
 
 def _validate_note4(result: ArtifactValidation) -> None:
-    """正しい4本（highs/pullback/chatgpt/claude）が生成され、各冒頭に市場ステータスが入っているか。"""
+    """正しい3本（highs/pullback/claude）が生成され、各冒頭に市場ステータスが入っているか。"""
     manifest_path = result.artifact_dir / "note_drafts_manifest.json"
     manifest_keys: set[str] = set()
     if manifest_path.exists():
@@ -397,14 +395,11 @@ def _validate_note4(result: ArtifactValidation) -> None:
             result.fail("note_drafts_manifest.json: JSONとして読めません")
     for key in NOTE4_KEYS:
         label = NOTE4_LABELS[key]
-        # v10(2026-07-19): ③chatgptは日次autosaveのmanifestから除外
-        # （Codexの独自便 chatgpt-300man-note.yml が16:45に生成・保存する運用）。
-        # 記事ファイル自体（note_chatgpt.md）の生成チェックは引き続き必須。
-        if manifest_path.exists() and key not in manifest_keys and key != "chatgpt":
+        if manifest_path.exists() and key not in manifest_keys:
             result.fail(f"note_drafts_manifest.json: {label}（{key}）がありません")
         md_path = result.artifact_dir / f"note_{key}.md"
         if not md_path.exists() or md_path.stat().st_size == 0:
-            result.fail(f"note_{key}.md: {label} の下書きがありません（4本必須）")
+            result.fail(f"note_{key}.md: {label} の下書きがありません（3本必須）")
             result.note4_status[label] = "未生成"
             continue
         text = _read_text(md_path)
