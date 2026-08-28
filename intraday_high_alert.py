@@ -37,6 +37,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from html import escape
 import re
 from dataclasses import dataclass, asdict
 from functools import lru_cache
@@ -598,6 +599,88 @@ def scan(
 # --------------------------------------------------------------------------
 # Gmail送信（gmail_notify を再利用）
 # --------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# fix32(2026-08-28): メールのHTML版。コードは青・銘柄名は黒の太字にする。
+# 文面はプレーンテキスト版と同じ順序・同じ中身にする（片方だけ増減させない）。
+# Gmailは <style> は読むがアニメーションは読まないので、色と太さだけで組む。
+# ---------------------------------------------------------------------------
+
+ALERT_MAIL_CSS = (
+    "body{margin:0;padding:16px;background:#ffffff;color:#111111;"
+    "font-family:-apple-system,BlinkMacSystemFont,'Hiragino Sans','Yu Gothic',sans-serif;}"
+    ".hd{background:#1f745f;color:#ffffff;padding:12px 14px;border-radius:10px;}"
+    ".hd .t{font-size:18px;font-weight:700;}"
+    ".hd .s{font-size:13px;opacity:.9;}"
+    ".cut{margin:10px 0 0;font-size:13px;color:#8a949c;}"
+    ".grp{margin:18px 0 8px;font-size:15px;font-weight:700;color:#1f745f;"
+    "border-bottom:2px solid #d8e3e0;padding-bottom:4px;}"
+    ".card{border:1px solid #e3e8ec;border-radius:8px;padding:10px 12px;margin:0 0 10px;}"
+    ".ttl{font-size:16px;margin:0 0 4px;}"
+    ".cd{color:#1d4ed8;font-weight:700;}"
+    ".nm{color:#111111;font-weight:700;}"
+    ".row{font-size:13px;color:#333333;line-height:1.7;}"
+    ".row a{color:#1d4ed8;}"
+    ".dis{margin-top:16px;font-size:12px;color:#6b7280;}"
+)
+
+
+def _alert_html_card(alert: Alert) -> str:
+    if alert.is_break:
+        dist_text = "更新済み（乖離0%）"
+    else:
+        dist_text = f"あと{alert.dist_pct:.1f}%"
+    rows = [
+        f"現在値:{alert.current_price:,.1f}円 / 種別:{escape(alert.alert_type)}",
+        f"{escape(alert.line_label)}ライン:{alert.line_price:,.1f}円 / ラインまで:{dist_text}",
+        f"出来高比:{alert.volume_ratio:.2f}倍 / 売買代金:{alert.turnover_20d / 100_000_000:.1f}億円",
+        f"🗓 決算予定日:{escape(alert.earnings_date)}",
+    ]
+    url = openwork_search_url(alert.name)
+    if url:
+        rows.append(f'👥 <a href="{escape(url)}">OpenWorkで社員クチコミを見る</a>')
+    rows.append(f"理由:{escape(alert.reason)}")
+    body = "".join(f'<div class="row">{row}</div>' for row in rows)
+    return (
+        '<div class="card">'
+        f'<div class="ttl"><span class="cd">{escape(alert.code)}</span> '
+        f'<span class="nm">{escape(alert.name)}</span></div>'
+        f"{body}</div>"
+    )
+
+
+def build_html_body(new_alerts: list[Alert], max_items: int | None = None) -> str:
+    """プレーンテキスト版と同じ中身のHTML。銘柄コードを青、銘柄名を黒の太字で出す。"""
+    shown, omitted = select_mail_alerts(new_alerts, max_items)
+    parts = [
+        "<!doctype html><html><head><meta charset=\"utf-8\">"
+        "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+        f"<style>{ALERT_MAIL_CSS}</style></head><body>",
+        '<div class="hd"><div class="s">ザラ場リアルタイム高値アラート</div>'
+        f'<div class="t">{escape(jst_now().strftime("%Y-%m-%d %H:%M"))} JST'
+        f"／新規アラート {len(new_alerts)}件</div></div>",
+    ]
+    if omitted:
+        parts.append(
+            f'<p class="cut">※本文には売買代金の大きい順に{len(shown)}件だけ掲載しています'
+            f"（残り{omitted}件は省略）。全件は intraday_high_alerts_*.csv にあります。</p>"
+        )
+
+    order = ["52週高値更新", "直近高値ブレイク", "52週高値接近", "直近高値接近"]
+    grouped: dict[str, list[Alert]] = {key: [] for key in order}
+    for alert in shown:
+        grouped.setdefault(alert.alert_type, []).append(alert)
+    for key in order:
+        group = grouped.get(key, [])
+        if not group:
+            continue
+        parts.append(f'<div class="grp">■ {escape(key)}（{len(group)}件）</div>')
+        parts.extend(_alert_html_card(alert) for alert in group)
+
+    parts.append(f'<div class="dis">{escape(DISCLAIMER)}</div>')
+    parts.append("</body></html>")
+    return "".join(parts)
+
+
 def send_alert_mail(new_alerts: list[Alert]) -> bool:
     from gmail_notify import load_gmail_config, send_gmail
 
@@ -608,12 +691,19 @@ def send_alert_mail(new_alerts: list[Alert]) -> bool:
         return False
     subject = build_subject(new_alerts)
     body = build_body(new_alerts)
+    # fix32(2026-08-28): 色付きのHTML版も一緒に送る。
+    # ここが落ちてもアラートは届けたいので、失敗したらHTMLなしで送る。
+    try:
+        html_body = build_html_body(new_alerts)
+    except Exception as exc:  # noqa: BLE001
+        print(f"intraday_alert_mail_html=failed error={exc!r}", flush=True)
+        html_body = None
     # T-K修正(2026-08-02): send_gmail の戻り値を必ず見る。
     # 旧実装は戻り値を捨てて常に True を返していたため、
     # 実際には送れていなくてもログに「送信」と出て、さらに呼び出し側が
     # 重複防止の状態を更新してしまい、同じアラートが二度と送られなかった。
     try:
-        delivered = send_gmail(subject, body, config)
+        delivered = send_gmail(subject, body, config, html_body=html_body)
     except Exception as exc:  # noqa: BLE001 - 送信失敗を握りつぶさず記録する
         print(f"intraday_alert_mail=failed to={config.mail_to} error={exc!r}", flush=True)
         return False
