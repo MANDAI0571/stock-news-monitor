@@ -825,6 +825,25 @@ def _candidate_intro(row) -> str:
     return lead + "。".join(dict.fromkeys(facts[:3])) + "。"
 
 
+# fix31(2026-08-23): 配当が高い銘柄は見出しで目立たせる。
+# しきい値は高重さんの指示で5%。表示は事実（実際の利回り）だけを書く。
+HIGH_DIVIDEND_PCT = 5.0
+
+
+def _high_dividend_mark(row: object) -> str:
+    """配当利回りが5%以上なら見出しに足す印。取れない・届かないなら空文字。"""
+    value = _first_value(row, ("dividend_yield", "配当利回り"))
+    if _is_missing(value):
+        return ""
+    try:
+        pct = float(str(value).replace("%", "").replace(",", ""))
+    except (TypeError, ValueError):
+        return ""
+    if pct < HIGH_DIVIDEND_PCT:
+        return ""
+    return f" 💰高配当{pct:.2f}%"
+
+
 # fix29(2026-08-23): カードに OpenWork の検索リンクを置く。
 # OpenWorkの規約（第11条）は機械的アクセスと情報の転載を禁じているので、
 # 評価値そのものは取らず・載せず、読んだ人が自分で見に行くリンクだけを置く。
@@ -877,6 +896,8 @@ def build_stock_cards(df: pd.DataFrame, max_rows: int | None = None) -> list[str
         earnings = _format_earnings_date(row, code)
         vr = _fmt_number(volume_ratio, 2) if not _is_missing(volume_ratio) else ""
         heading = f"{code} {name}" + (f" ⚡出来高{vr}倍" if vr else "")
+        # fix31(2026-08-23): 配当5%以上は見出しで目立たせる（描画側で点滅させる印）。
+        heading += _high_dividend_mark(row)
         lines.extend([heading, f"📝 紹介: {_candidate_intro(row)}"])
 
         price_parts: list[str] = []

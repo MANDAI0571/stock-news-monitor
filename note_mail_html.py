@@ -81,6 +81,12 @@ NOTE_CSS = (
     #   noteの本文はHTMLを受け付けないので、色が付くのはメールとコピー用ページだけ。
     ".nt .cd{color:#1d4ed8;font-weight:700;}"
     ".nt .nm{color:#111111;font-weight:700;}"
+    # fix31(2026-08-23): 配当5%以上の銘柄名。
+    #   コピー用ページ（Safari等）では点滅する。Gmailはアニメーションを無視するので、
+    #   その場合でも黄色い下地とこげ茶の文字で目立つようにしてある。
+    ".nt .hy{background:#fff3cd;color:#8a4b00;border-radius:4px;padding:0 4px;animation:hyblink 1.1s ease-in-out infinite;}"
+    "@keyframes hyblink{0%,100%{opacity:1;}50%{opacity:0.35;}}"
+    "@media (prefers-reduced-motion: reduce){.nt .hy{animation:none;}}"
     ".card{border:1px solid #e3e8ec;border-radius:8px;padding:12px 14px;margin:0 0 16px;}"
     ".meta{font-size:12px;color:#8a949c;margin:0 0 4px;}"
     ".ttl{font-size:15px;font-weight:700;margin:0 0 8px;}"
@@ -213,7 +219,8 @@ TOP10_LINE_RE = re.compile(
     r"^\*\*(\d+)\.\s(\S+)\s(\S*?)ランク\u3000(\S+)\u3000(.+?)\*\*$"
 )
 # 銘柄カードの見出し行: 7453 良品計画 ⚡出来高1.20倍
-CARD_HEAD_RE = re.compile(r"^(\d{4}[0-9A-Z]?)\s(\S.*?)(\s⚡.*)?$")
+# fix31(2026-08-23): 見出しの末尾には ⚡出来高 と 💰高配当 が付きうる。
+CARD_HEAD_RE = re.compile(r"^(\d{4}[0-9A-Z]?)\s(\S.*?)(\s[⚡💰].*)?$")
 # タグに使えない文字（空白・全角空白・記号）
 _TAG_DROP_RE = re.compile(r"[\s\u3000・（）()。、,，/／＆&「」【】\[\]]+")
 _CHART_MARKER_RE = re.compile(r"<!--\s*chart_image:\s*(.+?)\s*-->")
@@ -338,9 +345,11 @@ def render_stock_line(text: str) -> str:
     match = CARD_HEAD_RE.match(line)
     if match:
         code, name, tail = match.group(1), match.group(2), match.group(3) or ""
+        # fix31(2026-08-23): 配当5%以上の印が付いていたら、銘柄名を目立たせる。
+        name_class = "nm hy" if "💰" in tail else "nm"
         return (
             f'<span class="cd">{escape(code)}</span> '
-            f'<span class="nm">{escape(name)}</span>{escape(tail)}'
+            f'<span class="{name_class}">{escape(name)}</span>{escape(tail)}'
         )
     return render_inline(text)
 
