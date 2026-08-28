@@ -11,6 +11,12 @@ on:
     # 16:30 本ワークフロー（実績記録 → note4本の下書き自動保存）の順。
     # 注意: 日本の祝日もそのまま走る（データが薄いだけで実害なし）。
     - cron: "30 7 * * 1-5"
+    # fix33(2026-08-28): 2026-08-27にGitHub側の都合で起動が10時間50分遅れ、
+    #   メールが深夜03:29に届いた（実行#87の開始が18:20 UTC＝03:20 JST）。
+    #   取りこぼし対策として17:00 / 17:30 JST にも起こす。
+    #   先に走った回がその日のコピー用ページを公開していれば、後続は guard で止まる。
+    - cron: "0 8 * * 1-5"
+    - cron: "30 8 * * 1-5"
  
 # 手動実行と定時実行が重ならないようにする（data/ への push 競合防止）
 concurrency:
@@ -23,7 +29,46 @@ permissions:
   contents: write
  
 jobs:
+  # fix33(2026-08-28): この回を走らせてよいかを先に判定する門番。
+  #   ① 深夜ガード: 定時実行なのにJSTが16〜20時の外なら走らせない。
+  #      GitHubの起動遅れで深夜にメールが飛ぶのを止める。記事の日付ズレもこれで防げる
+  #      （コピー用ページのファイル名とメール件名は送信時刻のJST日付を使っているため）。
+  #   ② 二重送信ガード: その日のコピー用ページが既に main にあれば走らせない。
+  #      予備cronを足したので必要。checkout は起動時点のコミットなので、必ず origin を見る。
+  #   手動実行(workflow_dispatch)と push 起動は、いつでも走らせる。
+  guard:
+    runs-on: ubuntu-latest
+    outputs:
+      skip: ${{ steps.check.outputs.skip }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - id: check
+        run: |
+          today=$(TZ=Asia/Tokyo date +%F)
+          hm=$((10#$(TZ=Asia/Tokyo date +%H%M)))
+          skip=false
+          reason=ok
+          if [ "${GITHUB_EVENT_NAME}" = "schedule" ]; then
+            if [ "$hm" -lt 1600 ] || [ "$hm" -ge 2000 ]; then
+              skip=true
+              reason="outside_window_jst=${hm}"
+            fi
+          fi
+          if [ "$skip" = "false" ]; then
+            git fetch --depth=1 origin main >/dev/null 2>&1 || true
+            if git cat-file -e "origin/main:docs/copy/${today}.html" 2>/dev/null; then
+              skip=true
+              reason="already_published_${today}"
+            fi
+          fi
+          echo "note_draft_guard=${skip} reason=${reason} jst=${hm} date=${today} event=${GITHUB_EVENT_NAME}"
+          echo "skip=${skip}" >> "$GITHUB_OUTPUT"
+ 
   build-note-draft:
+    needs: guard
+    if: needs.guard.outputs.skip != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 90
  
@@ -313,3 +358,5 @@ jobs:
           MAIL_TO: ${{ secrets.MAIL_TO }}
         run: python3 notify_workflow_failure.py
  
+ 
+
