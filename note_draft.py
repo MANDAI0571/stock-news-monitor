@@ -1298,7 +1298,7 @@ PULLBACK_HOWTO_LINES = (
     "- **52週新高値後リテスト**：一度新高値を取った銘柄が、その高値ラインまで戻ってきたところです。",
     "- **25MA／200MA／240MAタッチ**：株価が25日／200日／240日移動平均線に触れたところです。",
     "- **上向きの移動平均線に触れた銘柄だけ**を拾います。下向き（下落トレンド）は「落ちるナイフ」なので入れません。",
-    "- カードは各分類の**上位10件**です。全件はメール添付のCSVにあります。",
+    "- カードは各分類の**上位数件**です。全件はメール添付のCSVにあります。",
     "- 掲載は毎営業日、**同じ基準で機械的に**行います。裁量で足したり引いたりしません。",
     "",
 )
@@ -1343,11 +1343,11 @@ def build_pullback_note(pullback: pd.DataFrame, source: Path | None) -> str:
     if rt.empty:
         lines.append("- 該当なし")
     else:
-        lines.extend(build_stock_cards(rt, 10))
+        lines.extend(build_stock_cards(rt, PULLBACK_CARD_CAP))
         # fix28(2026-08-23): 従来表は高重さんの指示で廃止。全件は添付CSVで見る。
         lines.append("")
         lines.append(
-            f"※ この分類の候補は全{len(rt)}件です。上位10件だけカードで掲載しています"
+            f"※ この分類の候補は全{len(rt)}件です。上位{min(len(rt), PULLBACK_CARD_CAP)}件だけカードで掲載しています"
             f"（全件はメール添付の screening_pullback_*.csv）。"
         )
     lines.append("")
@@ -1360,11 +1360,11 @@ def build_pullback_note(pullback: pd.DataFrame, source: Path | None) -> str:
         if b.empty:
             lines.append("- 該当なし")
         else:
-            lines.extend(build_stock_cards(b, 10))
+            lines.extend(build_stock_cards(b, PULLBACK_CARD_CAP))
             # fix28(2026-08-23): 従来表は高重さんの指示で廃止。全件は添付CSVで見る。
             lines.append("")
             lines.append(
-                f"※ この分類の候補は全{len(b)}件です。上位10件だけカードで掲載しています"
+                f"※ この分類の候補は全{len(b)}件です。上位{min(len(b), PULLBACK_CARD_CAP)}件だけカードで掲載しています"
                 f"（全件はメール添付の screening_pullback_*.csv）。"
             )
         lines.append("")
@@ -1913,8 +1913,8 @@ def build_highs_note(highs: pd.DataFrame, source: Path | None) -> str:
         ow_cache = None
 
     sections = (
-        (f"## 【A】52週新高値に対象営業日（{ref.isoformat()}）に到達した銘柄", new_main, True, 15),
-        ("## 【B】52週新高値まで3%以内に接近している銘柄", near_main, False, 10),
+        (f"## 【A】52週新高値に対象営業日（{ref.isoformat()}）に到達した銘柄", new_main, True, HIGHS_DETAIL_CAP),
+        ("## 【B】52週新高値まで3%以内に接近している銘柄", near_main, False, HIGHS_DETAIL_CAP),
     )
     for header, df, is_new, detail_cap in sections:
         lines.append(header)
@@ -1925,7 +1925,15 @@ def build_highs_note(highs: pd.DataFrame, source: Path | None) -> str:
             continue
         lines.append("### 一覧表")
         lines.append("")
-        lines.extend(_highs_overview_table(df))
+        # fix34(2026-08-28): 一覧表は全件だと4分割になるので行数を絞る。
+        table_df = df.head(HIGHS_TABLE_ROW_CAP)
+        lines.extend(_highs_overview_table(table_df))
+        if len(df) > len(table_df):
+            lines.append("")
+            lines.append(
+                f"※ この分類は全{len(df)}銘柄です。優先度の高い{len(table_df)}銘柄を表に載せています"
+                f"（全件はメール添付の screening_highs_*.csv）。"
+            )
         lines.append("")
         lines.append("### 銘柄詳細")
         lines.append("")
@@ -1987,6 +1995,16 @@ def build_highs_note(highs: pd.DataFrame, source: Path | None) -> str:
 # ============================================================================
 
 NOTE_SPLIT_MAX_CHARS = int(os.getenv("NOTE_SPLIT_MAX_CHARS", "12000") or "12000")
+# fix34(2026-08-28): 記事を1本に収めるための掲載件数の上限。
+# 高重さんの指示「四分割はやめて、要約して軽くして」。設定は「ほどほどに軽く」。
+# まずはこの値で作り、それでも分割しきい値を超える日は build_note4 が1件ずつ減らす。
+# 削った分は全件がメール添付のCSVに残る（記事には件数を明記する）。
+HIGHS_TABLE_ROW_CAP = 20   # 52週新高値：【A】【B】それぞれの一覧表の行数
+HIGHS_DETAIL_CAP = 4       # 52週新高値：【A】【B】それぞれの銘柄詳細の件数
+PULLBACK_CARD_CAP = 6      # 押し目：分類ごとのカード件数
+NOTE_SHRINK_FLOOR = 2      # 自動で減らすときの下限（これより下げない）
+
+
 NOTE_SPLIT_KEYS = tuple(
     k.strip() for k in os.getenv("NOTE_SPLIT_KEYS", "highs,pullback").split(",") if k.strip()
 )
@@ -2110,11 +2128,35 @@ def build_note4(sources: SourceFiles, screening: pd.DataFrame, discipline: pd.Da
     pullback = load_aux(pullback_src)
     highs = load_aux(highs_src)
 
-    notes = {
-        "claude": build_claude_note(screening, discipline, backtest, sources),
-        "pullback": build_pullback_note(pullback, pullback_src),
-        "highs": build_highs_note(highs, highs_src),
-    }
+    # fix34(2026-08-28): 高重さんの指示で記事は1本に収める。
+    #   まず上限どおりに作り、分割しきい値を超えていたら件数を1件ずつ減らして作り直す。
+    #   市場ステータスを後から差し込む分、しきい値には余裕（800字）を見る。
+    global HIGHS_TABLE_ROW_CAP, HIGHS_DETAIL_CAP, PULLBACK_CARD_CAP
+    budget = max(NOTE_SPLIT_MAX_CHARS - 800, 3000)
+    notes: dict[str, str] = {}
+    for attempt in range(8):
+        notes = {
+            "claude": build_claude_note(screening, discipline, backtest, sources),
+            "pullback": build_pullback_note(pullback, pullback_src),
+            "highs": build_highs_note(highs, highs_src),
+        }
+        over = {k: len(v) for k, v in notes.items() if k in NOTE_SPLIT_KEYS and len(v) > budget}
+        if not over:
+            break
+        if HIGHS_DETAIL_CAP <= NOTE_SHRINK_FLOOR and PULLBACK_CARD_CAP <= NOTE_SHRINK_FLOOR:
+            print(f"note_shrink=floor_reached over={over}", flush=True)
+            break
+        if "highs" in over:
+            HIGHS_DETAIL_CAP = max(NOTE_SHRINK_FLOOR, HIGHS_DETAIL_CAP - 1)
+            HIGHS_TABLE_ROW_CAP = max(10, HIGHS_TABLE_ROW_CAP - 3)
+        if "pullback" in over:
+            PULLBACK_CARD_CAP = max(NOTE_SHRINK_FLOOR, PULLBACK_CARD_CAP - 1)
+        print(
+            f"note_shrink=retry{attempt + 1} over={over} "
+            f"highs_detail={HIGHS_DETAIL_CAP} highs_rows={HIGHS_TABLE_ROW_CAP} "
+            f"pullback_cards={PULLBACK_CARD_CAP}",
+            flush=True,
+        )
     # 3本すべての冒頭に市場ステータスを挿入（空欄禁止）
     status_lines = _market_status_block()
     notes = {key: _insert_market_status(body, status_lines) for key, body in notes.items()}
