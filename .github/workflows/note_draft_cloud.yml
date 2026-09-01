@@ -65,7 +65,7 @@ jobs:
           fi
           echo "note_draft_guard=${skip} reason=${reason} jst=${hm} date=${today} event=${GITHUB_EVENT_NAME}"
           echo "skip=${skip}" >> "$GITHUB_OUTPUT"
- 
+
   build-note-draft:
     needs: guard
     if: needs.guard.outputs.skip != 'true'
@@ -358,5 +358,3 @@ jobs:
           MAIL_TO: ${{ secrets.MAIL_TO }}
         run: python3 notify_workflow_failure.py
  
- 
-
