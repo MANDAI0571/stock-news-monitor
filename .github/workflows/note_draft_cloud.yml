@@ -51,7 +51,7 @@ jobs:
           skip=false
           reason=ok
           if [ "${GITHUB_EVENT_NAME}" = "schedule" ]; then
-            if [ "$hm" -lt 1600 ] || [ "$hm" -ge 2000 ]; then
+                if [ "$hm" -lt 1600 ] && [ "$hm" -ge 400 ]; then
               skip=true
               reason="outside_window_jst=${hm}"
             fi
