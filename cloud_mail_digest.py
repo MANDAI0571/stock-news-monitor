@@ -149,6 +149,22 @@ p.small{font-size:13px;color:#5b6b78;}
 """
 
 
+def digest_business_date(now: datetime):
+    """この配信がどの営業日の分かを決める。
+
+    fix35(2026-09-01): いままで件名とコピー用ページの日付は「送信時刻の日付」だった。
+    そのため起動が遅れて日付をまたぐと、8/27の記事が 2026-08-28.html になっていた。
+    本ワークフローは16:30 JST起動なので、JSTで12時より前に走った回は
+    前日（前営業日）の分とみなす。これで記事の日付と揃う。
+    """
+    from datetime import timedelta
+
+    stamp = now.astimezone(JST)
+    if stamp.hour < 12:
+        return (stamp - timedelta(days=1)).date()
+    return stamp.date()
+
+
 def publish_copy_page(note_parts: list, now: datetime, output_dir: Path) -> str | None:
     """コピー用HTMLを docs/copy/ に書き、GitHub Pages で開けるようにする。
 
@@ -175,7 +191,7 @@ def publish_copy_page(note_parts: list, now: datetime, output_dir: Path) -> str 
         return None
     try:
         (DOCS_COPY_DIR / "latest.html").write_text(html, encoding="utf-8")
-        (DOCS_COPY_DIR / f"{now.date().isoformat()}.html").write_text(html, encoding="utf-8")
+        (DOCS_COPY_DIR / f"{digest_business_date(now).isoformat()}.html").write_text(html, encoding="utf-8")
         stamp = now.strftime("%Y-%m-%d %H:%M JST")
         (DOCS_COPY_DIR / "index.html").write_text(
             COPY_INDEX_HTML.replace("__UPDATED__", stamp), encoding="utf-8"
@@ -256,7 +272,7 @@ def push_copy_page(now: datetime) -> bool:
         if run("git", "diff", "--cached", "--quiet").returncode == 0:
             print("copy_page=push_skipped reason=no_change")
             return True
-        message = f"chore: publish note copy page {now.date().isoformat()} [skip ci]"
+        message = f"chore: publish note copy page {digest_business_date(now).isoformat()} [skip ci]"
         commit = run("git", "commit", "-m", message)
         if commit.returncode != 0:
             print(f"copy_page=push_failed step=commit err={commit.stderr.strip()[:200]}")
@@ -276,7 +292,7 @@ def push_copy_page(now: datetime) -> bool:
 
 def build_digest(output_dir: Path, now: datetime | None = None) -> DigestMail:
     now = now or datetime.now(JST)
-    subject = f"【DUKEクラウド】25MA/200MA・本日のスクリーニング結果 {now.date().isoformat()}"
+    subject = f"【DUKEクラウド】25MA/200MA・本日のスクリーニング結果 {digest_business_date(now).isoformat()}"
 
     # T-P(2026-08-11): note下書きをワンクリックでコピーできるページを先に書き出し、
     #   添付収集に間に合わせる（添付一覧は note_copy_pack.html を含む）。
