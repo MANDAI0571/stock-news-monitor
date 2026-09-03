@@ -2154,7 +2154,12 @@ def _stock_detail_block(row, rank: int, ref, ow_cache, is_new: bool) -> list[str
         try:
             from openwork_cache import build_openwork_lines
 
-            lines.extend(build_openwork_lines(code, ow_cache, ref))
+            # fix44(2026-09-04): 「取得できず」の行は読者に何も伝えないので入れない。
+            lines.extend(
+                line
+                for line in build_openwork_lines(code, ow_cache, ref)
+                if "取得できず" not in line
+            )
         except Exception:
             # fix41(2026-09-03): 取れなかったことは読者に何も伝えないので書かない。
             pass

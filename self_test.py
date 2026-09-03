@@ -1301,8 +1301,9 @@ def _test_note_highs_v2() -> None:
     # 8) 注目ポイントとチャートリンクがある（銘柄ごとの解説）
     assert "🔍 **注目ポイント**" in text
     assert "https://finance.yahoo.co.jp/quote/1111.T/chart" in text
-    # 9) OpenWork行が通信なしで出力される（キャッシュ無し→取得できず）
-    assert "OpenWork" in text
+    # 9) fix44(2026-09-04): OpenWorkは通信しない。取れなかったときは何も書かない。
+    #    「取得できず」は読者に何も伝えないので、記事には入れない。
+    assert "OpenWork：取得できず" not in text
     # 10) validator互換: 一覧表と高値乖離%マーカー
     assert "### 一覧表" in text and "高値乖離%" in text
 
