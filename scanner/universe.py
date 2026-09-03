@@ -10,7 +10,13 @@ import pandas as pd
 import requests
 
 
+# fix42(2026-09-03): JPXが「東証上場銘柄一覧」を .xls から .xlsx に置き換えた。
+#   旧URL（.xls）は2本とも 404 になり、2026-09-03の BUY検証 が落ちた。
+#   新しい .xlsx を先に試し、古い .xls は念のため後ろに残す。
+#   上から順に試して、最初に取れたものを使う（_download_jpx_excel）。
 JPX_LISTED_URLS = [
+    "https://www.jpx.co.jp/markets/statistics-equities/misc/tvdivq0000001vg2-att/data_j.xlsx",
+    "https://www.jpx.co.jp/markets/statistics-equities/misc/tvdivq00000030ne-att/data_j.xlsx",
     "https://www.jpx.co.jp/markets/statistics-equities/misc/tvdivq00000030ne-att/data_j.xls",
     "https://www.jpx.co.jp/markets/statistics-equities/misc/tvdivq0000001vg2-att/data_j.xls",
 ]
