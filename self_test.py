@@ -1646,7 +1646,10 @@ def _test_note_mail_copy_and_preview() -> None:
         for index in range(1, 4):
             stem = "highs" if index == 1 else f"highs{index}"
             last_row = (out / f"note_{stem}.md").read_text(encoding="utf-8").rstrip().splitlines()[-1]
-            assert last_row in pack, last_row
+            # fix41(2026-09-03): 表はnote向けに素の行へ組み替えるので、
+            #   行そのものではなく、その行の値がすべて残っているかを見る。
+            for _cell in [c.strip() for c in last_row.strip().strip("|").split("|") if c.strip()]:
+                assert _cell in pack, _cell
             assert f"52週新高値（{index}/3）" in pack
 
         # メール本文はHTMLで、noteでの見え方（表・見出し・画像位置）が出る

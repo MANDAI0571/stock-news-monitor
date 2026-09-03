@@ -896,6 +896,11 @@ def build_stock_cards(df: pd.DataFrame, max_rows: int | None = None) -> list[str
         earnings = _format_earnings_date(row, code)
         vr = _fmt_number(volume_ratio, 2) if not _is_missing(volume_ratio) else ""
         heading = f"{code} {name}" + (f" ⚡出来高{vr}倍" if vr else "")
+        # fix41(2026-09-03): 押し目で同じ銘柄が25MA/200MA/240MAに重複して出ていた。
+        # 1回だけ載せ、ほかにどの線に触れているかを見出しに添える。
+        _also = str(row.get("pullback_also") or "").strip()
+        if _also:
+            heading += f"　🔁 {_also}にも同時タッチ"
         # fix31(2026-08-23): 配当5%以上は見出しで目立たせる（描画側で点滅させる印）。
         heading += _high_dividend_mark(row)
         lines.extend([heading, f"📝 紹介: {_candidate_intro(row)}"])
@@ -1674,12 +1679,30 @@ def build_pullback_note(pullback: pd.DataFrame, source: Path | None) -> str:
     lines.append("")
 
     # ②③④ 25/200/240MAタッチ
+    # fix41(2026-09-03): 同じ銘柄が3つの分類に重複して出ていた（最大10回）。
+    #   先に出たところだけに載せ、残りは「〜にも同時タッチ」と見出しに書く。
+    _ma_flags = (("ma25_touch", "25日線"), ("ma200_touch", "200日線"), ("ma240_touch", "240日線"))
+    _touched: dict[str, list[str]] = {}
+    for _flag, _label in _ma_flags:
+        for _code in bucket(pullback, _flag).get("code", pd.Series(dtype=str)).astype(str).str.strip():
+            _touched.setdefault(_code, []).append(_label)
+    _shown: set[str] = set()
     for flag, title in (("ma25_touch", "25MAタッチ"), ("ma200_touch", "200MAタッチ"), ("ma240_touch", "240MAタッチ")):
         lines.append(f"## 【{title}】")
         lines.append("")
         b = bucket(pullback, flag)
+        if not b.empty:
+            _codes = b["code"].astype(str).str.strip()
+            b = b[~_codes.isin(_shown)].copy()
+            if not b.empty:
+                _this = str(dict(_ma_flags)[flag])
+                b["pullback_also"] = [
+                    "・".join(label for label in _touched.get(str(c).strip(), []) if label != _this)
+                    for c in b["code"]
+                ]
+                _shown.update(b["code"].astype(str).str.strip().head(PULLBACK_CARD_CAP))
         if b.empty:
-            lines.append("- 該当なし")
+            lines.append("- 該当なし（ほかの分類で掲載ずみ）" if flag != "ma25_touch" else "- 該当なし")
         else:
             lines.extend(build_stock_cards(b, PULLBACK_CARD_CAP))
             # fix28(2026-08-23): 従来表は高重さんの指示で廃止。全件は添付CSVで見る。
@@ -2133,9 +2156,8 @@ def _stock_detail_block(row, rank: int, ref, ow_cache, is_new: bool) -> list[str
 
             lines.extend(build_openwork_lines(code, ow_cache, ref))
         except Exception:
-            lines.append("👔 OpenWork：取得できず")
-    else:
-        lines.append("👔 OpenWork：取得できず")
+            # fix41(2026-09-03): 取れなかったことは読者に何も伝えないので書かない。
+            pass
     lines.extend(_earnings_note_lines(row, ref))
     prev_high_date = str(row.get("high_date") or "").strip()
     if prev_high_date and prev_high_date.lower() not in ("nan", "none", "null"):

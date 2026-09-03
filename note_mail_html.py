@@ -883,10 +883,55 @@ PART_SUFFIX_RE = re.compile(r"（\d+/\d+）\s*$")
 NOTE_PLAIN_DROP = ("- 出所", "* 出所", "出所")
 
 
+def _table_block_to_lines(header: list[str], rows: list[list[str]]) -> list[str]:
+    """表の1行を「見出しの1〜2列目」＋「残りを 項目 値 で並べた行」に組み替える。
+
+    fix41(2026-09-03): note.com は表を解釈しないので、縦棒とハイフンがそのまま出る。
+    列の値は落とさない（欠けている列だけ飛ばす）。
+    """
+    out: list[str] = []
+    for cells in rows:
+        pairs = list(zip(header, cells))
+        head = " ".join(value for _, value in pairs[:2] if value)
+        rest = [f"{label} {value}" for label, value in pairs[2:] if value]
+        if not head and not rest:
+            continue
+        out.append(head or rest.pop(0))
+        if rest:
+            out.append("　" + " ／ ".join(rest))
+    return out
+
+
+def _note_tables_to_text(markdown: str) -> str:
+    """本文の中の表を、noteでも読める並びに置き換える。表以外はそのまま。"""
+    lines = markdown.split("\n")
+    out: list[str] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index].rstrip()
+        if (
+            _is_table_row(line)
+            and index + 1 < len(lines)
+            and _is_table_sep(lines[index + 1].rstrip())
+        ):
+            header = _cells(line)
+            index += 2
+            rows: list[list[str]] = []
+            while index < len(lines) and _is_table_row(lines[index].rstrip()):
+                rows.append(_cells(lines[index].rstrip()))
+                index += 1
+            out.extend(_table_block_to_lines(header, rows))
+            continue
+        out.append(line)
+        index += 1
+    return "\n".join(out)
+
+
 def note_body_text(markdown: str) -> str:
     """note.com の本文欄にそのまま貼れる素のテキストにする。"""
     out: list[str] = []
-    for raw in markdown.split("\n"):
+    # fix41(2026-09-03): 表はnoteで崩れるので、先に素の行へ組み替える。
+    for raw in _note_tables_to_text(markdown).split("\n"):
         line = raw.rstrip()
         stripped = line.strip()
         if stripped.startswith("<!--") and stripped.endswith("-->"):
