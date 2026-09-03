@@ -952,10 +952,10 @@ def build_stock_cards(df: pd.DataFrame, max_rows: int | None = None) -> list[str
             company_parts.append(f"セクター: {safe_text(sector)}")
         if company_parts:
             lines.append("🏢 " + " / ".join(company_parts))
-        lines.append(f"[📈 チャートを見る]({_chart_url(code)})")
+        lines.append(f"📈 チャート: {_chart_url(code)}")
         openwork_url = _openwork_url(name)
         if openwork_url:
-            lines.append(f"[👥 OpenWorkで社員クチコミを見る]({openwork_url})")
+            lines.append(f"👥 OpenWork: {openwork_url}")
         lines.append("")
     return lines
 
@@ -1823,8 +1823,8 @@ def _stock_detail_block(row, rank: int, ref, ow_cache, is_new: bool) -> list[str
     lines.append(f"🔍 **注目ポイント**：{_highs_comment(row, ref, is_new)}")
     lines.append("")
     lines.append(
-        f"[📈 6ヶ月日足チャート（Yahoo!ファイナンス）]"
-        f"(https://finance.yahoo.co.jp/quote/{code}.T/chart?frm=dly&trm=6m&scl=stndrd&styl=cndl&evnts=volume&ovrIndctr=sma%2Cmma%2Clma&addIndctr=&compare=)"
+        f"📈 6ヶ月日足チャート（Yahoo!ファイナンス）: "
+        f"https://finance.yahoo.co.jp/quote/{code}.T/chart?frm=dly&trm=6m&scl=stndrd&styl=cndl&evnts=volume&ovrIndctr=sma%2Cmma%2Clma&addIndctr=&compare="
     )
     lines.append("")
     return lines
