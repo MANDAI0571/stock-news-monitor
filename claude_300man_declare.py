@@ -313,7 +313,11 @@ def declare(output_dir: Path, today: date | None = None) -> int:
                 "ticker": str(row.get("ticker") or f"{code}.T"),
                 "name": str(row.get("name") or ""),
                 "shares": str(shares),
-                "reason": f"自動発注（S→A→B順） {row.get('rank')}ランク・スコア{row.get('score')}",
+                # fix39(2026-09-03): 当てはまった条件も残す。あとから記事で説明できるようにするため。
+                "reason": (
+                    f"自動発注（S→A→B順） {row.get('rank')}ランク・スコア{row.get('score')}"
+                    f"｜{str(row.get('reason') or '').strip()}"
+                ),
                 "status": "DECLARED",
             })
             pending_codes.add(code)

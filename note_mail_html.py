@@ -81,6 +81,14 @@ NOTE_CSS = (
     #   noteの本文はHTMLを受け付けないので、色が付くのはメールとコピー用ページだけ。
     ".nt .cd{color:#1d4ed8;font-weight:700;}"
     ".nt .nm{color:#111111;font-weight:700;}"
+    ".nt .hn{font-weight:800;font-size:17px;color:#111111;}"
+    ".nt .hc{font-weight:400;color:#7b8794;font-size:15px;}"
+    ".nt .hp{font-weight:700;font-size:16px;}"
+    ".nt .hp.up{color:#0f7b46;}"
+    ".nt .hp.down{color:#b3261e;}"
+    ".nt .hp.na{color:#7b8794;}"
+    ".nt .hd{color:#4a5560;font-size:14px;}"
+    ".nt .hs{color:#7b8794;font-size:13px;}"
     # fix31(2026-08-23): 配当5%以上の銘柄名。
     #   コピー用ページ（Safari等）では点滅する。Gmailはアニメーションを無視するので、
     #   その場合でも黄色い下地とこげ茶の文字で目立つようにしてある。
@@ -313,6 +321,10 @@ _LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)\s]+)\)")
 _BOLD_RE = re.compile(r"\*\*([^*]+)\*\*")
 
 
+# fix38: 記事の中を裸のURLにしたので、メールとページではリンクに戻して押せるようにする。
+_BARE_URL_RE = re.compile(r'https?://[^\s<>"\']+')
+
+
 def render_inline(text: str) -> str:
     out = escape(text)
     out = _BOLD_RE.sub(lambda m: f"<strong>{m.group(1)}</strong>", out)
@@ -323,7 +335,26 @@ def render_inline(text: str) -> str:
             return label
         return f'<a href="{href}">{label}</a>'
 
-    return _LINK_RE.sub(link, out)
+    out = _LINK_RE.sub(link, out)
+
+    def bare(match: re.Match[str]) -> str:
+        url = match.group(0)
+        head = out[: match.start()]
+        if head.rfind("<a ") > head.rfind("</a>"):
+            return url
+        return f'<a href="{url}">{url}</a>'
+
+    return _BARE_URL_RE.sub(bare, out)
+
+
+# fix38: 保有銘柄の行「銘柄名 コード  損益  日付 購入」と、その次の明細行。
+#   銘柄名は太字、コードは細字、損益は太字＋色（プラス緑・マイナス赤）。
+HOLDING_RE = re.compile(
+    r"^(?P<name>\S.*?)\s(?P<code>\d{4}[0-9A-Z]?)\s{2}"
+    r"(?P<pnl>[+\-][\d,]+円 \([+\-][\d.]+%\)|現値未取得)\s{2}"
+    r"(?P<date>\S+) 購入$"
+)
+HOLDING_SUB_RE = re.compile(r"^\u3000(?P<text>.+)$")
 
 
 def render_stock_line(text: str) -> str:
@@ -334,6 +365,19 @@ def render_stock_line(text: str) -> str:
     当てはまらない行は今までどおり普通に描く（誤爆させない）。
     """
     line = text.strip()
+    match = HOLDING_RE.match(line)
+    if match:
+        pnl = match.group("pnl")
+        tone = "up" if pnl.startswith("+") else ("down" if pnl.startswith("-") else "na")
+        return (
+            f'<span class="hn">{escape(match.group("name"))}</span> '
+            f'<span class="hc">{escape(match.group("code"))}</span> '
+            f'<span class="hp {tone}">{escape(pnl)}</span> '
+            f'<span class="hd">{escape(match.group("date"))} 購入</span>'
+        )
+    match = HOLDING_SUB_RE.match(text.rstrip())
+    if match:
+        return f'<span class="hs">{render_inline(match.group("text"))}</span>'
     match = TOP10_LINE_RE.match(line)
     if match:
         order, mark, rank, code, name = match.groups()
@@ -658,7 +702,8 @@ def build_copy_pack_html(
             f'<textarea id="title_{part.dom_id}" class="short" readonly>{escape(part.title)}</textarea>'
             f'<textarea id="tags_{part.dom_id}" class="short tags" readonly>'
             f"{escape(build_tags(part))}</textarea>"
-            f'<textarea id="body_{part.dom_id}" readonly>{escape(part.markdown)}</textarea>'
+            f'<textarea id="body_{part.dom_id}" readonly>'
+            f"{escape(note_body_text(part.markdown))}</textarea>"
             f"{image_block}"
             "<details><summary>noteでの見え方（プレビュー）を開く</summary>"
             f"{render_note_html(part.markdown)}</details>"
@@ -832,6 +877,30 @@ SPLIT_NOTICE_RE = re.compile(
 PART_SUFFIX_RE = re.compile(r"（\d+/\d+）\s*$")
 
 
+# fix38(2026-09-03): note.com は本文欄のマークダウンを解釈しない。
+# 「#」「##」「**」「`」「<!-- -->」がそのまま文字として出てしまうので落とす。
+# 高重さんの指摘（2026-09-03）:「出所とか＃＃はいらない」
+NOTE_PLAIN_DROP = ("- 出所", "* 出所", "出所")
+
+
+def note_body_text(markdown: str) -> str:
+    """note.com の本文欄にそのまま貼れる素のテキストにする。"""
+    out: list[str] = []
+    for raw in markdown.split("\n"):
+        line = raw.rstrip()
+        stripped = line.strip()
+        if stripped.startswith("<!--") and stripped.endswith("-->"):
+            continue
+        if any(stripped.startswith(prefix) for prefix in NOTE_PLAIN_DROP):
+            continue
+        line = re.sub(r"^(\s*)#{1,6}\s+", r"\1", line)
+        line = line.replace("**", "")
+        line = re.sub(r"`([^`]*)`", r"\1", line)
+        line = re.sub(r"\[([^\]]+)\]\((https?://[^)\s]+)\)", r"\1: \2", line)
+        out.append(line.rstrip())
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip("\n")
+
+
 def _copy_body(part: NotePart) -> str:
     """1本ぶんの本文から、noteに貼るとき邪魔になる行を落とす。
 
@@ -855,7 +924,7 @@ def _copy_body(part: NotePart) -> str:
             out.append(PART_SUFFIX_RE.sub("", line).rstrip())
             continue
         out.append(line)
-    return re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip("\n")
+    return note_body_text(re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip("\n"))
 
 
 def build_copy_mail_items(

@@ -1188,14 +1188,215 @@ def _next_day_block(discipline: pd.DataFrame) -> list[str]:
     return lines
 
 
+
+# fix37(2026-09-03): 保有銘柄の現在値と評価損益。
+#   取れない銘柄は「現値未取得」と正直に書く（推測で埋めない）。
+#   ネットワークが無い環境でも記事生成は止めない。
+def _last_close(code: str) -> float | None:
+    """銘柄コードの直近終値。取れなければ None。"""
+    try:
+        from scanner.prices import fetch_price_history
+
+        history = fetch_price_history(f"{code}.T", period="1mo")
+        if history is None or history.empty or "Close" not in history.columns:
+            return None
+        values = pd.to_numeric(history["Close"], errors="coerce").dropna()
+        if values.empty:
+            return None
+        return float(values.iloc[-1])
+    except Exception:
+        return None
+
+
+def _holding_prices(rows: pd.DataFrame) -> dict[str, float]:
+    """保有中の銘柄について コード -> 直近終値。取れなかった銘柄は入らない。"""
+    prices: dict[str, float] = {}
+    if rows is None or rows.empty or "code" not in rows.columns:
+        return prices
+    for code in rows["code"].astype(str).str.strip().unique():
+        if not code:
+            continue
+        price = _last_close(code)
+        if price is not None:
+            prices[code] = price
+    print(f"holding_prices={len(prices)}/{len(rows)}", flush=True)
+    return prices
+
+
+def _holding_lines(rows: pd.DataFrame, prices: dict[str, float]) -> list[str]:
+    """保有1件を2行で書く。
+
+    1行目: 銘柄名 コード  損益  購入日（高重さんの指示の並び）
+    2行目: 株数 ／ 取得単価 → 現在値（全角スペース始まり。描画側が小さく出す）
+    """
+    out: list[str] = []
+    for _, row in rows.iterrows():
+        code = str(row.get("code", "")).strip()
+        name = _val(row, "name")
+        shares = pd.to_numeric(row.get("shares"), errors="coerce")
+        entry = pd.to_numeric(row.get("entry_price"), errors="coerce")
+        price = prices.get(code)
+        if price is not None and pd.notna(shares) and pd.notna(entry) and float(entry) > 0:
+            pnl = (float(price) - float(entry)) * float(shares)
+            pct = (float(price) / float(entry) - 1) * 100
+            pnl_text = f"{pnl:+,.0f}円 ({pct:+.1f}%)"
+            sub = f"　{shares:,.0f}株 ／ 取得 @{float(entry):,.0f}円 → 現在 {float(price):,.0f}円"
+        else:
+            pnl_text = "現値未取得"
+            entry_text = f"@{float(entry):,.0f}円" if pd.notna(entry) else "取得単価 未取得"
+            share_text = f"{shares:,.0f}株" if pd.notna(shares) else "株数 未取得"
+            sub = f"　{share_text} ／ 取得 {entry_text}"
+        out.append(f"{name} {code}  {pnl_text}  {_val(row, 'entry_date')} 購入")
+        out.append(sub)
+    return out
+
+
+# fix39(2026-09-03): 「売買理由が読者にわからない」への対応。
+# 高重さんの指摘：「ランクはわからない。ファンダメンタルなのかニュースなのかチャートなのかを書く」
+#
+# 事実として、この仕組みが銘柄を選ぶ根拠は scanner/scoring.py の score_stock だけで、
+# 中身は「株価の位置・移動平均・高値更新・出来高・売買代金・1単元の金額」＝すべてチャートと出来高。
+# ニュース本文や業績予想は選定に使っていない。決算は「発表日が確認できているか」だけを見て、
+# 未確認ならSランクをAに落としている。ここではそれを読者の言葉で書く。
+
+BUY_REASON_INTRO = (
+    "この運用は「チャートの形」と「出来高・売買代金」だけで銘柄を選んでいます。"
+    "ニュースの中身や業績の予想では買いません。決算は「発表日が確認できているか」だけを見ます。"
+)
+
+# 台帳に残っている条件名を、読者が読める言葉に置き換える。
+# 置き換えられない語はそのまま出す（勝手に意味を足さない）。
+BUY_CONDITION_WORDS = {
+    "MA25上": "25日線の上",
+    "MA75上": "75日線の上",
+    "MA200上": "200日線の上",
+    "MA25上向き": "25日線が上向き",
+    "MA75上向き": "75日線が上向き",
+    "MA200タッチ±3%": "200日線に接近",
+    "CWH候補": "カップ・ウィズ・ハンドルの形",
+    "出来高増加": "出来高が増えている",
+    "52週高値3%以内": "1年の高値まで3%以内",
+    "52週高値7%以内": "1年の高値まで7%以内",
+    "52週高値15%以内": "1年の高値まで15%以内",
+    "52週高値更新3日以内": "3日以内に1年の高値を更新",
+    "52週高値更新7日以内": "7日以内に1年の高値を更新",
+    "52週高値更新14日以内": "14日以内に1年の高値を更新",
+}
+
+# 出来高・売買代金・金額まわりの条件は別の行にまとめる
+BUY_VOLUME_HINTS = ("売買代金", "出来高", "購入額")
+
+
+def _explain_condition(word: str) -> str:
+    """条件名を読める言葉にする。DUKEなど接頭辞つきのものも拾う。"""
+    text = word.strip()
+    if not text:
+        return ""
+    if text in BUY_CONDITION_WORDS:
+        return BUY_CONDITION_WORDS[text]
+    if text.startswith("テーマ加点:"):
+        return f"テーマ株（{text.split(':', 1)[1]}）"
+    if text.startswith("DUKE旧52週高値サポート"):
+        return "前の高値が支えになっている"
+    return text
+
+
+def _split_buy_reason(reason: str) -> tuple[str, list[str], list[str], str]:
+    """台帳の理由を「ランクの部分」「チャート条件」「出来高・規模の条件」「格下げの注記」に分ける。"""
+    text = str(reason or "").strip()
+    head, _, tail = text.partition("｜")
+    chart: list[str] = []
+    volume: list[str] = []
+    note = ""
+    for raw in tail.split("/"):
+        word = raw.strip()
+        if not word:
+            continue
+        if "ゲート未達" in word or "決算未確認" in word:
+            note = word
+            continue
+        explained = _explain_condition(word)
+        if any(hint in word for hint in BUY_VOLUME_HINTS):
+            volume.append(explained)
+        else:
+            chart.append(explained)
+    return head.strip(), chart, volume, note
+
+
+def _rank_meaning(head: str, note: str) -> str:
+    """「Aランク・スコア166」だけでは読者に伝わらないので、点の意味を添える。"""
+    body = head.replace("自動発注（S→A→B順）", "").strip() or "ランクの記録なし"
+    if note:
+        gate = note
+        if "で最大A" in gate:
+            gate = gate.replace("で最大A", "").replace("Sゲート未達", "").strip("() ")
+            gate = gate.replace("strict", "").strip("() ")
+            return f"{body}（Sの必須条件に届かずAどまり：{gate}）"
+        return f"{body}（{gate}）"
+    return f"{body}（S＝85点以上で必須条件すべて / A＝70点以上 / B＝55点以上）"
+
+
+def _buy_reason_lines(open_rows: pd.DataFrame, orders: pd.DataFrame) -> list[str]:
+    """「なぜ買ったか」。いま持っている銘柄ごとに、選んだ根拠とチャートを出す。
+
+    fix39(2026-09-03): ランクとスコアだけでは読者に伝わらないので、
+    「チャートで選んでいる」ことと、実際に当てはまった条件を書く。
+    条件は台帳に記録されているものだけを出す。記録が無い買付は「記録なし」と正直に書く。
+    """
+    lines: list[str] = []
+    if orders is None or orders.empty:
+        return ["- 台帳に注文がないため、売買理由はありません（約定ゼロ）。"]
+
+    buys = orders[orders.get("side", pd.Series(dtype=str)).astype(str).str.upper() == "BUY"]
+    held = set(open_rows["code"].astype(str).str.strip()) if not open_rows.empty else set()
+    shown = 0
+    for _, row in buys.iterrows():
+        code = str(row.get("code", "")).strip()
+        if code not in held:
+            continue
+        if shown == 0:
+            lines.append(BUY_REASON_INTRO)
+            lines.append("")
+        shown += 1
+        head, chart, volume, note = _split_buy_reason(_val(row, "reason"))
+        lines.append(f"{_val(row, 'name')} {code}")
+        if chart:
+            lines.append(f"　チャートの形：{' ／ '.join(chart)}")
+        if volume:
+            lines.append(f"　出来高・規模：{' ／ '.join(volume)}")
+        if not chart and not volume:
+            lines.append(
+                "　当てはまった条件：買った当時の記録が台帳にありません"
+                "（2026-09-03以降に買ったぶんから残します）"
+            )
+        lines.append(f"　ランク：{_rank_meaning(head, note)}")
+        lines.append(
+            f"　いつ：{_val(row, 'decision_date')} に判断 → "
+            f"{_val(row, 'execution_date')} の寄付きで買付"
+        )
+        lines.append(f"　📈 チャート: {_chart_url(code)}")
+        lines.append("")
+    if shown == 0:
+        lines.append("- いま保有している銘柄はありません。")
+
+    sells = orders[orders.get("side", pd.Series(dtype=str)).astype(str).str.upper() == "SELL"]
+    if not sells.empty:
+        lines.append("手じまい済み")
+        for _, row in sells.iterrows():
+            lines.append(
+                f"- {_val(row, 'decision_date')} 判断 → {_val(row, 'execution_date')} 売却 "
+                f"{_val(row, 'name')} {_val(row, 'code')}：{_val(row, 'reason')}"
+            )
+    return lines
+
+
 def _portfolio_status_block(discipline: pd.DataFrame, operation: str = "claude") -> list[str]:
     """300万円運用の運用状況セクション。
 
     T-K修正(2026-08-03): 保有・売買理由・評価額・損益は data/*_300man_journal.csv と
     data/*_300man_orders.csv（実際に約定した本物の台帳）から出す。
-    以前は discipline CSV（その日の配分案・記憶なし）を「保有銘柄」として書いていた。
-    当日の配分案は _today_candidate_block() に分離した。
-    operation は勘定名。fix25(2026-08-23)以降は "claude" だけが本番で使われる。
+    fix37(2026-09-03): 並びを「保有 → 評価額 → 損益 → なぜ買ったか → 次営業日」に変更。
+    保有は「銘柄名 コード 損益 購入日」の順。現在値を取りに行って損益を出す。
     """
     orders_path, journal_path = LEDGER_PATHS.get(operation, LEDGER_PATHS["claude"])
     orders = _read_ledger(orders_path)
@@ -1212,55 +1413,78 @@ def _portfolio_status_block(discipline: pd.DataFrame, operation: str = "claude")
         not closed_rows.empty and "exit_value" not in closed_rows.columns
     )
 
+    prices = _holding_prices(open_rows)
+    market_value = 0.0
+    unrealized = 0.0
+    priced = 0
+    for _, _row in open_rows.iterrows():
+        _code = str(_row.get("code", "")).strip()
+        _shares = pd.to_numeric(_row.get("shares"), errors="coerce")
+        _entry = pd.to_numeric(_row.get("entry_price"), errors="coerce")
+        _price = prices.get(_code)
+        if _price is None or pd.isna(_shares) or pd.isna(_entry):
+            continue
+        priced += 1
+        market_value += float(_price) * float(_shares)
+        unrealized += (float(_price) - float(_entry)) * float(_shares)
+    all_priced = priced > 0 and priced == len(open_rows)
+
     lines: list[str] = []
 
     # ① 保有銘柄・CASH判断（台帳＝約定した記録だけ）
     lines.extend([PORTFOLIO_SECTION_HOLDINGS, ""])
-    lines.append(f"- 出所: `{journal_path.name}`（実際に約定した記録だけを載せています）")
+    # fix38: どういう決まりで売り買いしているのかを毎回1行で置く。
+    lines.extend([PORTFOLIO_RULE_LINE, ""])
     if journal.empty:
         lines.append(f"- 約定はまだありません → CASH（現金 {PORTFOLIO_CAPITAL:,}円）")
     elif open_rows.empty:
         lines.append(f"- 保有なし → CASH（現金 {cash:,.0f}円）")
     else:
-        for _, row in open_rows.iterrows():
-            lines.append(
-                f"- {_val(row,'entry_date')} 約定: {_val(row,'code')} {_val(row,'name')} "
-                f"{_val(row,'shares')}株 @ {_val(row,'entry_price')}円"
-                f"（投資額 {_val(row,'position_value')}円）"
-            )
-        lines.append(f"- 現金: {cash:,.0f}円")
+        lines.extend(_holding_lines(open_rows, prices))
+        lines.append(f"現金 {cash:,.0f}円")
+    # 出所は末尾に小さく。品質ゲートがこの台帳名を見て「本物の記録か」を判定する
+    # （2026-07-16 に買っていない銘柄を保有として配信した事故の再発防止）。
+    lines.append(f"　出所 {journal_path.name}（実際に約定した記録だけ）")
     lines.append("")
 
-    # ② 売買理由（宣告ログ＝注文の理由。無ければ無いと書く）
-    lines.extend([PORTFOLIO_SECTION_REASONS, ""])
-    if orders.empty:
-        lines.append("- 台帳に注文がないため、売買理由はありません（約定ゼロ）。")
-    else:
-        for _, row in orders.iterrows():
-            lines.append(
-                f"- {_val(row,'decision_date')}宣告 → {_val(row,'execution_date')}執行 "
-                f"{_val(row,'side')} {_val(row,'code')} {_val(row,'name')} {_val(row,'shares')}株"
-                f"（{_val(row,'status')}）: {_val(row,'reason')}"
-            )
-    lines.append("")
-
-    # ③ 評価額・現金比率
+    # ② 評価額・現金比率
     lines.extend([PORTFOLIO_SECTION_VALUATION, ""])
     lines.append(f"- 運用資金: {PORTFOLIO_CAPITAL:,}円")
     lines.append(f"- 投資額（取得原価・保有中）: {invested:,.0f}円")
     lines.append(f"- 現金: {cash:,.0f}円（現金比率 {cash / PORTFOLIO_CAPITAL * 100:.1f}%）")
     if exit_value_missing:
         lines.append("- データ不足：台帳に exit_value 列が無いため、売却代金を現金に反映できていません。")
-    lines.append("- データ不足：現値ベースの時価評価は本記事では未取得です（取得原価ベースで表示しています）。")
+    if all_priced:
+        lines.append(f"- 評価額（現値ベース・保有中）: {market_value:,.0f}円")
+        lines.append(f"- 総資産（評価額＋現金）: {market_value + cash:,.0f}円")
+    elif priced > 0:
+        lines.append(f"- 評価額（現値が取れた{priced}銘柄ぶん）: {market_value:,.0f}円")
+        lines.append(f"- データ不足：{len(open_rows) - priced}銘柄は現値を取得できませんでした。")
+    elif not open_rows.empty:
+        lines.append("- データ不足：現値を取得できなかったため、時価評価は出していません（取得原価ベースです）。")
     lines.append("")
 
-    # ④ 損益
+    # ③ 損益
     lines.extend([PORTFOLIO_SECTION_PNL, ""])
     lines.append(f"- 実現損益（累計）: {realized:+,.0f}円")
     if open_rows.empty:
         lines.append("- 未実現損益: 0円（保有なし）")
+    elif priced > 0:
+        _pct = f"（{unrealized / invested * 100:+.1f}%）" if all_priced and invested else ""
+        lines.append(f"- 未実現損益: {unrealized:+,.0f}円{_pct}")
+        if not all_priced:
+            lines.append(f"- データ不足：現値を取得できた{priced}銘柄ぶんの合計です。")
+        lines.append(f"- 合計損益（実現＋未実現）: {realized + unrealized:+,.0f}円")
     else:
         lines.append("- データ不足：現値が未取得のため、未実現損益は算出していません（推測では書きません）。")
+    lines.append("")
+
+    # ④ 確定トレードの成績（fix38: 勝率と平均。台帳にある確定分だけ）
+    lines.extend(_closed_trade_record_lines(closed_rows))
+
+    # ⑤ なぜ買ったか（高重さんの指示で損益のあとに置く）
+    lines.extend([PORTFOLIO_SECTION_REASONS, ""])
+    lines.extend(_buy_reason_lines(open_rows, orders))
     lines.append("")
 
     # ⑤ 次営業日の方針
@@ -1268,6 +1492,103 @@ def _portfolio_status_block(discipline: pd.DataFrame, operation: str = "claude")
 
     # ⑥ 本日の買い候補（未約定・当日試算）— 台帳と混ぜない
     lines.extend(_today_candidate_block(discipline))
+    return lines
+
+
+
+# fix38(2026-09-03): 確定したトレードの成績と、運用ルールの1行。
+# 台帳（claude_300man_journal.csv）に実際に残っている記録だけから作る。推測はしない。
+
+PORTFOLIO_SECTION_RECORD = "## 確定トレードの成績"
+
+# 規律の値。paper_portfolio_discipline.py / claude_300man_declare.py と同じ。
+PORTFOLIO_RULE_LINE = (
+    "ルール：1枠100万円・最大3銘柄 ／ 損切 -7% ／ 利確 +15% ／ 10営業日で手じまい"
+)
+
+
+def _hold_days(entry_date: str, exit_date: str) -> int | None:
+    """買った日から売った日までの日数。片方でも読めなければ None（推測しない）。"""
+    from datetime import date as _date
+
+    def _parse(value: str):
+        text = str(value or "").strip()[:10]
+        if len(text) != 10:
+            return None
+        try:
+            return _date(int(text[0:4]), int(text[5:7]), int(text[8:10]))
+        except (ValueError, TypeError):
+            return None
+
+    start, end = _parse(entry_date), _parse(exit_date)
+    if start is None or end is None:
+        return None
+    return (end - start).days
+
+
+def _closed_trade_record_lines(closed_rows) -> list[str]:
+    """手じまいが済んだトレードだけを数えて、勝率と平均を出す。
+
+    fix38(2026-09-03): 読者が「このやり方は当たっているのか」を判断できるようにする。
+    件数が少ないうちは参考値だと断る。
+    """
+    lines: list[str] = [PORTFOLIO_SECTION_RECORD, ""]
+    if closed_rows is None or closed_rows.empty:
+        lines.append("- まだ手じまいが済んだトレードがありません（成績は次回以降）。")
+        lines.append("")
+        return lines
+
+    trades: list[tuple[str, str, float, float, int | None, str, str]] = []
+    for _, row in closed_rows.iterrows():
+        pnl = pd.to_numeric(row.get("realized_pnl"), errors="coerce")
+        entry = pd.to_numeric(row.get("entry_price"), errors="coerce")
+        shares = pd.to_numeric(row.get("shares"), errors="coerce")
+        if pd.isna(pnl) or pd.isna(entry) or pd.isna(shares):
+            continue
+        cost = float(entry) * float(shares)
+        if cost <= 0:
+            continue
+        trades.append((
+            _val(row, "name"),
+            _val(row, "code"),
+            float(pnl),
+            float(pnl) / cost * 100,
+            _hold_days(_val(row, "entry_date"), _val(row, "exit_date")),
+            _val(row, "entry_date"),
+            _val(row, "exit_date"),
+        ))
+
+    if not trades:
+        lines.append("- データ不足：確定した売買の値が読めないため、成績は出していません。")
+        lines.append("")
+        return lines
+
+    total = len(trades)
+    wins = [t for t in trades if t[2] > 0]
+    losses = [t for t in trades if t[2] < 0]
+    net = sum(t[2] for t in trades)
+    held = [t[4] for t in trades if t[4] is not None]
+
+    lines.append(f"- 確定したトレード: {total}件（勝ち {len(wins)}件 ／ 負け {len(losses)}件）")
+    lines.append(f"- 勝率: {len(wins) / total * 100:.0f}%")
+    lines.append(f"- 確定損益の合計: {net:+,.0f}円")
+    lines.append(f"- 1トレードあたりの平均: {sum(t[3] for t in trades) / total:+.1f}%")
+    if wins:
+        lines.append(f"- 平均の勝ち: {sum(t[3] for t in wins) / len(wins):+.1f}%")
+    if losses:
+        lines.append(f"- 平均の負け: {sum(t[3] for t in losses) / len(losses):+.1f}%")
+    if held:
+        lines.append(f"- 平均の保有日数: {sum(held) / len(held):.0f}日")
+    best = max(trades, key=lambda item: item[3])
+    worst = min(trades, key=lambda item: item[3])
+    lines.append(f"- 一番良かった: {best[0]} {best[1]} {best[3]:+.1f}%（{best[5]} → {best[6]}）")
+    if worst[1] != best[1]:
+        lines.append(f"- 一番悪かった: {worst[0]} {worst[1]} {worst[3]:+.1f}%（{worst[5]} → {worst[6]}）")
+    if total < 10:
+        lines.append(
+            f"- ※ まだ{total}件だけなので、勝率も平均も参考値です。件数が増えるまで当てになりません。"
+        )
+    lines.append("")
     return lines
 
 

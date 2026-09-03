@@ -2852,7 +2852,7 @@ def _test_note_copy_mails() -> None:
         short = [item for item in mails if "300万円 Claude" in item[0]]
         assert len(short) == 1
         assert short[0][0].startswith("【コピー用】")
-        assert short[0][1] == "# 短い本\n\n本文。"
+        assert short[0][1] == "短い本\n\n本文。"
 
         # 記事1本＝メール1通。分割ぶんは連結されていること
         long_mails = [item for item in mails if "25MA押し目" in item[0]]
@@ -2860,7 +2860,7 @@ def _test_note_copy_mails() -> None:
         subject, text = long_mails[0]
         assert subject.startswith("【コピー用】")
         assert "（1/3）" not in subject
-        assert text.startswith("# 押し目\n")
+        assert text.startswith("押し目\n")
         # 貼り付けに邪魔な行が消えていること
         assert "chart_image" not in text
         assert "分割しています" not in text
@@ -2868,7 +2868,9 @@ def _test_note_copy_mails() -> None:
         # 3本ぶんの中身が最後まで入っていること
         for row in (rows[0], rows[999], rows[1000], rows[1999], rows[2000], rows[2999]):
             assert row in text, row
-        assert text.count("# 押し目") == 1
+        assert text.count("押し目") == 1
+        # fix38: noteはマークダウンを解釈しないので、記号が残っていないこと
+        assert "##" not in text and "**" not in text
 
         # 予算を超える記事だけ分ける。つないだ結果は元と同じ
         split_mails = build_copy_mails(parts, budget=20_000)
