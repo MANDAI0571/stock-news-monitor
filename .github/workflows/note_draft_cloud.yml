@@ -177,6 +177,7 @@ jobs:
       # fix27(2026-08-23): ChatGPT(Codex)版を廃止したため、note下書きは恒久的に3本。
       # 保存するのは①52週新高値/②押し目/③Claudeの3本（ゲート3/3）。
       - name: Save 3-note drafts in note.com (manifest)
+        if: false  # 2026-09-03 高重さん指示: noteの下書き自動保存は停止
         env:
           NOTE_STORAGE_STATE: ${{ secrets.NOTE_STORAGE_STATE }}
           NOTE_EMAIL: ${{ secrets.NOTE_EMAIL }}
