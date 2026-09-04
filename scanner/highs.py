@@ -277,6 +277,8 @@ def detect_swing_high_break(
         "swing_high_label": "",
         "swing_high_near": False,
         "swing_high_dist_pct": "",
+        "swing_break_is_new": False,
+        "swing_break_since": "",
     }
     if history.empty or "High" not in history.columns or len(history) < min_lookback + 1:
         return empty
@@ -300,6 +302,21 @@ def detect_swing_high_break(
     trigger_price = max(float(high.iloc[-1]), float(close.iloc[-1]))
     break_pct = (trigger_price / swing_price - 1.0) * 100 if swing_price > 0 else 0.0
     swing_break = bool(swing_price > 0 and trigger_price > swing_price)
+
+    # fix46(2026-09-04): 直近高値ラインは5営業日以上前の高値なので、いったん超えた銘柄は
+    #   その上にいる限りずっと「ブレイク」のままになる。アラートが毎朝出続けていた。
+    #   ラインを付けた翌日から前日までを見て、すでに超えていたら「継続」と印を付ける。
+    #   判定そのものは変えない。呼ぶ側が新規だけを選べるようにする。
+    before_today = high.iloc[pos + 1 : latest_pos]
+    exceeded = before_today[before_today > swing_price] if len(before_today) else before_today
+    already_broken = bool(len(exceeded))
+    if already_broken:
+        first_break_date = pd.Timestamp(exceeded.index[0]).date().isoformat()
+    elif swing_break:
+        first_break_date = pd.Timestamp(history.index[latest_pos]).date().isoformat()
+    else:
+        first_break_date = ""
+    swing_break_is_new = bool(swing_break and not already_broken)
     current_close = float(close.iloc[-1])
     dist_pct = (swing_price - current_close) / swing_price * 100 if swing_price > 0 else 999.0
     swing_near = bool(swing_price > 0 and not swing_break and 0.0 <= dist_pct <= near_pct)
@@ -311,6 +328,8 @@ def detect_swing_high_break(
         "swing_high_label": HIGH_LABELS["SWING_HIGH_BREAK"] if swing_break else "",
         "swing_high_near": swing_near,
         "swing_high_dist_pct": round(dist_pct, 2) if swing_near else "",
+        "swing_break_is_new": swing_break_is_new,
+        "swing_break_since": first_break_date,
     }
 
 

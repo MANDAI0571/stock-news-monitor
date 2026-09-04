@@ -184,6 +184,10 @@ class Alert:
     line_date: str = ""             # 高値ラインがいつの高値か（YYYY-MM-DD）
     today_high: float = 0.0         # 当日ザラ場の高値（0は未取得）
     bar_date: str = ""              # 使った価格データの日付（前日ならデータ遅れ）
+    # fix46(2026-09-04): 直近高値は「いったん超えたらずっとブレイク」なので、
+    #   今日はじめて超えたものだけをメールに出す。継続ぶんはCSVには残す。
+    is_fresh_break: bool = True     # 今日はじめて超えたか（52週側は常にTrue）
+    break_since: str = ""           # いつ超えたか（YYYY-MM-DD）
 
     def dedup_key(self) -> str:
         return f"{self.code}|{self.alert_type}"
@@ -344,6 +348,13 @@ def build_alert(
     line_date = str(high_info.get("high_date") or "").strip()
     today_high = _to_float(high_info.get("today_high"))
     bar_date = str(high_info.get("bar_date") or "").strip()
+    break_since = str(high_info.get("swing_break_since") or "").strip()
+    # 52週側は「当日を除く全期間」と比べているので、出た時点で必ず新規。
+    if high_type in FIFTYTWO_HIGH_TYPES or not is_break:
+        is_fresh_break = True
+        break_since = ""
+    else:
+        is_fresh_break = bool(high_info.get("swing_break_is_new", True))
 
     return Alert(
         code=code,
@@ -361,6 +372,8 @@ def build_alert(
         line_date=line_date,
         today_high=today_high,
         bar_date=bar_date,
+        is_fresh_break=is_fresh_break,
+        break_since=break_since,
     )
 
 
@@ -490,6 +503,15 @@ def _line_suffix(alert: Alert) -> str:
     return f"（{alert.line_date}の高値）" if alert.line_date else ""
 
 
+def _break_text(alert: Alert) -> str:
+    """いつ超えたか。fix46(2026-09-04): 「今日はじめて」かどうかが読者に分かるように。"""
+    if not alert.is_break or not alert.break_since:
+        return ""
+    if alert.is_fresh_break:
+        return f" / 本日はじめて超えました（{alert.break_since}）"
+    return f" / {alert.break_since}に超えて以降 継続中"
+
+
 def _price_text(alert: Alert) -> str:
     """現在値と、当日ザラ場の高値。当日高値が取れないときは現在値だけ。"""
     head = f"現在値:{alert.current_price:,.1f}円"
@@ -507,7 +529,7 @@ def _format_alert(alert: Alert) -> list[str]:
         f"{alert.code} {alert.name}",
         f"  {_price_text(alert)} / 種別:{alert.alert_type}",
         f"  {alert.line_label}ライン:{alert.line_price:,.1f}円{_line_suffix(alert)}"
-        f" / ラインまで:{dist_text}",
+        f" / ラインまで:{dist_text}{_break_text(alert)}",
         f"  出来高比:{alert.volume_ratio:.2f}倍 / 売買代金:{alert.turnover_20d / 100_000_000:.1f}億円",
         f"  🗓 決算予定日:{alert.earnings_date}",
     ]
@@ -687,7 +709,7 @@ def _alert_html_card(alert: Alert) -> str:
         dist_text = f"あと{alert.dist_pct:.1f}%"
     rows = [
         f"{escape(_price_text(alert))} / 種別:{escape(alert.alert_type)}",
-        f"{escape(alert.line_label)}ライン:{alert.line_price:,.1f}円{escape(_line_suffix(alert))} / ラインまで:{dist_text}",
+        f"{escape(alert.line_label)}ライン:{alert.line_price:,.1f}円{escape(_line_suffix(alert))} / ラインまで:{dist_text}{escape(_break_text(alert))}",
         f"出来高比:{alert.volume_ratio:.2f}倍 / 売買代金:{alert.turnover_20d / 100_000_000:.1f}億円",
         f"🗓 決算予定日:{escape(alert.earnings_date)}",
     ]
@@ -795,7 +817,12 @@ def run(
         return 1
 
     state = DedupState(state_path(output_dir, day), day)
-    new_alerts = [a for a in alerts if state.is_new(a)]
+    # fix46(2026-09-04): 前日までにすでに超えていた銘柄はメールに出さない。
+    #   CSVには全件残っているので情報は失わない。
+    carried = [a for a in alerts if not a.is_fresh_break]
+    if carried:
+        print(f"intraday_carried_over_excluded={len(carried)}件", flush=True)
+    new_alerts = [a for a in alerts if a.is_fresh_break and state.is_new(a)]
     new_keys = {a.dedup_key() for a in new_alerts}
 
     csv_path = write_csv(alerts, new_keys, output_dir)
