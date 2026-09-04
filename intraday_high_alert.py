@@ -180,6 +180,10 @@ class Alert:
     turnover_20d: int        # 20日平均売買代金（円）
     reason: str              # 判定理由
     earnings_date: str = "未取得"    # 決算予定日（7営業日以内なら警告付き）
+    # fix45(2026-09-04): 「なぜ更新済みなのか」を読んだ人が検算できるようにする。
+    line_date: str = ""             # 高値ラインがいつの高値か（YYYY-MM-DD）
+    today_high: float = 0.0         # 当日ザラ場の高値（0は未取得）
+    bar_date: str = ""              # 使った価格データの日付（前日ならデータ遅れ）
 
     def dedup_key(self) -> str:
         return f"{self.code}|{self.alert_type}"
@@ -282,6 +286,26 @@ def _apply_extra_fields(alert: Alert, code: object) -> Alert:
 # --------------------------------------------------------------------------
 # 純粋ロジック（ネット不要・クラウドでも検証可能）
 # --------------------------------------------------------------------------
+def _last_bar_facts(history) -> dict[str, object]:
+    """価格データの最後のバーから「当日高値」と「その日付」を取る。
+
+    fix45(2026-09-04): メールが「更新済み」と書く根拠は当日ザラ場の高値なのに、
+    本文には現在値しか出ていなかった。読んだ人が検算できるように持ち回る。
+    取れないときは空にする（捏造しない）。
+    """
+    try:
+        if history is None or history.empty or "High" not in history.columns:
+            return {}
+        import pandas as _pd
+
+        return {
+            "today_high": round(float(history["High"].astype(float).iloc[-1]), 1),
+            "bar_date": _pd.Timestamp(history.index[-1]).date().isoformat(),
+        }
+    except Exception:
+        return {}
+
+
 def build_alert(
     code: str,
     name: str,
@@ -316,6 +340,11 @@ def build_alert(
     volume_ratio = round(float(indicators.get("volume_ratio_5d_20d", 0) or 0), 2)
     reason = _build_reason(alert_type, line_label, dist_pct, is_break, volume_ratio, turnover)
 
+    # fix45(2026-09-04): ラインがいつの高値か、当日どこまで上げたかを持ち回る。
+    line_date = str(high_info.get("high_date") or "").strip()
+    today_high = _to_float(high_info.get("today_high"))
+    bar_date = str(high_info.get("bar_date") or "").strip()
+
     return Alert(
         code=code,
         name=name,
@@ -329,6 +358,9 @@ def build_alert(
         volume_ratio=volume_ratio,
         turnover_20d=int(turnover),
         reason=reason,
+        line_date=line_date,
+        today_high=today_high,
+        bar_date=bar_date,
     )
 
 
@@ -421,6 +453,13 @@ def build_body(new_alerts: list[Alert], max_items: int | None = None) -> str:
         f"検知時刻: {jst_now().strftime('%Y-%m-%d %H:%M')} JST",
         f"新規アラート: {len(new_alerts)}件",
     ]
+    # fix45(2026-09-04): 使った価格データの日付を出す。
+    #   ここが前日の日付なら、本当にデータが1日遅れている（判定の前に気づける）。
+    _bar_dates = sorted({a.bar_date for a in new_alerts if a.bar_date})
+    if _bar_dates:
+        _shown = _bar_dates[-1]
+        _extra = f"（ほかに{len(_bar_dates) - 1}種類あり）" if len(_bar_dates) > 1 else ""
+        lines.append(f"価格データ日: {_shown}{_extra}")
     if omitted:
         lines.append(
             f"※本文には売買代金の大きい順に{len(shown)}件だけ掲載しています"
@@ -446,6 +485,19 @@ def build_body(new_alerts: list[Alert], max_items: int | None = None) -> str:
     return "\n".join(lines)
 
 
+def _line_suffix(alert: Alert) -> str:
+    """ラインがいつの高値かを添える。日付が無ければ何も書かない。"""
+    return f"（{alert.line_date}の高値）" if alert.line_date else ""
+
+
+def _price_text(alert: Alert) -> str:
+    """現在値と、当日ザラ場の高値。当日高値が取れないときは現在値だけ。"""
+    head = f"現在値:{alert.current_price:,.1f}円"
+    if alert.today_high > 0:
+        head += f" / 当日高値:{alert.today_high:,.1f}円"
+    return head
+
+
 def _format_alert(alert: Alert) -> list[str]:
     if alert.is_break:
         dist_text = "更新済み（乖離0%）"
@@ -453,8 +505,9 @@ def _format_alert(alert: Alert) -> list[str]:
         dist_text = f"あと{alert.dist_pct:.1f}%"
     lines = [
         f"{alert.code} {alert.name}",
-        f"  現在値:{alert.current_price:,.1f}円 / 種別:{alert.alert_type}",
-        f"  {alert.line_label}ライン:{alert.line_price:,.1f}円 / ラインまで:{dist_text}",
+        f"  {_price_text(alert)} / 種別:{alert.alert_type}",
+        f"  {alert.line_label}ライン:{alert.line_price:,.1f}円{_line_suffix(alert)}"
+        f" / ラインまで:{dist_text}",
         f"  出来高比:{alert.volume_ratio:.2f}倍 / 売買代金:{alert.turnover_20d / 100_000_000:.1f}億円",
         f"  🗓 決算予定日:{alert.earnings_date}",
     ]
@@ -577,6 +630,9 @@ def scan(
             touch = detect_intraday_52w_touch(history)
             if touch is not None and str(high_info.get("high_type", "")) != "52W_NEW_HIGH":
                 high_info = dict(high_info) | touch
+            # fix45(2026-09-04): 最後のバーの高値と日付を添える。
+            #   データが前日のままなら bar_date が前日になり、メールで気づける。
+            high_info = dict(high_info) | _last_bar_facts(history)
             alert = build_alert(stock.code, stock.name, indicators, high_info)
             if alert is None:
                 continue
@@ -630,8 +686,8 @@ def _alert_html_card(alert: Alert) -> str:
     else:
         dist_text = f"あと{alert.dist_pct:.1f}%"
     rows = [
-        f"現在値:{alert.current_price:,.1f}円 / 種別:{escape(alert.alert_type)}",
-        f"{escape(alert.line_label)}ライン:{alert.line_price:,.1f}円 / ラインまで:{dist_text}",
+        f"{escape(_price_text(alert))} / 種別:{escape(alert.alert_type)}",
+        f"{escape(alert.line_label)}ライン:{alert.line_price:,.1f}円{escape(_line_suffix(alert))} / ラインまで:{dist_text}",
         f"出来高比:{alert.volume_ratio:.2f}倍 / 売買代金:{alert.turnover_20d / 100_000_000:.1f}億円",
         f"🗓 決算予定日:{escape(alert.earnings_date)}",
     ]
