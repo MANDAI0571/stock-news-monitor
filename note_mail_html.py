@@ -45,6 +45,14 @@ NOTE_ARTICLES = (
     ("highs", "52週新高値"),
 )
 
+# fix56(2026-09-06): 米株ぶん。日本株とはメールもページも分ける（混ぜると読めない）。
+US_NOTE_ARTICLES = (
+    ("us_portfolio", "米株 $20,000運用"),
+    ("us_pullback", "米株 押し目"),
+    ("us_highs", "米株 52週新高値"),
+)
+US_COPY_PAGE_URL = "https://mandai0571.github.io/stock-news-monitor/copy/us_latest.html"
+
 _BODY_FONT = (
     "-apple-system,BlinkMacSystemFont,'Hiragino Sans','Yu Gothic',"
     "'Noto Sans JP',sans-serif"
@@ -149,13 +157,15 @@ def _part_stem(key: str, index: int) -> str:
     return key if index == 1 else f"{key}{index}"
 
 
-def collect_note_parts(output_dir: Path) -> list[NotePart]:
+def collect_note_parts(
+    output_dir: Path, articles: tuple[tuple[str, str], ...] = NOTE_ARTICLES
+) -> list[NotePart]:
     """outputs/ にある note_*.md（分割ぶんを含む）を順番どおりに拾う。
 
     1本目の保存に失敗してURLが無くても、2本目以降を落とさない。
     """
     parts: list[NotePart] = []
-    for key, label in NOTE_ARTICLES:
+    for key, label in articles:
         stems: list[tuple[int, str]] = []
         for index in range(1, 21):
             stem = _part_stem(key, index)
@@ -1045,14 +1055,14 @@ def build_copy_mails(
 COPY_MAIL_HTML_BUDGET_BYTES = 99_000
 
 
-def build_copy_mail_html(text: str, anchor: str) -> str:
+def build_copy_mail_html(text: str, anchor: str, page_url: str = COPY_PAGE_URL) -> str:
     """【コピー用】メールのHTML版。先頭にワンクリックコピーのボタンを置く。
 
     T-P(2026-08-18): 件名に「コピー用」と書いてあるメールにこそボタンが無く、
     「どこにもワンクリックコピペがない」状態になっていた。ここで直す。
     プレーン本文は記事テキストだけのまま（HTMLを読めない環境の逃げ道）。
     """
-    link = COPY_PAGE_URL + ("#" + anchor if anchor else "")
+    link = page_url + ("#" + anchor if anchor else "")
     head = (
         "<!doctype html><html><head><meta charset=\"utf-8\">"
         "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
