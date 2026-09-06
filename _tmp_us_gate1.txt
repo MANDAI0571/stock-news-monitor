@@ -1,0 +1,111 @@
+"""米株の記事3本を、送る前に確かめる。
+
+高重さんとの約束の1番目「捏造禁止」を、機械で守るための門番。
+
+日本株には validate_note_artifact.py がある。あれは
+**2026-07-16 に、買っていない銘柄を保有として配信した事故**の再発防止で入った。
+米株の $20,000運用の記事はまったく同じ形なので、同じ事故が起こりうる。
+だから米株にも門番を置く。
+
+確かめること:
+  1. 3本ともあって、中身が空でない
+  2. 末尾に免責がある
+  3. noteの決まりを守っている（表を使わない・[文言](URL)を使わない・「取得できず」を出さない）
+  4. **保有として書いた銘柄が、台帳の OPEN 行に実在する**（いちばん大事）
+  5. 現金の額が台帳の計算と合っている
+  6. 候補が無い日は「該当なし」「データ不足」と書いてある
+
+落ちたら記事を送らない。黙って直さない（何がおかしいかを人が読めるように出す）。
+"""
+
+from __future__ import annotations
+
+import re
+import sys
+from dataclasses import dataclass, field
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parent
+DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "outputs"
+
+US_NOTE_KEYS = ("us_highs", "us_pullback", "us_portfolio")
+US_NOTE_LABELS = {
+    "us_highs": "52週新高値",
+    "us_pullback": "押し目",
+    "us_portfolio": "$20,000運用",
+}
+
+DISCLAIMER = "本記事は投資助言ではありません。売買判断はご自身の責任でお願いします。"
+DEFAULT_JOURNAL_NAME = "claude_us20k_journal.csv"
+HOLDINGS_HEADER = "## 保有銘柄"
+
+# 「NVDA Nvidia  $230.40（+0.84%）」の先頭のティッカー
+TICKER_RE = re.compile(r"^([A-Z][A-Z0-9.\-]{0,6})\s+\S")
+CASH_RE = re.compile(r"現金 \$([0-9,]+\.[0-9]{2})")
+
+
+@dataclass
+class UsNoteValidation:
+    ok: bool = True
+    failures: list[str] = field(default_factory=list)
+    status: dict[str, str] = field(default_factory=dict)
+
+    def fail(self, message: str) -> None:
+        self.ok = False
+        self.failures.append(message)
+
+
+def _section(text: str, header: str) -> str:
+    """見出しから次の「## 」までの本文（見出し行は含まない）。"""
+    body: list[str] = []
+    inside = False
+    for line in text.splitlines():
+        if line.strip() == header:
+            inside = True
+            continue
+        if inside and line.startswith("## "):
+            break
+        if inside:
+            body.append(line)
+    return "\n".join(body)
+
+
+def _note_rule_issue(text: str) -> str | None:
+    """noteに貼ったとき壊れる書き方をしていないか。"""
+    if [line for line in text.splitlines() if line.strip().startswith("|")]:
+        return "表（|）を使っています。noteは表を解釈しません"
+    if "](http" in text:
+        return "[文言](URL) を使っています。noteでは押せない文字列になります"
+    if "**" in text:
+        return "** を使っています。noteでは文字として出ます"
+    if "取得できず" in text:
+        return "「取得できず」の行が残っています。読者に何も伝えません"
+    return None
+
+
+def _holding_tickers(text: str) -> list[str]:
+    """記事の「保有銘柄」欄に、保有として書かれているティッカー。"""
+    body = _section(text, HOLDINGS_HEADER)
+    found: list[str] = []
+    for line in body.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith(("-", "　", "ルール", "現金", "出所")):
+            continue
+        match = TICKER_RE.match(stripped)
+        if match:
+            found.append(match.group(1))
+    return found
+
+
+def _validate_portfolio(result: UsNoteValidation, text: str, journal_path: Path) -> None:
+    """$20,000運用の記事が、台帳と食い違っていないか。ここが事故の再発防止。"""
+    marker = journal_path.name
+    if f"出所 {marker}" not in text:
+        result.fail(
+            f"note_us_portfolio.md: 保有欄が台帳（{marker}）由来だと書かれていません"
+        )
+        return
+
+    try:
+        import pandas as pd
+    except ModuleNotFoundError:
