@@ -1,23 +1,33 @@
-name: US Screening Check (米株スクリーナーの動作確認)
+name: 米株（毎日）
 
 on:
   workflow_dispatch:
-    inputs:
-      limit:
-        description: "動作確認する銘柄数（空なら全519銘柄）"
-        type: string
-        default: "30"
+  schedule:
+    # 米国市場が閉まるのは日本時間の朝5〜6時。そのあとに動かす。
+    # cron は UTC。UTC 22:00(月〜金) = JST 翌朝07:00(火〜土)。
+    - cron: "0 22 * * 1-5"
+    # GitHub側で起動が遅れることがあるので予備を2本。
+    # 先に走った回が公開ずみなら run_us_daily.py が自分で止まる（二重送信しない）。
+    - cron: "0 23 * * 1-5"
+    - cron: "0 0 * * 2-6"
+
+concurrency:
+  group: us-daily
+  cancel-in-progress: false
 
 permissions:
-  contents: read
+  # コピー用ページ（docs/copy/us_*.html）と米株の台帳を main に push するため。
+  contents: write
 
 jobs:
-  check:
+  run:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -29,57 +39,30 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: 1 price check
-        run: |
-          python3 -c "
-          from scanner.prices import fetch_price_history
-          ok = 0
-          for t in ('AAPL', 'MSFT', 'BRK-B'):
-              df = fetch_price_history(t)
-              n = 0 if df is None or df.empty else len(df)
-              last = '' if n == 0 else str(df.index[-1].date())
-              px = '' if n == 0 else round(float(df['Close'].iloc[-1]), 2)
-              print(t, 'rows=', n, 'last=', last, 'close=', px)
-              if n > 200: ok += 1
-          print('price_ok=', ok, '/3')
-          raise SystemExit(0 if ok else 1)
-          "
-
-      - name: 2 universe check
-        run: |
-          python3 -c "
-          from scanner.universe_us import load_us_universe, UsUniverseConfig
-          df = load_us_universe(UsUniverseConfig(nasdaq_top=100))
-          print('universe=', len(df))
-          print(df['market'].value_counts().to_string())
-          raise SystemExit(0 if len(df) >= 400 else 1)
-          "
-
-      - name: 3 run screener
+      - name: Run US daily
         env:
-          LIMIT: ${{ github.event.inputs.limit }}
-        run: |
-          if [ -n "$LIMIT" ]; then
-            python3 run_screening_us.py --limit "$LIMIT"
-          else
-            python3 run_screening_us.py
-          fi
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+        run: python3 run_us_daily.py
 
-      - name: 4 show results
+      - name: Show results
         if: always()
         run: |
-          for f in outputs/screening_us_*.csv; do
+          for f in outputs/note_us_*.md; do
             [ -e "$f" ] || continue
             echo "=== $f ==="
-            head -n 6 "$f"
+            head -n 12 "$f"
           done
 
       - name: upload
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: us-screening-check
-          path: outputs/screening_us_*.csv
+          name: us-daily
+          path: |
+            outputs/note_us_*.md
+            outputs/screening_us_*.csv
           if-no-files-found: warn
 
       - name: Notify failure by mail
