@@ -3136,7 +3136,7 @@ def _test_us_note_draft() -> None:
     highs = pd.DataFrame([
         {"ticker": "NVDA", "code": "NVDA", "name": "NVIDIA", "market": "S&P500",
          "sector": "Information Technology", "current_price": "182.45", "change_pct": "1.82",
-         "dist_to_high_pct": "0.0", "turnover_20d": "24500000000",
+         "dist_to_high_pct": "2.03", "turnover_20d": "24500000000",
          "volume_ratio_5d_20d": "1.34", "high_type": "52W_NEW_HIGH",
          "earnings_date": "2026-11-18", "note_flags": "初回ブレイク"},
         {"ticker": "JPM", "code": "JPM", "name": "JPMorgan Chase", "market": "S&P500",
@@ -3191,6 +3191,17 @@ def _test_us_note_draft() -> None:
         assert "【A】52週新高値に到達した銘柄" in highs_md
         assert "【B】52週新高値まで3%以内" in highs_md
         assert "NVDA NVIDIA" in highs_md and "$24.5B" in highs_md
+        # fix59: 「到達」の欄に「高値まで◯%」と書かないこと。
+        # スクリーナーの到達は「その日のザラ場で1年の高値を超えた」で、
+        # dist_to_high_pct は「終値からその高値までの距離」。別のものなので言い方を分ける。
+        section_a = highs_md[highs_md.index("【A】"):highs_md.index("【B】")]
+        assert "ザラ場で高値更新（終値は高値から-2.03%）" in section_a
+        assert "高値まで" not in section_a
+        assert "ここでいう「到達」は" in section_a
+        # 「接近」の欄はこれまでどおり「高値まで◯%」
+        section_b = highs_md[highs_md.index("【B】"):]
+        assert "高値まで1.35%" in section_b
+        assert "ザラ場で高値更新" not in section_b
         # 決算日が空の銘柄には「次回決算」の行を出さないこと
         jpm = highs_md[highs_md.index("1. JPMorgan"):]
         assert "次回決算" not in jpm.split("📈")[0]

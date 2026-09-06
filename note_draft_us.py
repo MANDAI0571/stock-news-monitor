@@ -106,9 +106,7 @@ def _stock_lines(row: pd.Series) -> list[str]:
         head += f"（{change}）"
 
     parts: list[str] = []
-    dist = _num(row.get("dist_to_high_pct"))
-    if dist is not None:
-        parts.append("高値更新" if dist <= 0 else f"高値まで{dist:.2f}%")
+    parts.extend(_high_words(row))
     turnover = fmt_turnover(row.get("turnover_20d"))
     if turnover:
         parts.append(f"売買代金 {turnover}")
@@ -124,6 +122,39 @@ def _stock_lines(row: pd.Series) -> list[str]:
     return lines
 
 
+def _high_words(row: pd.Series) -> list[str]:
+    """高値の位置を書く。
+
+    fix59(2026-09-06): 本番の 2026-09-04 で「【A】到達」の欄に
+    「高値まで2.03%」と出て、見出しと中身が食い違っていた。
+    スクリーナーの「到達」は「その日のザラ場で1年の高値を超えた」という意味で、
+    dist_to_high_pct は「終値からその高値までの距離」。別のものを1つの言い方に
+    まぜていたのが原因。到達と接近で言い方を分ける。
+    """
+    kind = str(row.get("high_type", "")).strip().upper()
+    dist = _num(row.get("dist_to_high_pct"))
+    if kind == "52W_NEW_HIGH":
+        if dist is not None and dist > 0:
+            return [f"ザラ場で高値更新（終値は高値から-{dist:.2f}%）"]
+        return ["ザラ場で高値更新"]
+    if dist is None:
+        return []
+    return ["高値更新"] if dist <= 0 else [f"高値まで{dist:.2f}%"]
+
+
+def _high_detail(row: pd.Series) -> list[tuple[str, str]]:
+    """詳細欄の高値の行。到達と接近で言い方を分ける。"""
+    kind = str(row.get("high_type", "")).strip().upper()
+    dist = _num(row.get("dist_to_high_pct"))
+    if kind == "52W_NEW_HIGH":
+        if dist is not None and dist > 0:
+            return [("52週高値：", f"本日ザラ場で更新（終値は高値から-{dist:.2f}%）")]
+        return [("52週高値：", "本日ザラ場で更新")]
+    if dist is None:
+        return []
+    return [("52週高値まで：", "更新済み" if dist <= 0 else f"{dist:.2f}%")]
+
+
 def _detail_lines(row: pd.Series, rank: int) -> list[str]:
     """上位銘柄の詳細。取れなかった項目は書かない。"""
     ticker = _text(row, "ticker") or _text(row, "code")
@@ -136,9 +167,8 @@ def _detail_lines(row: pd.Series, rank: int) -> list[str]:
 
     add("株価：", fmt_usd(row.get("current_price")))
     add("前日比：", fmt_pct(row.get("change_pct"), signed=True))
-    dist = _num(row.get("dist_to_high_pct"))
-    if dist is not None:
-        add("52週高値まで：", "更新済み" if dist <= 0 else f"{dist:.2f}%")
+    for label, value in _high_detail(row):
+        add(label, value)
     add("売買代金（20日平均）：", fmt_turnover(row.get("turnover_20d")))
     ratio = _num(row.get("volume_ratio_5d_20d"))
     if ratio is not None:
@@ -198,6 +228,12 @@ def build_us_highs_note(highs: pd.DataFrame, target_date: str) -> str:
     for label, part in (("【A】52週新高値に到達した銘柄", reached),
                         ("【B】52週新高値まで3%以内に接近している銘柄", near)):
         lines += [f"## {label}", ""]
+        if label.startswith("【A】") and not part.empty:
+            lines += [
+                "ここでいう「到達」は、その日のザラ場で1年の高値を超えたという意味です。"
+                "終値は高値から少し下がっていることがあります。",
+                "",
+            ]
         if part.empty:
             lines += ["- 該当なし", ""]
             continue
