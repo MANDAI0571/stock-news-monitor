@@ -61,6 +61,7 @@ def main() -> None:
     _test_cloud_digest_mail()
     _test_note_mail_copy_and_preview()
     _test_note_copy_mails()
+    _test_us_universe_build()
     _test_us_calendar()
     _test_metron_kpi()
     _test_learning_log()
@@ -137,6 +138,50 @@ def _test_us_calendar() -> None:
     assert is_jpx_business_day(date(2026, 9, 7)) is True
 
     print("self-test: 米国市場の営業日カレンダー OK")
+
+
+def _test_us_universe_build() -> None:
+    """米株の銘柄一覧の組み立て（通信なし・純関数）。"""
+    from scanner.universe_us import build_us_universe, normalize_us_ticker
+
+    assert normalize_us_ticker("BRK.B") == "BRK-B"
+    assert normalize_us_ticker(" aapl ") == "AAPL"
+
+    sp_csv = (
+        "Symbol,Security,GICS Sector,GICS Sub-Industry\n"
+        "AAPL,Apple Inc.,Information Technology,Technology Hardware\n"
+        "BRK.B,Berkshire Hathaway,Financials,Multi-Sector Holdings\n"
+        ",No Symbol,Industrials,Nothing\n"
+    )
+    nasdaq_json = (
+        '[{"symbol":"ASML","name":"ASML Holding N.V.","marketCap":"400000000000",'
+        '"sector":"Technology","industry":"Semiconductors"},'
+        '{"symbol":"AAPL","name":"Apple Inc.","marketCap":"3000000000000",'
+        '"sector":"Technology","industry":"Computer Manufacturing"},'
+        '{"symbol":"QQQ","name":"Invesco QQQ Trust","marketCap":"300000000000",'
+        '"sector":"","industry":""},'
+        '{"symbol":"XYZW","name":"Some Preferred Stock","marketCap":"200000000000",'
+        '"sector":"Finance","industry":"Banks"},'
+        '{"symbol":"TINY","name":"Tiny Co","marketCap":"0",'
+        '"sector":"Technology","industry":"Software"}]'
+    )
+    df = build_us_universe(sp_csv, nasdaq_json, nasdaq_top=10)
+    tickers = df["ticker"].tolist()
+
+    # S&P500は正式リストのまま。BRK.B は BRK-B に直っていること。
+    assert "AAPL" in tickers and "BRK-B" in tickers
+    # 記号が空の行は落とすこと
+    assert len(df[df["name"] == "No Symbol"]) == 0
+    # ETF（セクター空）と優先株（名前で判定）と時価総額0は採らないこと
+    assert "QQQ" not in tickers and "XYZW" not in tickers and "TINY" not in tickers
+    # NASDAQからはS&P500に無いものだけ足すこと（AAPLは重複しない）
+    assert tickers.count("AAPL") == 1
+    assert "ASML" in tickers
+    assert df[df["ticker"] == "ASML"]["market"].iloc[0].startswith("NASDAQ")
+    # 日本株と同じ列名で返すこと（下流をそのまま使い回すため）
+    assert list(df.columns) == ["ticker", "code", "name", "market", "sector"]
+
+    print("self-test: 米株の銘柄一覧 OK")
 
 
 def _test_indicators_and_scoring() -> None:
