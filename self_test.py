@@ -61,6 +61,7 @@ def main() -> None:
     _test_cloud_digest_mail()
     _test_note_mail_copy_and_preview()
     _test_note_copy_mails()
+    _test_us_calendar()
     _test_metron_kpi()
     _test_learning_log()
     _test_csv_schema_contract()
@@ -77,6 +78,65 @@ def main() -> None:
     _test_note_split_for_mobile()
     _test_note_split_passes_quality_gate()
     print("self-test: OK")
+
+
+def _test_us_calendar() -> None:
+    """米国市場の営業日カレンダー（通信なし・規則から計算）。"""
+    from datetime import date
+
+    from us_calendar import (
+        add_us_business_days,
+        easter_sunday,
+        is_us_business_day,
+        next_us_business_day,
+        nyse_holidays,
+        us_business_days_between,
+    )
+
+    # 復活祭（聖金曜日の計算根拠）
+    assert easter_sunday(2025) == date(2025, 4, 20)
+    assert easter_sunday(2026) == date(2026, 4, 5)
+    assert easter_sunday(2027) == date(2027, 3, 28)
+
+    # 2025年のNYSE休場日（実際の年間予定と一致すること）
+    assert sorted(nyse_holidays(2025)) == [
+        date(2025, 1, 1),    # 元日
+        date(2025, 1, 20),   # キング牧師の日
+        date(2025, 2, 17),   # 大統領の日
+        date(2025, 4, 18),   # 聖金曜日
+        date(2025, 5, 26),   # 戦没者追悼の日
+        date(2025, 6, 19),   # ジューンティーンス
+        date(2025, 7, 4),    # 独立記念日
+        date(2025, 9, 1),    # レイバーデー
+        date(2025, 11, 27),  # 感謝祭
+        date(2025, 12, 25),  # クリスマス
+    ]
+
+    # 2026年。7/4が土曜なので前日の金曜が休場になること。
+    holidays_2026 = nyse_holidays(2026)
+    assert date(2026, 7, 3) in holidays_2026
+    assert date(2026, 7, 4) not in holidays_2026
+    assert date(2026, 9, 7) in holidays_2026     # レイバーデー
+    assert date(2026, 4, 3) in holidays_2026     # 聖金曜日
+
+    # 元日が土曜の年は、前年の大晦日を休場にしない（NYSEの決まり）
+    assert date(2021, 12, 31) not in nyse_holidays(2021)
+
+    # 土日と休場日は営業日でない
+    assert is_us_business_day(date(2026, 9, 4)) is True    # 金
+    assert is_us_business_day(date(2026, 9, 5)) is False   # 土
+    assert is_us_business_day(date(2026, 9, 6)) is False   # 日
+    assert is_us_business_day(date(2026, 9, 7)) is False   # レイバーデー
+    assert next_us_business_day(date(2026, 9, 4)) == date(2026, 9, 8)
+    assert add_us_business_days(date(2026, 9, 4), 2) == date(2026, 9, 9)
+    assert us_business_days_between(date(2026, 9, 4), date(2026, 9, 9)) == 2
+
+    # 日本の暦とは別物であること（9/7は東証は営業日、NYSEは休場）
+    from jpx_calendar import is_jpx_business_day
+
+    assert is_jpx_business_day(date(2026, 9, 7)) is True
+
+    print("self-test: 米国市場の営業日カレンダー OK")
 
 
 def _test_indicators_and_scoring() -> None:
