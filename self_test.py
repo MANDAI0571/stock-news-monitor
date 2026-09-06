@@ -66,6 +66,7 @@ def main() -> None:
     _test_us_universe_build()
     _test_us_calendar()
     _test_us_note_draft()
+    _test_us_portfolio()
     _test_metron_kpi()
     _test_learning_log()
     _test_csv_schema_contract()
@@ -3207,6 +3208,120 @@ def _test_us_note_draft() -> None:
     assert "データ不足" in empty and "本記事は投資助言ではありません" in empty
 
     print("self-test: 米株の記事 OK")
+
+
+def _test_us_portfolio() -> None:
+    """米株$20,000運用：規律どおりに宣告・約定し、台帳の数字だけで記事を書くこと。"""
+    from datetime import date
+
+    import us_portfolio as up
+    from note_mail_html import note_body_text
+    from us_calendar import add_us_business_days, next_us_business_day
+
+    candidates = pd.DataFrame([
+        {"ticker": "NVDA", "name": "NVIDIA", "current_price": "182.45",
+         "turnover_20d": "24500000000", "volume_ratio_5d_20d": "1.34",
+         "high_type": "52W_NEW_HIGH", "dist_to_high_pct": "0.0",
+         "sector": "Information Technology"},
+        {"ticker": "JPM", "name": "JPMorgan Chase", "current_price": "298.10",
+         "turnover_20d": "1750000000", "volume_ratio_5d_20d": "1.05",
+         "high_type": "52W_NEAR_HIGH", "dist_to_high_pct": "1.35",
+         "sector": "Financials"},
+        {"ticker": "KO", "name": "Coca-Cola", "current_price": "72.15",
+         "turnover_20d": "820000000", "volume_ratio_5d_20d": "1.02",
+         "high_type": "52W_NEW_HIGH", "dist_to_high_pct": "0.0",
+         "sector": "Consumer Staples"},
+        {"ticker": "BRK-B", "name": "Berkshire Hathaway", "current_price": "999999.00",
+         "turnover_20d": "500000000", "volume_ratio_5d_20d": "1.00",
+         "high_type": "52W_NEW_HIGH", "dist_to_high_pct": "0.0", "sector": "Financials"},
+    ])
+
+    # 手仕舞いの判定（ルールの数字そのもの）
+    assert up.exit_reason(100.0, 92.0, 3).startswith("損切")
+    assert up.exit_reason(100.0, 116.0, 3).startswith("利確")
+    assert up.exit_reason(100.0, 101.0, 10).startswith("タイムアウト")
+    assert up.exit_reason(100.0, 101.0, 3) == ""
+
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        out = root / "outputs"
+        out.mkdir()
+        orders_path = root / "orders.csv"
+        journal_path = root / "journal.csv"
+        candidates.to_csv(out / "screening_us_highs_20260904_060000.csv",
+                          index=False, encoding="utf-8-sig")
+        common = dict(output_dir=out, orders_path=orders_path, journal_path=journal_path)
+
+        # 1日目：宣告。最大3銘柄まで。1株も買えない値段の銘柄は入れない。
+        declared = up.declare_us_orders(date(2026, 9, 4), prices={}, **common)
+        assert len(declared) == 3
+        assert set(declared["ticker"]) == {"NVDA", "JPM", "KO"}
+        assert "BRK-B" not in set(declared["ticker"])  # $999,999は1株も買えない
+        assert set(declared["execution_date"]) == {next_us_business_day(date(2026, 9, 4)).isoformat()}
+        # 買った理由がスクリーニングの中身から作られていること（読者に伝わる形）
+        nvda_reason = declared.loc[declared["ticker"].eq("NVDA"), "reason"].iloc[0]
+        assert "52週新高値に到達" in nvda_reason and "$24.5B" in nvda_reason
+
+        # 同じ日にもう一度宣告しても増えない
+        again = up.declare_us_orders(date(2026, 9, 4), prices={}, **common)
+        assert len(again) == 3
+
+        # 2日目：寄り値で約定。値段が取れない銘柄は約定しない。
+        execute_on = next_us_business_day(date(2026, 9, 4))
+        orders, journal = up.fill_us_orders(
+            execute_on, orders_path=orders_path, journal_path=journal_path,
+            prices={"NVDA": 183.0, "JPM": 299.0},
+        )
+        assert len(up.status_rows(journal, "OPEN")) == 2
+        assert set(orders.loc[orders["status"].eq("FILLED"), "ticker"]) == {"NVDA", "JPM"}
+        assert orders.loc[orders["ticker"].eq("KO"), "status"].iloc[0] == "PENDING"
+
+        # 現金 = 20,000 - 183*36 - 299*22
+        assert abs(up.cash_balance(journal) - (20000 - 183.0 * 36 - 299.0 * 22)) < 0.01
+
+        # 12営業日後：NVDAは-8%で損切、JPMは10営業日超えでタイムアウト
+        later = add_us_business_days(execute_on, 12)
+        orders = up.declare_us_orders(later, prices={"NVDA": 168.0, "JPM": 300.0}, **common)
+        sells = orders[orders["side"].eq("SELL")]
+        assert set(sells["ticker"]) == {"NVDA", "JPM"}
+        assert "損切" in sells.loc[sells["ticker"].eq("NVDA"), "reason"].iloc[0]
+        assert "タイムアウト" in sells.loc[sells["ticker"].eq("JPM"), "reason"].iloc[0]
+
+        orders, journal = up.fill_us_orders(
+            add_us_business_days(later, 1), orders_path=orders_path, journal_path=journal_path,
+            prices={"NVDA": 167.5, "JPM": 301.0, "KO": 73.2},
+        )
+        # 執行日を過ぎた未約定の注文は EXPIRED（古い日付が記事に残らない）
+        assert orders.loc[orders["ticker"].eq("KO") & orders["side"].eq("BUY"), "status"].iloc[0] == "EXPIRED"
+        assert len(up.status_rows(journal, "CLOSED")) == 2
+
+        text = up.build_us_portfolio_note(
+            "2026-09-25", orders_path=orders_path, journal_path=journal_path, prices={},
+        )
+
+    # noteの決まり：表(|)を使わない・[文言](URL)を使わない・免責を入れる
+    assert not [ln for ln in text.split("\n") if ln.strip().startswith("|")]
+    assert "](http" not in text
+    assert "**" not in text
+    assert "本記事は投資助言ではありません" in text
+    assert "これは架空資金による記録です" in text
+    assert up.RULE_LINE in text
+    # 順番（保有 → 評価額 → 損益 → 確定トレード → なぜ買ったか → 次の営業日）
+    order = [text.index(s) for s in (
+        up.SECTION_HOLDINGS, up.SECTION_VALUATION, up.SECTION_PNL,
+        up.SECTION_RECORD, up.SECTION_REASONS, up.SECTION_NEXT,
+    )]
+    assert order == sorted(order)
+    # 確定した2件の損益が台帳どおり出ていること
+    assert "確定トレード：2件（勝ち 1件／負け 1件）" in text
+    assert "-$558.00" in text and "+$44.00" in text
+    # 出す注文が無い日は古い注文を並べない
+    assert "出す注文はありません" in text
+
+    plain = note_body_text(text)
+    assert "##" not in plain and "|" not in plain
+
+    print("self-test: 米株$20,000運用 OK")
 
 
 if __name__ == "__main__":
