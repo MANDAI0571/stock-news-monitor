@@ -61,6 +61,7 @@ def main() -> None:
     _test_cloud_digest_mail()
     _test_note_mail_copy_and_preview()
     _test_note_copy_mails()
+    _test_us_scoring()
     _test_us_universe_build()
     _test_us_calendar()
     _test_metron_kpi()
@@ -182,6 +183,73 @@ def _test_us_universe_build() -> None:
     assert list(df.columns) == ["ticker", "code", "name", "market", "sector"]
 
     print("self-test: 米株の銘柄一覧 OK")
+
+
+def _test_us_scoring() -> None:
+    """米株の採点（通信なし・純関数）。日本株の採点には影響しないこと。"""
+    from scanner.indicators import calculate_indicators
+    from scanner.scoring import score_stock
+    from scanner.scoring_us import (
+        US_MIN_TURNOVER,
+        US_RANK_THRESHOLDS,
+        score_us_stock,
+        us_rank,
+    )
+
+    def history(prices: list[float], volume: float) -> pd.DataFrame:
+        return pd.DataFrame(
+            {
+                "Open": prices,
+                "High": [p * 1.01 for p in prices],
+                "Low": [p * 0.99 for p in prices],
+                "Close": prices,
+                "Volume": [volume] * len(prices),
+            },
+            index=pd.bdate_range("2025-01-01", periods=len(prices)),
+        )
+
+    # ランクのしきい値（日本株の85/70/55/40から10点ずつ下げてある）
+    assert [t for t, _ in US_RANK_THRESHOLDS] == [75, 60, 45, 30]
+    assert us_rank(75) == "S" and us_rank(60) == "A"
+    assert us_rank(45) == "B" and us_rank(30) == "C" and us_rank(29) == "SKIP"
+
+    # 強い上昇トレンドの大型株：高値圏・移動平均の上・売買代金10億ドル超
+    strong = [float(200 + i) for i in range(300)]
+    indicators = calculate_indicators(history(strong, 3_000_000))
+    assert indicators is not None
+    assert indicators["turnover_20d"] > 1_000_000_000
+    scored = score_us_stock(indicators, None, {"earnings_status": "確認済"}, name="Apple Inc.")
+    assert scored["score"] >= 75
+    assert "52週高値3%以内" in scored["reason"]
+    assert "売買代金10億ドル以上" in scored["reason"]
+    # 出来高が20日平均を上回っていないので、Sゲート未達でAどまりになること
+    assert scored["rank"] == "A"
+    assert "Sゲート未達" in scored["reason"]
+
+    # 下降トレンド：高値から離れていて売買代金も小さい → 候補にしない
+    weak = [float(500 - i * 0.8) for i in range(300)]
+    weak_ind = calculate_indicators(history(weak, 200_000))
+    assert weak_ind is not None
+    weak_scored = score_us_stock(weak_ind, None, {"earnings_status": "確認済"})
+    assert weak_scored["rank"] == "SKIP"
+    assert weak_scored["score"] == 0
+
+    # 決算日が未確認ならSに上げない（日本株と同じ規律）
+    high_score = dict(indicators)
+    high_score["volume_above_20d"] = True
+    unconfirmed = score_us_stock(high_score, None, {"earnings_status": "未確認"}, name="X")
+    assert unconfirmed["rank"] != "S"
+
+    # 米株には「100株購入額」の加点もテーマ加点も無いこと（1株から買えるため）
+    assert "100株購入額" not in scored["reason"]
+    assert "テーマ加点" not in scored["reason"]
+
+    # 日本株の採点は変わっていないこと（円建て・100株単位のまま）
+    jp = score_stock(indicators, None, {"earnings_status": "確認済"}, name="東京エレクトロン", sector="電気機器")
+    assert "100株購入額" in jp["reason"] or "売買代金" in jp["reason"]
+
+    assert US_MIN_TURNOVER == 20_000_000
+    print("self-test: 米株の採点 OK")
 
 
 def _test_indicators_and_scoring() -> None:
