@@ -31,6 +31,14 @@
   `ast.parse()`（構文が壊れていないか）と `MUST_EXIST` / `MUST_BE_GONE` の確認をする。
 - **検証は必ず main の新しいクローンで。**
   `git clone --depth 1 https://github.com/MANDAI0571/stock-news-monitor.git`
+- **修正スクリプトは外部ライブラリに頼らない。** `tmp_apply.yml` には `pip install` が無い。
+  pandas / requests / numpy / yfinance を import すると本番で `ModuleNotFoundError` で落ちる
+  （2026-09-04 fix49 でやった）。どうしても要る確認は
+  `try: import pandas / except ModuleNotFoundError: print("…飛ばした")` で飛ばし、
+  Push 側の自己テストで見る。
+- **貼り付ける base64 は 7,000 文字くらいまでに割る。** 10,536 文字で貼り付けが壊れ、
+  `base64: invalid input` / `gzip: stdin: not in gzip format` で落ちた（2026-09-04）。
+  大きいファイルは前半・後半に割り、前半は `_tmp_*.txt` に置いて後半でつなぐ。
 - **コメントは日本語で、なぜそう直したかを書く。** 「何をしたか」はコードを読めば分かる。
 
 ### 自己テストの回し方
@@ -84,6 +92,28 @@ CI（GitHub Actions）では `python3 self_test.py` を丸ごと流すので、�
   これは **2026-07-16 に、買っていない銘柄を保有として配信した事故**の再発防止。
 - **note.com への下書き自動保存は 2026-09-03 に停止した**（`note_draft_cloud.yml` の
   「Save 3-note drafts」ステップに `if: false`）。手で保存したい日は `Note Autosave` を手動実行する。
+
+## 5-2. 米株（2026-09-06 に追加）
+
+| 時刻(JST) | ワークフロー | 中身 |
+|---|---|---|
+| 火〜土 07:00 / 08:00 / 09:00 | 米株（毎日） | 約定 → スクリーニング → 記事3本 → 宣告 → メール |
+
+- 入口は **`run_us_daily.py` の1本だけ**。ワークフローの YAML はこれを呼ぶだけにしてある。
+  手順を YAML に書くと直すたびに Web 画面が要るので、手順は Python 側に置く。
+- 対象は「日本の今日」ではなく **直前の米国営業日**（`us_calendar.py`）。
+  米国の休みは規則から計算している（イースターは計算式、振替も込み）。JPX の休場判定は使わない。
+- 銘柄は S&P500 + NASDAQ大型で **519銘柄**（`scanner/universe_us.py`）。
+- 記事は `note_draft_us.py`（52週新高値・押し目）と `us_portfolio.py`（$20,000運用）。
+  ファイル名は `outputs/note_us_highs.md` / `note_us_pullback.md` / `note_us_portfolio.md`。
+- メールとコピー用ページは **`us_mail_digest.py`**。日本株の `cloud_mail_digest.py` には触らない
+  （あれは毎日本番で動いている。米株のために手を入れると日本株が壊れる）。
+  コピー用ページは `docs/copy/us_latest.html`（日本株の `latest.html` とは別）。
+- 台帳は `data/claude_us20k_orders.csv` / `claude_us20k_journal.csv`。**ドル建て。円換算はしない。**
+  元手 $20,000 / 1枠およそ $6,600 / 最大3銘柄 / 損切 -7% / 利確 +15% / 10営業日で手じまい。
+- 予備の cron が3本あるので、`docs/copy/us_<営業日>.html` が main にあれば
+  後続は `run_us_daily.py` の中で止まる（メールの二重送信を防ぐ）。
+- **OpenWork は米株の記事に入れない。** 日本のサービスなので、無理に別のものを当てはめない。
 
 ## 6. 300万円運用（claude勘定）
 
