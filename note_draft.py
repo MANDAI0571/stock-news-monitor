@@ -1380,6 +1380,11 @@ def _buy_reason_lines(open_rows: pd.DataFrame, orders: pd.DataFrame) -> list[str
             f"{_val(row, 'execution_date')} の寄付きで買付"
         )
         lines.append(f"　📈 チャート: {_chart_url(code)}")
+        # fix48(2026-09-04): 3本すべてでOpenWorkも押せるようにする。
+        #   評価値は載せない（規約）。検索リンクだけ。
+        _ow = _openwork_url(_val(row, "name"))
+        if _ow:
+            lines.append(f"　👥 OpenWork: {_ow}")
         lines.append("")
     if shown == 0:
         lines.append("- いま保有している銘柄はありません。")
@@ -2174,6 +2179,12 @@ def _stock_detail_block(row, rank: int, ref, ow_cache, is_new: bool) -> list[str
         f"📈 6ヶ月日足チャート（Yahoo!ファイナンス）: "
         f"https://finance.yahoo.co.jp/quote/{code}.T/chart?frm=dly&trm=6m&scl=stndrd&styl=cndl&evnts=volume&ovrIndctr=sma%2Cmma%2Clma&addIndctr=&compare="
     )
+    # fix48(2026-09-04): 52週新高値にもOpenWorkの検索リンクを置く。
+    #   fix44 で「取得できず」を消した結果、ここに何も無くなっていた。
+    #   評価値は載せない（規約）。読んだ人が自分で見に行くための入口だけ。
+    _ow = _openwork_url(name)
+    if _ow:
+        lines.append(f"👥 OpenWork: {_ow}")
     lines.append("")
     return lines
 

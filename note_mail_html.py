@@ -325,6 +325,25 @@ _BOLD_RE = re.compile(r"\*\*([^*]+)\*\*")
 _BARE_URL_RE = re.compile(r'https?://[^\s<>"\']+')
 
 
+def _linkify_plain(text: str) -> str:
+    """素のテキストをHTMLにする。裸のURLだけリンクにする。
+
+    fix48(2026-09-04): 記事の中は裸のURLにしてあるが（noteが自動でリンクにするため）、
+    メールのHTMLは自動ではリンクにならない。<pre> にそのまま流し込んでいたので、
+    スマホでチャートやOpenWorkを押しても何も起きなかった。ここでリンクに戻す。
+    リンクの文言はURLそのものなので、コピーしたときの文字は変わらない。
+    """
+    out = escape(text)
+
+    def bare(match: re.Match[str]) -> str:
+        url = match.group(0)
+        if "&quot;" in url or "&#x27;" in url:
+            return url
+        return f'<a href="{url}">{url}</a>'
+
+    return _BARE_URL_RE.sub(bare, out)
+
+
 def render_inline(text: str) -> str:
     out = escape(text)
     out = _BOLD_RE.sub(lambda m: f"<strong>{m.group(1)}</strong>", out)
@@ -750,7 +769,10 @@ def _copy_block(part: NotePart) -> str:
         )
     return (
         '<p class="hint">コピー用テキスト（この枠を長押し→全選択→コピーで、そのままnoteに貼れます）</p>'
-        '<pre class="copy">' + escape(part.markdown) + "</pre>"
+        # fix48(2026-09-04): ここは「そのままnoteに貼れます」と書いてある枠なのに、
+        #   part.markdown をそのまま出していたので ## や ** が残っていた（fix38の漏れ）。
+        #   素のテキストに直し、裸のURLはリンクにして押せるようにする。
+        '<pre class="copy">' + _linkify_plain(note_body_text(part.markdown)) + "</pre>"
     )
 
 
@@ -1050,7 +1072,8 @@ def build_copy_mail_html(text: str, anchor: str) -> str:
         "↓ 予備（ボタンが使えないとき用の同じ本文）</p>"
         '<pre style="white-space:pre-wrap;word-break:break-word;font-size:13px;'
         "line-height:1.6;background:#f6f7f8;border:1px solid #dddddd;"
-        'border-radius:8px;padding:12px;margin:0;">' + escape(text) + "</pre>"
+        # fix48(2026-09-04): 裸のURLをリンクにする。押せないと意味がない。
+        'border-radius:8px;padding:12px;margin:0;">' + _linkify_plain(text) + "</pre>"
     )
     full = head + fallback + tail
     if len(full.encode("utf-8")) <= COPY_MAIL_HTML_BUDGET_BYTES:
