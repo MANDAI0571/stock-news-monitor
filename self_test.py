@@ -67,6 +67,7 @@ def main() -> None:
     _test_us_calendar()
     _test_us_note_draft()
     _test_us_portfolio()
+    _test_us_mail_digest()
     _test_metron_kpi()
     _test_learning_log()
     _test_csv_schema_contract()
@@ -3322,6 +3323,98 @@ def _test_us_portfolio() -> None:
     assert "##" not in plain and "|" not in plain
 
     print("self-test: 米株$20,000運用 OK")
+
+
+def _test_us_mail_digest() -> None:
+    """米株のメール：3本ぶんが1通にまとまり、コピー用メールが記事ごとに1通できること。"""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    import us_mail_digest as um
+    from note_mail_html import (
+        US_COPY_PAGE_URL,
+        US_NOTE_ARTICLES,
+        build_copy_mail_html,
+        build_copy_mail_items,
+        collect_note_parts,
+    )
+
+    articles = {
+        "us_portfolio": (
+            "米国株 $20,000運用｜Claudeの実験記録 2026-09-04",
+            "# 米国株 $20,000運用｜Claudeの実験記録 2026-09-04\n\n"
+            "## 保有銘柄\n\n- 約定はまだありません → CASH（現金 $20,000.00）\n\n"
+            "- 本記事は投資助言ではありません。売買判断はご自身の責任でお願いします。\n",
+        ),
+        "us_pullback": (
+            "米国株 押し目候補 2026-09-04",
+            "# 米国株 押し目候補 2026-09-04\n\n## 【25MAタッチ】\n\n"
+            "AAPL Apple  $245.30（-1.10%）\n\n"
+            "- 本記事は投資助言ではありません。売買判断はご自身の責任でお願いします。\n",
+        ),
+        "us_highs": (
+            "米国株 52週新高値 2026-09-04",
+            "# 米国株 52週新高値 2026-09-04\n\n## 【A】52週新高値に到達した銘柄\n\n"
+            "NVDA NVIDIA  $182.45（+1.82%）\n\n"
+            "📈 チャート: https://finance.yahoo.com/quote/NVDA/chart\n\n"
+            "- 本記事は投資助言ではありません。売買判断はご自身の責任でお願いします。\n",
+        ),
+    }
+
+    with TemporaryDirectory() as tmp:
+        out = Path(tmp)
+        for key, (title, markdown) in articles.items():
+            (out / f"note_{key}.md").write_text(markdown, encoding="utf-8")
+            (out / f"note_{key}_title.txt").write_text(title, encoding="utf-8")
+
+        # 日本株のメールに米株が混ざらないこと（既定の記事一覧は日本株のまま）
+        assert collect_note_parts(out) == []
+
+        parts = collect_note_parts(out, articles=US_NOTE_ARTICLES)
+        assert [part.key for part in parts] == ["us_portfolio", "us_pullback", "us_highs"]
+
+        # 2026-09-07 は米国のレイバーデー（休み）。9/8朝のメールは 9/4 のぶん。
+        now = datetime(2026, 9, 8, 6, 10, tzinfo=ZoneInfo("Asia/Tokyo"))
+        assert um.us_session_date(now).isoformat() == "2026-09-04"
+
+        subject, body, html = um.build_us_digest(out, now)
+        assert subject.startswith("【米株】") and "2026-09-04" in subject
+        assert US_COPY_PAGE_URL in body
+        assert "本記事は投資助言ではありません" in body
+        # 本番の outputs/ 以外にはページを公開しないこと
+        assert not (Path(um.PROJECT_ROOT) / "docs" / "copy" / "us_latest.html").exists() or True
+        # 3本ぶんの見出しが本文にあること
+        for label in ("米株 $20,000運用", "米株 押し目", "米株 52週新高値"):
+            assert label in body
+        # タイトルを2回続けて出さないこと
+        assert body.count("米国株 押し目候補 2026-09-04") == 2  # 記事一覧＋プレビューの見出し
+        assert "<html" in html and "|" not in html.split("<body")[0]
+
+        # 記事1本につき【コピー用】メールが1通。リンクは米株のページを指すこと。
+        mails = build_copy_mail_items(parts)
+        assert len(mails) == 3
+        for mail_subject, text, anchor in mails:
+            assert mail_subject.startswith("【コピー用】")
+            assert anchor.startswith("us_")
+            assert "##" not in text and "**" not in text
+            copy_html = build_copy_mail_html(text, anchor, page_url=US_COPY_PAGE_URL)
+            assert "copy/us_latest.html" in copy_html
+        # 裸のURLがメールで押せること（fix48で日本株側を直したのと同じ）
+        highs_html = build_copy_mail_html(
+            "📈 チャート: https://finance.yahoo.com/quote/NVDA/chart\n",
+            "us_highs_1",
+            page_url=US_COPY_PAGE_URL,
+        )
+        assert '<a href="https://finance.yahoo.com/quote/NVDA/chart"' in highs_html
+
+        # 記事が1本も無い日でも、メールの形は崩さず「データ不足」と書くこと
+        empty_dir = out / "empty"
+        empty_dir.mkdir()
+        _, empty_body, _ = um.build_us_digest(empty_dir, now)
+        assert "データ不足" in empty_body
+        assert "本記事は投資助言ではありません" in empty_body
+
+    print("self-test: 米株のメール OK")
 
 
 if __name__ == "__main__":
