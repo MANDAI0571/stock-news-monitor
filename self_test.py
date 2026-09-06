@@ -68,6 +68,7 @@ def main() -> None:
     _test_us_note_draft()
     _test_us_portfolio()
     _test_us_mail_digest()
+    _test_us_daily_runner()
     _test_metron_kpi()
     _test_learning_log()
     _test_csv_schema_contract()
@@ -3415,6 +3416,64 @@ def _test_us_mail_digest() -> None:
         assert "本記事は投資助言ではありません" in empty_body
 
     print("self-test: 米株のメール OK")
+
+
+def _test_us_daily_runner() -> None:
+    """米株の1日ぶんを回す入口：対象営業日の決め方と、二重送信のガード。"""
+    from datetime import date, datetime
+    from zoneinfo import ZoneInfo
+
+    import run_us_daily as rd
+    from us_calendar import is_us_business_day
+
+    JST = ZoneInfo("Asia/Tokyo")
+
+    # 日本時間の朝に動く。対象は「日本の今日」ではなく直前の米国営業日。
+    # 2026-09-07 は米国のレイバーデー（休み）なので、9/8朝の対象は 9/4。
+    assert rd.target_session(datetime(2026, 9, 8, 7, 0, tzinfo=JST)) == date(2026, 9, 4)
+    # 土曜の朝は、前日（金）の取引ぶん。
+    assert rd.target_session(datetime(2026, 9, 12, 7, 0, tzinfo=JST)) == date(2026, 9, 11)
+    # クリスマス(12/25)は休み。12/26朝の対象は 12/24。
+    assert rd.target_session(datetime(2026, 12, 26, 7, 0, tzinfo=JST)) == date(2026, 12, 24)
+    for when in (
+        datetime(2026, 9, 8, 7, 0, tzinfo=JST),
+        datetime(2026, 9, 12, 7, 0, tzinfo=JST),
+        datetime(2026, 12, 26, 7, 0, tzinfo=JST),
+    ):
+        assert is_us_business_day(rd.target_session(when))
+
+    # 記事・メール・宣告を1本ずつ呼んでいること（手順がYAMLに散らないようにしている）
+    source = Path(rd.__file__).read_text(encoding="utf-8")
+    for needle in (
+        "from us_portfolio import fill_us_orders",
+        "from run_screening_us import run_us_screening",
+        "from note_draft_us import build_us_notes",
+        "from us_portfolio import declare_us_orders",
+        "from us_portfolio import save_us_portfolio_note",
+        "import us_mail_digest",
+    ):
+        assert needle in source, f"ない: {needle}"
+    # 約定 → スクリーニング → 記事 → 宣告 → 運用記事 → メール の順であること
+    order = [
+        source.index("from us_portfolio import fill_us_orders"),
+        source.index("from run_screening_us import run_us_screening"),
+        source.index("from note_draft_us import build_us_notes"),
+        source.index("from us_portfolio import declare_us_orders"),
+        source.index("from us_portfolio import save_us_portfolio_note"),
+        source.index("import us_mail_digest"),
+    ]
+    assert order == sorted(order)
+
+    # ワークフローが run_us_daily.py を呼ぶなら、失敗通知と定時起動が要る（この repo の決まり）。
+    workflows = sorted(Path(".github/workflows").glob("*.yml"))
+    us_flows = [p for p in workflows if "run_us_daily.py" in p.read_text(encoding="utf-8")]
+    for path in us_flows:
+        text = path.read_text(encoding="utf-8")
+        assert "notify_workflow_failure.py" in text, path.name
+        assert "if: failure()" in text, path.name
+        assert "cron:" in text, path.name
+        assert "contents: write" in text, f"{path.name}: コピー用ページのpushに write が要る"
+    print(f"self-test: 米株の毎日の入口 OK（ワークフロー {len(us_flows)}本）")
 
 
 if __name__ == "__main__":
