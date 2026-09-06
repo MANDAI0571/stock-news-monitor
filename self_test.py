@@ -69,6 +69,7 @@ def main() -> None:
     _test_us_portfolio()
     _test_us_mail_digest()
     _test_us_daily_runner()
+    _test_us_note_gate()
     _test_metron_kpi()
     _test_learning_log()
     _test_csv_schema_contract()
@@ -3485,6 +3486,119 @@ def _test_us_daily_runner() -> None:
         assert "cron:" in text, path.name
         assert "contents: write" in text, f"{path.name}: コピー用ページのpushに write が要る"
     print(f"self-test: 米株の毎日の入口 OK（ワークフロー {len(us_flows)}本）")
+
+
+def _test_us_note_gate() -> None:
+    """米株の記事の門番：台帳と食い違う記事を通さないこと。
+
+    2026-07-16 に、買っていない銘柄を保有として配信した事故がある。
+    米株の $20,000運用の記事はまったく同じ形なので、ここで止める。
+    """
+    import us_portfolio as up
+    from validate_us_notes import validate_us_notes
+
+    good_list = (
+        "# 米国株 52週新高値 2026-09-08\n\n## 【A】52週新高値に到達した銘柄\n\n"
+        "NVDA Nvidia  $234.70（+1.87%）\n　ザラ場で高値更新\n\n"
+        "📈 チャート: https://finance.yahoo.com/quote/NVDA/chart\n\n"
+        "## 注意書き\n\n"
+        "- 本記事は投資助言ではありません。売買判断はご自身の責任でお願いします。\n"
+    )
+
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        out = root / "outputs"
+        out.mkdir()
+        orders = root / "claude_us20k_orders.csv"
+        journal = root / "claude_us20k_journal.csv"
+        for key in ("us_highs", "us_pullback"):
+            (out / f"note_{key}.md").write_text(good_list, encoding="utf-8")
+
+        # ① 台帳が空＝保有なし。正しく作った記事は通る。
+        up.save_us_portfolio_note(
+            "2026-09-04", output_dir=out, orders_path=orders, journal_path=journal, prices={}
+        )
+        assert validate_us_notes(out, journal).ok
+
+        # ② 台帳に1件入れて作り直す。これも通る。
+        pd.DataFrame([{
+            "entry_date": "2026-09-08", "fill_time_utc": "", "status": "OPEN",
+            "ticker": "NVDA", "name": "Nvidia", "entry_price": "230.40", "shares": "28",
+            "position_value": "6451.20", "source_order_date": "2026-09-04",
+            "exit_date": "", "exit_price": "", "exit_value": "",
+            "realized_pnl": "", "exit_order_date": "",
+        }]).to_csv(journal, index=False, encoding="utf-8-sig")
+        up.save_us_portfolio_note(
+            "2026-09-08", output_dir=out, orders_path=orders,
+            journal_path=journal, prices={"NVDA": 234.70},
+        )
+        assert validate_us_notes(out, journal).ok
+        note = out / "note_us_portfolio.md"
+        base = note.read_text(encoding="utf-8")
+        assert "NVDA Nvidia" in base and "出所 claude_us20k_journal.csv" in base
+
+        def failures_for(text: str) -> str:
+            note.write_text(text, encoding="utf-8")
+            result = validate_us_notes(out, journal)
+            assert not result.ok, "通してはいけない記事を通した"
+            return " / ".join(result.failures)
+
+        # ③ 台帳に無い銘柄を保有として書く（事故と同じ形）
+        ghost = base.replace(
+            "現金 $13,548.80",
+            "DELL Dell Technologies　+$50.00（+0.8%）　購入日 2026-09-08\n"
+            "　12株 ／ 取得 $524.10 → 現在 $528.20\n現金 $13,548.80",
+        )
+        assert "台帳に無い銘柄を保有として書いています" in failures_for(ghost)
+        assert "DELL" in failures_for(ghost)
+
+        # ④ 台帳にある保有を記事から落とす
+        assert "台帳の保有が記事に出ていません" in failures_for(base.replace("NVDA Nvidia", "XXXX Nvidia"))
+
+        # ⑤ 現金の額を書き換える
+        assert "現金が台帳と合いません" in failures_for(base.replace("現金 $13,548.80", "現金 $19,999.00"))
+
+        # ⑥ noteの決まり（表・[文言](URL)・**・取得できず）
+        assert "表（|）" in failures_for(base + "\n| a | b |\n")
+        assert "[文言](URL)" in failures_for(base + "\n[チャート](https://example.com)\n")
+        assert "**" in failures_for(base + "\n**強調**\n")
+        assert "取得できず" in failures_for(base + "\n👥 OpenWork：取得できず\n")
+
+        # ⑦ 免責が無い
+        assert "免責がありません" in failures_for(
+            base.replace("本記事は投資助言ではありません。売買判断はご自身の責任でお願いします。", "")
+        )
+
+        # ⑧ 出所の行が無い（台帳由来だと言えない）
+        assert "台帳（claude_us20k_journal.csv）由来だと書かれていません" in failures_for(
+            "\n".join(l for l in base.split("\n") if "出所 " not in l)
+        )
+
+        # ⑨ 候補ゼロなのに「該当なし」も「データ不足」も書いていない一覧記事
+        note.write_text(base, encoding="utf-8")
+        (out / "note_us_highs.md").write_text(
+            "# 米国株 52週新高値 2026-09-08\n\n## 【A】52週新高値に到達した銘柄\n\n"
+            "## 注意書き\n\n- 本記事は投資助言ではありません。売買判断はご自身の責任でお願いします。\n",
+            encoding="utf-8",
+        )
+        result = validate_us_notes(out, journal)
+        assert not result.ok
+        assert any("該当なし" in message for message in result.failures)
+
+        # ⑩ 記事が1本足りない
+        (out / "note_us_pullback.md").unlink()
+        result = validate_us_notes(out, journal)
+        assert not result.ok
+        assert any("3本必須" in message for message in result.failures)
+
+    # メールより前に門番を通ること（順番が逆だと意味がない）
+    import run_us_daily as rd
+
+    source = Path(rd.__file__).read_text(encoding="utf-8")
+    assert "from validate_us_notes import" in source
+    assert source.index("validate_us_notes(output_dir)") < source.index("import us_mail_digest")
+
+    print("self-test: 米株の記事の門番 OK")
 
 
 if __name__ == "__main__":
