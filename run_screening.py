@@ -518,10 +518,11 @@ def _collect_pullback_row(
     indicators: dict[str, float],
     high_info: dict[str, object],
     history: pd.DataFrame,
+    min_turnover: float = 100_000_000,
 ) -> dict[str, object] | None:
     """25/200/240MAタッチ または 52週新高値後リテストに該当する銘柄行を返す（非該当はNone）。
     流動性ゲート（20日平均売買代金1億円以上）のみ課す。捏造しない。"""
-    if float(indicators.get("turnover_20d", 0)) < 100_000_000:
+    if float(indicators.get("turnover_20d", 0)) < min_turnover:
         return None
     touches = detect_ma_touches(indicators)
     retest = detect_52w_high_retest(history)
@@ -713,6 +714,7 @@ def _collect_highs_row(
     indicators: dict[str, float],
     high_info: dict[str, object],
     history: pd.DataFrame,
+    min_turnover: float = 100_000_000,
 ) -> dict[str, object] | None:
     """52週新高値(52W_NEW_HIGH) または 52週高値接近(52W_NEAR_HIGH) に該当する銘柄行を返す。
     流動性ゲート（20日平均売買代金1億円以上）のみ課す。捏造しない。
@@ -720,7 +722,7 @@ def _collect_highs_row(
     high_type = str(high_info.get("high_type", ""))
     if high_type not in ("52W_NEW_HIGH", "52W_NEAR_HIGH"):
         return None
-    if float(indicators.get("turnover_20d", 0)) < 100_000_000:
+    if float(indicators.get("turnover_20d", 0)) < min_turnover:
         return None
     quality = high_quality_flags(history)
     screen_tag = "52W_BREAKOUT" if high_type == "52W_NEW_HIGH" else "52W_MOMENTUM"

@@ -61,6 +61,7 @@ def main() -> None:
     _test_cloud_digest_mail()
     _test_note_mail_copy_and_preview()
     _test_note_copy_mails()
+    _test_us_screening_pipeline()
     _test_us_scoring()
     _test_us_universe_build()
     _test_us_calendar()
@@ -250,6 +251,67 @@ def _test_us_scoring() -> None:
 
     assert US_MIN_TURNOVER == 20_000_000
     print("self-test: 米株の採点 OK")
+
+
+def _test_us_screening_pipeline() -> None:
+    """米株スクリーナーの流れ（通信なし・価格取得は差し替え）。"""
+    import tempfile
+    from datetime import date, datetime
+
+    import run_screening_us as rs
+    from run_screening import _collect_highs_row, _collect_pullback_row
+
+    # 対象営業日: 米国が休みの日は直前の営業日を指すこと
+    assert rs.us_target_date(datetime(2026, 9, 6, 12, 0)) == "2026-09-04"   # 日曜
+    assert rs.us_target_date(datetime(2026, 9, 7, 12, 0)) == "2026-09-04"   # レイバーデー
+    assert rs.us_target_date(datetime(2026, 9, 8, 12, 0)) == "2026-09-08"   # 営業日
+
+    # 流動性の下限がドル建てで、日本株の1億円とは別物であること
+    assert rs.AUX_MIN_TURNOVER_USD == 20_000_000
+    assert rs._passes_us_liquidity({"turnover_20d": 25_000_000}) is True
+    assert rs._passes_us_liquidity({"turnover_20d": 5_000_000}) is False
+    assert rs._passes_us_liquidity(None) is False
+
+    # 補助CSVの足切りを外から指定できること（日本株の既定は1億円のまま）
+    import inspect
+
+    for fn in (_collect_pullback_row, _collect_highs_row):
+        params = inspect.signature(fn).parameters
+        assert "min_turnover" in params, fn.__name__
+        assert params["min_turnover"].default == 100_000_000, fn.__name__
+
+    # 米株側が自分の下限（2,000万ドル）を渡していること
+    us_src = Path(rs.__file__).read_text(encoding="utf-8")
+    assert us_src.count("AUX_MIN_TURNOVER_USD\n") >= 3, "補助CSVに下限を渡していない"
+
+    # 価格取得を差し替えて、CSVが3本出るところまで通す
+    def fake_history(ticker, period="18mo"):
+        n = 300
+        base = 100 + (abs(hash(ticker)) % 40) * 5
+        closes = [float(base + i * 1.2) for i in range(n)]
+        return pd.DataFrame(
+            {"Open": closes, "High": [p * 1.01 for p in closes],
+             "Low": [p * 0.99 for p in closes], "Close": closes,
+             "Volume": [2_000_000] * n},
+            index=pd.bdate_range("2025-01-01", periods=n),
+        )
+
+    original = (rs.fetch_price_history, rs.prefetch_price_histories, rs._earnings_date_text)
+    rs.fetch_price_history = fake_history
+    rs.prefetch_price_histories = lambda *a, **k: {}
+    rs._earnings_date_text = lambda ticker: ""
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            result = rs.run_us_screening(limit=5, output_dir=out)
+            assert not result.empty
+            assert {"ticker", "name", "score", "rank", "turnover_20d"} <= set(result.columns)
+            names = sorted(p.name.split("_2")[0] for p in out.glob("*.csv"))
+            assert names == ["screening_us", "screening_us_highs", "screening_us_pullback"], names
+    finally:
+        rs.fetch_price_history, rs.prefetch_price_histories, rs._earnings_date_text = original
+
+    print("self-test: 米株スクリーナー OK")
 
 
 def _test_indicators_and_scoring() -> None:
