@@ -118,3 +118,123 @@ def _push_us_copy_page(now: datetime) -> bool:
         targets = ["docs/copy"]
         for extra in ("data/claude_us20k_orders.csv", "data/claude_us20k_journal.csv"):
             if (PROJECT_ROOT / extra).exists():
+                targets.append(extra)
+        run("git", "add", *targets)
+        stamp = now.strftime("%Y-%m-%d %H:%M JST")
+        commit = run("git", "commit", "-m", f"米株コピー用ページ更新 {stamp} [skip ci]")
+        if commit.returncode != 0 and "nothing to commit" in (commit.stdout + commit.stderr):
+            print("us_copy_page=no_change")
+            return True
+        push = run("git", "push", "origin", "HEAD:main")
+        if push.returncode != 0:
+            print(f"us_copy_page_push=failed {push.stderr.strip()[:200]}")
+            return False
+        return True
+    except OSError as error:
+        print(f"us_copy_page_push=failed {error}")
+        return False
+
+
+# ---------------------------------------------------------------- 本編メール
+
+def build_us_digest(output_dir: Path, now: datetime | None = None) -> tuple[str, str, str]:
+    """(件名, プレーン本文, HTML本文) を返す。"""
+    now = now or datetime.now(JST)
+    session = us_session_date(now)
+    subject = f"【米株】52週新高値・押し目・$20,000運用 {session.isoformat()}"
+
+    parts = collect_note_parts(output_dir, articles=US_NOTE_ARTICLES)
+    page_url = publish_us_copy_page(parts, now, output_dir)
+
+    lines: list[str] = [
+        "米株まとめ",
+        f"作成: {now.strftime('%Y-%m-%d %H:%M JST')}",
+        f"対象の米国営業日: {session.isoformat()}",
+        "",
+    ]
+    if not parts:
+        lines += [
+            "データ不足：米株の記事が1本もできていません。",
+            "スクリーニングが失敗したか、記事の生成前にこのメールが動いた可能性があります（未確認）。",
+            "",
+            DISCLAIMER,
+        ]
+        body = "\n".join(lines)
+        return subject, body, wrap_mail_html(subject, [render_note_html(body)])
+
+    lines += [
+        "米株の記事が3本できています。noteに貼るときは下のどちらかを使ってください。",
+        "",
+        "## コピー用ページ（iPhoneはここから）",
+        "下のURLをSafariで開くと、ボタン1つで本文をコピーできます。",
+        page_url or US_COPY_PAGE_URL,
+        "",
+        "## 【コピー用】メール",
+        "このメールの後に、記事1本ごとの【コピー用】メールが届きます。",
+        "本文を長押し →「すべてを選択」→ コピー で、そのままnoteに貼れます。",
+        "",
+        "## 記事一覧",
+    ]
+    for part in parts:
+        lines.append(f"- {part.part_label}：{part.title}（{len(part.markdown):,}文字）")
+    lines.append("")
+
+    lines.append("## 本文プレビュー")
+    for part in parts:
+        # 記事の1行目はタイトルそのものなので落とす（すぐ上に同じものを出している）。
+        plain = note_body_text(part.markdown).split("\n")
+        if plain and plain[0].strip() == part.title.strip():
+            plain = plain[1:]
+        preview = "\n".join(plain[:24]).strip()
+        lines += ["", f"### {part.part_label}", part.title, "", preview]
+
+    lines += ["", DISCLAIMER]
+    body = "\n".join(lines)
+    html_body = wrap_mail_html(subject, [render_note_html(body)])
+    return subject, body, html_body
+
+
+def main() -> None:
+    args = parse_args()
+    output_dir = Path(args.output_dir)
+    now = datetime.now(JST)
+    subject, body, html_body = build_us_digest(output_dir, now)
+    parts = collect_note_parts(output_dir, articles=US_NOTE_ARTICLES)
+    copy_mails = build_copy_mail_items(parts)
+
+    if args.dry_run:
+        print(subject)
+        print(body)
+        print(f"html_body_bytes={len(html_body.encode('utf-8'))}")
+        for mail_subject, text, _ in copy_mails:
+            print(f"copy_mail bytes={len(text.encode('utf-8'))} subject={mail_subject}")
+        return
+
+    config = load_gmail_config()
+    if config is None:
+        raise RuntimeError("GMAIL_USER/GMAIL_APP_PASSWORD/MAIL_TO が未設定です")
+
+    # 米国市場の営業日で判断する。JPXの休場ゲートは使わない（日本の祝日でも米国は開く）。
+    if not send_gmail(subject, body, config, allow_non_business_day=True, html_body=html_body):
+        print("us_digest_mail=failed")
+        return
+    print(f"us_digest_mail=sent html_body_bytes={len(html_body.encode('utf-8'))}")
+
+    if args.no_copy_mails:
+        print(f"us_copy_mails=skipped reason=disabled count={len(copy_mails)}")
+        return
+    sent = 0
+    for mail_subject, text, anchor in copy_mails:
+        if send_gmail(
+            mail_subject,
+            text,
+            config,
+            allow_non_business_day=True,
+            html_body=build_copy_mail_html(text, anchor, page_url=US_COPY_PAGE_URL),
+        ):
+            sent += 1
+    print(f"us_copy_mails=sent {sent}/{len(copy_mails)}")
+
+
+if __name__ == "__main__":
+    main()
