@@ -65,6 +65,7 @@ def main() -> None:
     _test_us_scoring()
     _test_us_universe_build()
     _test_us_calendar()
+    _test_us_note_draft()
     _test_metron_kpi()
     _test_learning_log()
     _test_csv_schema_contract()
@@ -3119,6 +3120,93 @@ def _test_note_copy_mails() -> None:
         assert "\n".join(item[1] for item in pullback) == text
 
     print("self-test: note下書きのコピー用メール OK")
+
+
+def _test_us_note_draft() -> None:
+    """米株の記事（通信なし）。noteの決まりを最初から守っていること。"""
+    import re
+    from tempfile import TemporaryDirectory
+
+    import note_draft_us as nd
+    from note_mail_html import note_body_text
+
+    highs = pd.DataFrame([
+        {"ticker": "NVDA", "code": "NVDA", "name": "NVIDIA", "market": "S&P500",
+         "sector": "Information Technology", "current_price": "182.45", "change_pct": "1.82",
+         "dist_to_high_pct": "0.0", "turnover_20d": "24500000000",
+         "volume_ratio_5d_20d": "1.34", "high_type": "52W_NEW_HIGH",
+         "earnings_date": "2026-11-18", "note_flags": "初回ブレイク"},
+        {"ticker": "JPM", "code": "JPM", "name": "JPMorgan Chase", "market": "S&P500",
+         "sector": "Financials", "current_price": "298.10", "change_pct": "-0.21",
+         "dist_to_high_pct": "1.35", "turnover_20d": "1750000000",
+         "volume_ratio_5d_20d": "1.05", "high_type": "52W_NEAR_HIGH",
+         "earnings_date": "", "note_flags": ""},
+    ])
+    pullback = pd.DataFrame([
+        {"ticker": "AAPL", "code": "AAPL", "name": "Apple", "sector": "Information Technology",
+         "current_price": "245.30", "change_pct": "-1.10", "turnover_20d": "11200000000",
+         "volume_ratio_5d_20d": "0.95", "retest_52w": "False",
+         "ma25_touch": "True", "ma200_touch": "True", "ma240_touch": "True"},
+        {"ticker": "KO", "code": "KO", "name": "Coca-Cola", "sector": "Consumer Staples",
+         "current_price": "72.15", "change_pct": "-0.40", "turnover_20d": "820000000",
+         "volume_ratio_5d_20d": "1.02", "retest_52w": "True",
+         "ma25_touch": "False", "ma200_touch": "False", "ma240_touch": "False"},
+    ])
+
+    # 単位の書き方（ドル建て）
+    assert nd.fmt_usd("182.45") == "$182.45"
+    assert nd.fmt_turnover("24500000000") == "$24.5B"
+    assert nd.fmt_turnover("820000000") == "$820M"
+    assert nd.fmt_turnover("") == "" and nd.fmt_turnover("0") == ""
+    assert nd.chart_url("brk-b") == "https://finance.yahoo.com/quote/BRK-B/chart"
+
+    with TemporaryDirectory() as tmp:
+        out = Path(tmp)
+        stamp = "20260904_060000"
+        highs.to_csv(out / f"screening_us_highs_{stamp}.csv", index=False, encoding="utf-8-sig")
+        pullback.to_csv(out / f"screening_us_pullback_{stamp}.csv", index=False, encoding="utf-8-sig")
+        written = nd.build_us_notes(out, target_date="2026-09-04")
+        assert set(written) == {"highs", "pullback"}
+
+        highs_md = (out / "note_us_highs.md").read_text(encoding="utf-8")
+        pullback_md = (out / "note_us_pullback.md").read_text(encoding="utf-8")
+        for path in ("note_us_highs_title.txt", "note_us_pullback_title.txt"):
+            assert (out / path).read_text(encoding="utf-8").endswith("2026-09-04")
+
+        # 表（|）を使っていないこと。noteは表を解釈しない。
+        for text in (highs_md, pullback_md):
+            assert not [ln for ln in text.split("\n") if ln.strip().startswith("|")]
+            # リンクは裸のURL。[文言](URL)は使わない（noteで押せない文字列になる）
+            assert "](http" not in text
+            assert "https://finance.yahoo.com/quote/" in text
+            # 免責が末尾にあること
+            assert "本記事は投資助言ではありません" in text
+            # 読者に何も伝えない行を出さないこと
+            assert "取得できず" not in text
+
+        # 到達と接近を分けて書くこと
+        assert "【A】52週新高値に到達した銘柄" in highs_md
+        assert "【B】52週新高値まで3%以内" in highs_md
+        assert "NVDA NVIDIA" in highs_md and "$24.5B" in highs_md
+        # 決算日が空の銘柄には「次回決算」の行を出さないこと
+        jpm = highs_md[highs_md.index("1. JPMorgan"):]
+        assert "次回決算" not in jpm.split("📈")[0]
+
+        # 同じ銘柄を何度も出さないこと。ほかの線は「同時タッチ」で1行にまとめる。
+        assert pullback_md.count("AAPL Apple") == 1
+        assert "🔁 200日線・240日線にも同時タッチ" in pullback_md
+        assert "KO Coca-Cola" in pullback_md
+
+        # noteに貼ったときに記号が残らないこと
+        plain = note_body_text(highs_md)
+        assert "##" not in plain and "**" not in plain
+        assert "https://finance.yahoo.com/quote/NVDA/chart" in plain
+
+    # データが無い日は「データ不足」と書いて、記事の形は崩さないこと
+    empty = nd.build_us_highs_note(pd.DataFrame(), "2026-09-04")
+    assert "データ不足" in empty and "本記事は投資助言ではありません" in empty
+
+    print("self-test: 米株の記事 OK")
 
 
 if __name__ == "__main__":
