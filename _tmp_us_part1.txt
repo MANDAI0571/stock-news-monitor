@@ -1,0 +1,171 @@
+"""米株のnote記事を作る。52週新高値と、押し目（25MA・200MA・240MAタッチ）。
+
+日本株の note_draft.py とは別ファイルにしてある。あちらは2,500行あり、円建ての表記と
+日本語の社名前提が全体に染みているので、混ぜると日本株側を壊す危険が高い。
+記事の骨組み（何をどの順で書くか）は同じにして、米株の書き方に直したものを新しく書く。
+
+2026-09-06 までに日本株側で分かったことは、最初から入れてある。
+  ・note.com はマークダウンを一切解釈しない。表（|）も見出し（##）も文字として出る。
+    → 表は使わない。最初から「1行目=銘柄名、2行目=項目 値」の並びで書く。
+  ・リンクは裸のURLで書く（[文言](URL) は note では押せない文字列になるため）。
+    裸のURLが note で自動リンクになるかは未確認。ならなければ貼った後に手でリンク設定する。
+  ・読者に何も伝えない行は書かない（値が無い項目はその行ごと落とす）。
+  ・同じ銘柄を1つの記事に何度も出さない。まとめて1回にする。
+
+OpenWork は日本のサービスなので米株の記事には入れない（無理に別のサービスを当てはめない）。
+"""
+
+from __future__ import annotations
+
+from datetime import datetime
+from pathlib import Path
+
+import pandas as pd
+
+OUTPUT_DIR = Path(__file__).resolve().parent / "outputs"
+
+US_TITLES = {
+    "highs": "米国株 52週新高値｜到達・接近銘柄",
+    "pullback": "米国株 押し目候補｜新高値ライン戻り・25MA・200MA・240MAタッチ",
+}
+
+DISCLAIMER_LINES = [
+    "## 注意書き",
+    "",
+    "- 本記事は情報提供を目的としたもので、特定銘柄の売買を推奨するものではありません。",
+    "- 数値は取得済みデータに基づく機械集計です。取得できなかった項目は載せていません。",
+    "- 米国株は為替の影響を受けます。円換算の損益は株価の動きと一致しません。",
+    "- 本記事は投資助言ではありません。売買判断はご自身の責任でお願いします。",
+]
+
+# 1記事あたりの掲載数。多すぎると読めないので絞る（日本株で学んだ）。
+LIST_CAP = 20
+DETAIL_CAP = 3
+PULLBACK_CARD_CAP = 6
+
+MA_BUCKETS = (
+    ("ma25_touch", "25MAタッチ", "25日線"),
+    ("ma200_touch", "200MAタッチ", "200日線"),
+    ("ma240_touch", "240MAタッチ", "240日線"),
+)
+
+
+def chart_url(ticker: str) -> str:
+    """米株のチャート。裸のURLで書く（[文言](URL) は note では押せない文字列になるため）。"""
+    return f"https://finance.yahoo.com/quote/{str(ticker).strip().upper()}/chart"
+
+
+def fmt_usd(value: object, digits: int = 2) -> str:
+    number = _num(value)
+    return "" if number is None else f"${number:,.{digits}f}"
+
+
+def fmt_turnover(value: object) -> str:
+    """売買代金を読みやすい単位にする。10億ドル以上はB、100万ドル以上はM。"""
+    number = _num(value)
+    if number is None or number <= 0:
+        return ""
+    if number >= 1_000_000_000:
+        return f"${number / 1_000_000_000:,.1f}B"
+    if number >= 1_000_000:
+        return f"${number / 1_000_000:,.0f}M"
+    return f"${number:,.0f}"
+
+
+def fmt_pct(value: object, signed: bool = False) -> str:
+    number = _num(value)
+    if number is None:
+        return ""
+    return f"{number:+.2f}%" if signed else f"{number:.2f}%"
+
+
+def _num(value: object) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return None if number != number else number
+
+
+def _text(row: pd.Series, key: str) -> str:
+    value = row.get(key)
+    text = "" if value is None else str(value).strip()
+    return "" if text.lower() in ("nan", "none", "null") else text
+
+
+def _stock_lines(row: pd.Series) -> list[str]:
+    """1銘柄を2行で書く。表は使わない（noteが表を解釈しないため）。"""
+    ticker = _text(row, "ticker") or _text(row, "code")
+    name = _text(row, "name")
+    head = f"{ticker} {name}".strip()
+    change = fmt_pct(row.get("change_pct"), signed=True)
+    price = fmt_usd(row.get("current_price"))
+    if price:
+        head += f"  {price}"
+    if change:
+        head += f"（{change}）"
+
+    parts: list[str] = []
+    dist = _num(row.get("dist_to_high_pct"))
+    if dist is not None:
+        parts.append("高値更新" if dist <= 0 else f"高値まで{dist:.2f}%")
+    turnover = fmt_turnover(row.get("turnover_20d"))
+    if turnover:
+        parts.append(f"売買代金 {turnover}")
+    ratio = _num(row.get("volume_ratio_5d_20d"))
+    if ratio is not None:
+        parts.append(f"出来高比 {ratio:.2f}倍")
+    sector = _text(row, "sector")
+    if sector and sector != "-":
+        parts.append(sector)
+    lines = [head]
+    if parts:
+        lines.append("　" + " ／ ".join(parts))
+    return lines
+
+
+def _detail_lines(row: pd.Series, rank: int) -> list[str]:
+    """上位銘柄の詳細。取れなかった項目は書かない。"""
+    ticker = _text(row, "ticker") or _text(row, "code")
+    name = _text(row, "name")
+    lines = [f"### {rank}. {name}（{ticker}）", ""]
+
+    def add(label: str, value: str) -> None:
+        if value:
+            lines.append(f"{label}{value}")
+
+    add("株価：", fmt_usd(row.get("current_price")))
+    add("前日比：", fmt_pct(row.get("change_pct"), signed=True))
+    dist = _num(row.get("dist_to_high_pct"))
+    if dist is not None:
+        add("52週高値まで：", "更新済み" if dist <= 0 else f"{dist:.2f}%")
+    add("売買代金（20日平均）：", fmt_turnover(row.get("turnover_20d")))
+    ratio = _num(row.get("volume_ratio_5d_20d"))
+    if ratio is not None:
+        add("出来高倍率（当日/20日平均）：", f"{ratio:.2f}倍")
+    add("セクター：", _text(row, "sector"))
+    add("市場：", _text(row, "market"))
+    add("次回決算：", _text(row, "earnings_date"))
+    flags = _text(row, "note_flags")
+    if flags:
+        add("フラグ：", flags)
+    lines.append("")
+    lines.append(f"📈 チャート: {chart_url(ticker)}")
+    lines.append("")
+    return lines
+
+
+def _sector_line(df: pd.DataFrame) -> str:
+    """候補が多いセクターを3つ。数えられなければ空（捏造しない）。"""
+    if df.empty or "sector" not in df.columns:
+        return ""
+    counts = (
+        df["sector"].astype(str).str.strip()
+        .replace({"": None, "nan": None, "-": None}).dropna().value_counts()
+    )
+    if counts.empty:
+        return ""
+    top = counts.head(3)
+    body = "、".join(f"{name}（{int(n)}銘柄）" for name, n in top.items())
+    return f"セクター別に数えると、{body}に集中しました（当スクリーニング内の集計）。"
+
