@@ -12,7 +12,8 @@ YAMLからは `python run_us_daily.py` だけを呼ぶ。以後の変更は tmpa
   3. 52週新高値・押し目の記事を作る
   4. 規律ルールで次の営業日の注文を宣告する
   5. $20,000運用の記事を作る
-  6. メールを送り、コピー用ページを公開する
+  6. 記事3本を確かめる（台帳と食い違っていたらここで止める。メールは送らない）
+  7. メールを送り、コピー用ページを公開する
 
 米国市場が開いていない日は何もしない。値段が取れないものは見送る。推測では埋めない。
 """
@@ -161,7 +162,26 @@ def main() -> int:
         failures.append("記事（$20,000運用）")
         traceback.print_exc()
 
-    # 6. メールとコピー用ページ
+    # 6. 送る前に確かめる。台帳と食い違う記事は絶対に送らない。
+    #    fix60(2026-09-06): 日本株に validate_note_artifact.py があるのと同じ理由。
+    #    2026-07-16 に、買っていない銘柄を保有として配信した事故がある。
+    #    米株の $20,000運用の記事はまったく同じ形なので、同じ門番を置く。
+    try:
+        from validate_us_notes import summary_lines, validate_us_notes
+
+        check = validate_us_notes(output_dir)
+        for line in summary_lines(check):
+            print(line, flush=True)
+        if not check.ok:
+            print(f"us_daily=failed steps=記事チェック session={session}", flush=True)
+            return 1
+    except Exception:  # noqa: BLE001
+        failures.append("記事チェック")
+        traceback.print_exc()
+        print(f"us_daily=failed steps={'/'.join(failures)} session={session}", flush=True)
+        return 1
+
+    # 7. メールとコピー用ページ
     if args.no_mail:
         print("us_daily_mail=skipped reason=disabled", flush=True)
     else:
