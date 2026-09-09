@@ -1,4 +1,4 @@
 ﻿decision_date,execution_date,side,ticker,name,shares,reason,status
-2026-09-04,2026-09-08,BUY,NVDA,Nvidia,28,52週新高値まで2.61% ／ 売買代金 $28.4B ／ 出来高比 1.03倍 ／ Information Technology（売買代金の大きい順に採用）,PENDING
-2026-09-04,2026-09-08,BUY,DELL,Dell Technologies,12,52週新高値に到達 ／ 売買代金 $4.0B ／ 出来高比 2.21倍 ／ Information Technology（売買代金の大きい順に採用）,PENDING
-2026-09-04,2026-09-08,BUY,V,Visa Inc.,17,52週新高値まで2.72% ／ 売買代金 $2.5B ／ 出来高比 0.81倍 ／ Financials（売買代金の大きい順に採用）,PENDING
+2026-09-04,2026-09-08,BUY,NVDA,Nvidia,28,52週新高値まで2.61% ／ 売買代金 $28.4B ／ 出来高比 1.03倍 ／ Information Technology（売買代金の大きい順に採用）,FILLED
+2026-09-04,2026-09-08,BUY,DELL,Dell Technologies,12,52週新高値に到達 ／ 売買代金 $4.0B ／ 出来高比 2.21倍 ／ Information Technology（売買代金の大きい順に採用）,FILLED
+2026-09-04,2026-09-08,BUY,V,Visa Inc.,17,52週新高値まで2.72% ／ 売買代金 $2.5B ／ 出来高比 0.81倍 ／ Financials（売買代金の大きい順に採用）,FILLED
