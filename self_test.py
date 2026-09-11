@@ -57,6 +57,7 @@ def main() -> None:
     _test_swing_high_break_9256_style()
     _test_journal_and_pattern_learning()
     _test_intraday_watchlist()
+    _test_intraday_line_is_prior_high()
     _test_intraday_cloud_workflow_contract()
     _test_cloud_digest_mail()
     _test_note_mail_copy_and_preview()
@@ -1797,7 +1798,10 @@ def _test_intraday_watchlist() -> None:
     assert "ザラ場リアルタイム高値アラート" in body
     assert "新規アラート: 1件" in body
     assert "7011 三菱重工" in body
-    assert "更新済み（乖離0%）" in body
+    # fix61(2026-09-11): 「更新済み（乖離0%）」は廃止。当日高値が取れないときだけ「更新済み」。
+    assert "更新済み" in body and "乖離0%" not in body
+    # チャートは1タップで開けること（高重さんの指示 2026-09-11）
+    assert "📈 チャート:https://finance.yahoo.co.jp/quote/7011.T/chart" in body
     assert "※これは投資助言ではなく、スクリーニング通知です。" in body
 
 def _test_intraday_cloud_workflow_contract() -> None:
@@ -3599,6 +3603,96 @@ def _test_us_note_gate() -> None:
     assert source.index("validate_us_notes(output_dir)") < source.index("import us_mail_digest")
 
     print("self-test: 米株の記事の門番 OK")
+
+
+def _test_intraday_line_is_prior_high() -> None:
+    """ザラ場アラートの高値ラインは「当日を除いた高値」であること。
+
+    2026-09-11 のメールで、高重さんから「ソフトバンクが出てる、間違い」と指摘。
+    調べると 9434 の更新そのものは本物だった（9/10終値241.8円・高値まで0.33%＝52週高値242.6円、
+    9/11のザラ場高値245.7円で更新）。間違っていたのは横に書いてある数字のほうで、
+    「52週高値ライン:245.2円（2026-09-11の高値）／ラインまで:更新済み（乖離0%）」と、
+    当日の値段を当日と比べた無意味な表示になっていた。ここで戻り防止をかける。
+    """
+    import dataclasses
+
+    from intraday_high_alert import (
+        _dist_text,
+        _format_alert,
+        _last_bar_facts,
+        _prior_high_facts,
+        build_alert,
+        build_html_body,
+        chart_url,
+    )
+
+    days = pd.bdate_range(end="2026-09-11", periods=260)
+    close = pd.Series(200.0, index=days)
+    high = pd.Series(200.5, index=days)
+    peak = pd.Timestamp("2026-08-26")
+    close.loc[peak], high.loc[peak] = 241.0, 242.6
+    for day, c, h in (
+        ("2026-09-10", 241.8, 242.1),
+        ("2026-09-11", 245.2, 245.7),
+    ):
+        stamp = pd.Timestamp(day)
+        close.loc[stamp], high.loc[stamp] = c, h
+    history = pd.DataFrame(
+        {"Close": close, "High": high, "Low": close - 1, "Open": close, "Volume": 30_000_000.0}
+    )
+
+    prior = _prior_high_facts(history)
+    assert prior["prior_high_52w"] == 242.6
+    assert prior["prior_high_52w_date"] == "2026-08-26"
+
+    facts = _last_bar_facts(history)
+    assert facts["today_high"] == 245.7 and facts["bar_date"] == "2026-09-11"
+
+    indicators = {
+        "current_price": 245.2,
+        "high_52w": 245.2,          # 当日を含んだ値（これをラインに使ってはいけない）
+        "dist_52w_high_pct": 0.0,
+        "turnover_20d": 16_020_000_000.0,
+        "volume_ratio_5d_20d": 0.98,
+    }
+    high_info = {
+        "high_type": "52W_NEW_HIGH", "high_price": 245.7,
+        "high_date": "2026-09-11", "dist_to_high_pct": 0.2,
+    } | facts | prior
+    alert = dataclasses.replace(
+        build_alert("9434", "ソフトバンク", indicators, high_info), earnings_date="2026-11-05"
+    )
+
+    # ラインは当日を除いた高値。当日の値段ではない。
+    assert alert.line_price == 242.6, alert.line_price
+    assert alert.line_date == "2026-08-26", alert.line_date
+    assert alert.break_excess_pct == 1.28, alert.break_excess_pct
+
+    body = "\n".join(_format_alert(alert))
+    assert "52週高値ライン:242.6円（2026-08-26の高値）" in body, body
+    assert "本日245.7円まで +1.28% 上抜け" in body, body
+    assert "245.2円（2026-09-11の高値）" not in body, body
+    assert "乖離0%" not in body, body
+    # チャートは1タップで開けること
+    assert f"📈 チャート:{chart_url('9434')}" in body, body
+    assert "finance.yahoo.co.jp/quote/9434.T/chart" in body
+
+    html = build_html_body([alert])
+    assert 'class="chart"' in html and "9434.T/chart" in html
+    assert "6ヶ月チャートを見る" in html
+
+    # 接近（まだ超えていない）銘柄の書き方は今までどおり
+    near = build_alert(
+        "9434", "ソフトバンク",
+        dict(indicators, current_price=241.8, high_52w=242.6, dist_52w_high_pct=0.33),
+        {"high_type": "52W_NEAR_HIGH", "high_price": 242.6,
+         "high_date": "2026-08-26", "dist_to_high_pct": 0.33} | facts | prior,
+    )
+    assert not near.is_break
+    assert _dist_text(near) == "ラインまで:あと0.3%"
+    assert near.line_price == 242.6
+
+    print("self-test: ザラ場アラートの高値ライン OK")
 
 
 if __name__ == "__main__":
