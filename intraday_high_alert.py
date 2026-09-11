@@ -182,6 +182,7 @@ class Alert:
     earnings_date: str = "未取得"    # 決算予定日（7営業日以内なら警告付き）
     # fix45(2026-09-04): 「なぜ更新済みなのか」を読んだ人が検算できるようにする。
     line_date: str = ""             # 高値ラインがいつの高値か（YYYY-MM-DD）
+    break_excess_pct: float = 0.0   # ラインを何%上抜けたか（更新・ブレイク時のみ）
     today_high: float = 0.0         # 当日ザラ場の高値（0は未取得）
     bar_date: str = ""              # 使った価格データの日付（前日ならデータ遅れ）
     # fix46(2026-09-04): 直近高値は「いったん超えたらずっとブレイク」なので、
@@ -310,6 +311,55 @@ def _last_bar_facts(history) -> dict[str, object]:
         return {}
 
 
+def chart_url(code: str) -> str:
+    """6ヶ月日足チャート（Yahoo!ファイナンス）。noteの記事と同じURLの形にそろえる。"""
+    return (
+        f"https://finance.yahoo.co.jp/quote/{code}.T/chart"
+        "?frm=dly&trm=6m&scl=stndrd&styl=cndl&evnts=volume"
+        "&ovrIndctr=sma%2Cmma%2Clma&addIndctr=&compare="
+    )
+
+
+def _prior_high_facts(history) -> dict[str, object]:
+    """当日を除いた高値（High）と、その日付。52週ぶんと60日ぶん。
+
+    fix61(2026-09-11): 高重さんの指摘「リアルタイムメールでソフトバンクが出てる、間違い」。
+    調べたら、メールの「52週高値ライン」が当日を含んだ値だった。
+    そのため更新した銘柄はラインが現在値と同じになり、全件が
+    「52週高値ライン:245.2円（2026-09-11の高値）／ラインまで:更新済み（乖離0%）」となって、
+    「何の値段を抜いたのか」が読んだ人にまったく分からなかった。
+    当日を除いた高値をここで出し、ラインに使う。取れなければ空（捏造しない）。
+    """
+    try:
+        import pandas as _pd
+
+        if history is None or getattr(history, "empty", True):
+            return {}
+        if "High" in history.columns:
+            series = history["High"].astype(float)
+        elif "Close" in history.columns:
+            series = history["Close"].astype(float)
+        else:
+            return {}
+
+        out: dict[str, object] = {}
+        for key, bars in (("52w", 253), ("60d", 61)):
+            window = series.tail(bars)
+            prior = window.iloc[:-1]
+            if prior.empty:
+                continue
+            peak = float(prior.max())
+            if peak <= 0:
+                continue
+            hits = prior.reset_index(drop=True).eq(peak)
+            last_pos = int(hits[hits].index[-1])
+            out[f"prior_high_{key}"] = round(peak, 1)
+            out[f"prior_high_{key}_date"] = _pd.Timestamp(prior.index[last_pos]).date().isoformat()
+        return out
+    except Exception:
+        return {}
+
+
 def build_alert(
     code: str,
     name: str,
@@ -341,6 +391,22 @@ def build_alert(
     if is_break:
         dist_pct = 0.0
 
+    # fix61(2026-09-11): 更新・ブレイクのときのラインは「当日を除いた高値」にする。
+    # 当日を含んだ値だと、ラインが現在値と同じになって何も伝わらない。
+    # 接近（まだ超えていない）銘柄のラインは今までどおり（すでに当日を含まない）。
+    prior_key = "prior_high_52w" if high_type in FIFTYTWO_HIGH_TYPES else "prior_high_60d"
+    prior_line = _to_float(high_info.get(prior_key))
+    break_excess_pct = 0.0
+    if is_break and high_type != "SWING_HIGH_BREAK" and prior_line > 0:
+        line_price = round(prior_line, 1)
+        prior_date = str(high_info.get(f"{prior_key}_date") or "").strip()
+        if prior_date:
+            high_info = dict(high_info) | {"high_date": prior_date}
+    if is_break and line_price > 0:
+        peak = _to_float(high_info.get("today_high")) or current
+        if peak > 0:
+            break_excess_pct = round((peak - line_price) / line_price * 100, 2)
+
     volume_ratio = round(float(indicators.get("volume_ratio_5d_20d", 0) or 0), 2)
     reason = _build_reason(alert_type, line_label, dist_pct, is_break, volume_ratio, turnover)
 
@@ -370,6 +436,7 @@ def build_alert(
         turnover_20d=int(turnover),
         reason=reason,
         line_date=line_date,
+        break_excess_pct=break_excess_pct,
         today_high=today_high,
         bar_date=bar_date,
         is_fresh_break=is_fresh_break,
@@ -520,19 +587,30 @@ def _price_text(alert: Alert) -> str:
     return head
 
 
+def _dist_text(alert: Alert) -> str:
+    """ラインまでの距離。更新・ブレイク済みなら「何円まで何%抜いたか」を出す。
+
+    fix61(2026-09-11): 「更新済み（乖離0%）」だけでは、何を抜いたのか分からなかった。
+    """
+    if not alert.is_break:
+        return f"ラインまで:あと{alert.dist_pct:.1f}%"
+    if alert.today_high > 0 and alert.break_excess_pct > 0:
+        return f"本日{alert.today_high:,.1f}円まで +{alert.break_excess_pct:.2f}% 上抜け"
+    return "更新済み"
+
+
 def _format_alert(alert: Alert) -> list[str]:
-    if alert.is_break:
-        dist_text = "更新済み（乖離0%）"
-    else:
-        dist_text = f"あと{alert.dist_pct:.1f}%"
+    dist_text = _dist_text(alert)
     lines = [
         f"{alert.code} {alert.name}",
         f"  {_price_text(alert)} / 種別:{alert.alert_type}",
         f"  {alert.line_label}ライン:{alert.line_price:,.1f}円{_line_suffix(alert)}"
-        f" / ラインまで:{dist_text}{_break_text(alert)}",
+        f" / {dist_text}{_break_text(alert)}",
         f"  出来高比:{alert.volume_ratio:.2f}倍 / 売買代金:{alert.turnover_20d / 100_000_000:.1f}億円",
         f"  🗓 決算予定日:{alert.earnings_date}",
     ]
+    # fix61(2026-09-11): 高重さんの指示「チャートをワンクリックで出せるように」。
+    lines.append(f"  📈 チャート:{chart_url(alert.code)}")
     url = openwork_search_url(alert.name)
     if url:
         lines.append(f"  👥 OpenWork:{url}")
@@ -654,7 +732,7 @@ def scan(
                 high_info = dict(high_info) | touch
             # fix45(2026-09-04): 最後のバーの高値と日付を添える。
             #   データが前日のままなら bar_date が前日になり、メールで気づける。
-            high_info = dict(high_info) | _last_bar_facts(history)
+            high_info = dict(high_info) | _last_bar_facts(history) | _prior_high_facts(history)
             alert = build_alert(stock.code, stock.name, indicators, high_info)
             if alert is None:
                 continue
@@ -699,20 +777,26 @@ ALERT_MAIL_CSS = (
     ".row{font-size:13px;color:#333333;line-height:1.7;}"
     ".row a{color:#1d4ed8;}"
     ".dis{margin-top:16px;font-size:12px;color:#6b7280;}"
+    # fix61(2026-09-11): チャートは指で押せる大きさにする（iPhoneで押しにくかった）。
+    ".chart{display:inline-block;margin:6px 0 2px;padding:10px 14px;background:#1f745f;"
+    "color:#ffffff !important;text-decoration:none;font-weight:700;font-size:14px;"
+    "border-radius:8px;}"
 )
 
 
 def _alert_html_card(alert: Alert) -> str:
-    if alert.is_break:
-        dist_text = "更新済み（乖離0%）"
-    else:
-        dist_text = f"あと{alert.dist_pct:.1f}%"
+    dist_text = _dist_text(alert)
     rows = [
         f"{escape(_price_text(alert))} / 種別:{escape(alert.alert_type)}",
-        f"{escape(alert.line_label)}ライン:{alert.line_price:,.1f}円{escape(_line_suffix(alert))} / ラインまで:{dist_text}{escape(_break_text(alert))}",
+        f"{escape(alert.line_label)}ライン:{alert.line_price:,.1f}円{escape(_line_suffix(alert))} / {dist_text}{escape(_break_text(alert))}",
         f"出来高比:{alert.volume_ratio:.2f}倍 / 売買代金:{alert.turnover_20d / 100_000_000:.1f}億円",
         f"🗓 決算予定日:{escape(alert.earnings_date)}",
     ]
+    # fix61(2026-09-11): チャートを1タップで開けるようにする。ボタンの形にして押しやすくする。
+    rows.append(
+        f'<a class="chart" href="{escape(chart_url(alert.code))}">'
+        "📈 6ヶ月チャートを見る</a>"
+    )
     url = openwork_search_url(alert.name)
     if url:
         rows.append(f'👥 <a href="{escape(url)}">OpenWorkで社員クチコミを見る</a>')
