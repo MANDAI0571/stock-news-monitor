@@ -46,6 +46,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from chart_links import JP_COMPARE_LABEL, compare_chart_url
 from scanner.highs import classify_high_profile
 from scanner.indicators import calculate_indicators
 from scanner.prices import (
@@ -611,6 +612,9 @@ def _format_alert(alert: Alert) -> list[str]:
     ]
     # fix61(2026-09-11): 高重さんの指示「チャートをワンクリックで出せるように」。
     lines.append(f"  📈 チャート:{chart_url(alert.code)}")
+    # fix62(2026-09-13): 高重さんの指示「日経平均と同じ画面で重ねて見たい」。
+    #   このURLは実際に開いて「7011.T／日経平均／TOPIX」の3本が出ることを確認した。
+    lines.append(f"  📊 {JP_COMPARE_LABEL}:{compare_chart_url(alert.code)}")
     url = openwork_search_url(alert.name)
     if url:
         lines.append(f"  👥 OpenWork:{url}")
@@ -781,6 +785,8 @@ ALERT_MAIL_CSS = (
     ".chart{display:inline-block;margin:6px 0 2px;padding:10px 14px;background:#1f745f;"
     "color:#ffffff !important;text-decoration:none;font-weight:700;font-size:14px;"
     "border-radius:8px;}"
+    # fix62(2026-09-13): 比較チャートのボタンは色を変えて、株価チャートと取り違えないようにする。
+    ".cmp{background:#1d4ed8;}"
 )
 
 
@@ -796,6 +802,11 @@ def _alert_html_card(alert: Alert) -> str:
     rows.append(
         f'<a class="chart" href="{escape(chart_url(alert.code))}">'
         "📈 6ヶ月チャートを見る</a>"
+    )
+    # fix62(2026-09-13): 日経平均・TOPIXと重ねたチャートも1タップで開けるようにする。
+    rows.append(
+        f'<a class="chart cmp" href="{escape(compare_chart_url(alert.code))}">'
+        f"📊 {JP_COMPARE_LABEL}</a>"
     )
     url = openwork_search_url(alert.name)
     if url:

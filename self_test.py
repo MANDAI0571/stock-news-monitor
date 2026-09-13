@@ -156,7 +156,115 @@ def main() -> None:
     _test_intraday_openwork_link_only()
     _test_note_split_for_mobile()
     _test_note_split_passes_quality_gate()
+    _test_compare_chart_links()
     print("self-test: OK")
+
+
+def _test_compare_chart_links() -> None:
+    """指数と重ねた比較チャートのリンク（2026-09-13 高重さんの指示）。
+
+    URLの形は推測ではなく、実際に Yahoo!ファイナンスを開いて確かめたもの。
+      ・日本株 compare=998407.O%2C998405.T → 「銘柄／日経平均／TOPIX」の3本になる
+      ・米株   finance.yahoo.com は比較の指定を無視したので、比較URLだけ
+               Yahoo!ファイナンス（日本）の米国株ページ（compare=%5EGSPC）を使う
+    比較チャートは Yahoo 側が自動で線＋パフォーマンス表示にするため、
+    ローソク足・移動平均の指定は付けない。
+    """
+    import dataclasses
+
+    import note_draft_us as nd
+    from chart_links import (
+        JP_COMPARE_LABEL,
+        US_COMPARE_LABEL,
+        compare_chart_url,
+        compare_chart_url_us,
+    )
+    from intraday_high_alert import _format_alert, build_alert, build_html_body
+
+    assert compare_chart_url("7011") == (
+        "https://finance.yahoo.co.jp/quote/7011.T/chart"
+        "?frm=dly&trm=6m&compare=998407.O%2C998405.T"
+    )
+    # CSV由来の "7011.0" でも銘柄コードが崩れないこと
+    assert compare_chart_url("7011.0") == compare_chart_url("7011")
+    assert compare_chart_url_us("nvda") == (
+        "https://finance.yahoo.co.jp/quote/NVDA/chart?frm=dly&trm=6m&compare=%5EGSPC"
+    )
+    for url in (compare_chart_url("7011"), compare_chart_url_us("NVDA")):
+        assert "styl=" not in url and "ovrIndctr=" not in url, url
+
+    # 1) ザラ場リアルタイムアラート: チャート行のすぐ下に比較行があること
+    indicators = {
+        "current_price": 245.2,
+        "high_52w": 245.2,
+        "dist_52w_high_pct": 0.0,
+        "turnover_20d": 16_020_000_000.0,
+        "volume_ratio_5d_20d": 0.98,
+    }
+    high_info = {
+        "high_type": "52W_NEW_HIGH",
+        "high_price": 245.7,
+        "high_date": "2026-09-11",
+        "dist_to_high_pct": 0.2,
+        "today_high": 245.7,
+        "bar_date": "2026-09-11",
+        "prior_high_52w": 242.6,
+        "prior_high_52w_date": "2026-08-26",
+    }
+    alert = dataclasses.replace(
+        build_alert("9434", "ソフトバンク", indicators, high_info), earnings_date="2026-11-05"
+    )
+    body_lines = _format_alert(alert)
+    compare_line = f"  📊 {JP_COMPARE_LABEL}:{compare_chart_url('9434')}"
+    assert compare_line in body_lines, body_lines
+    chart_index = next(i for i, line in enumerate(body_lines) if "📈 チャート:" in line)
+    assert body_lines[chart_index + 1] == compare_line, body_lines
+
+    html = build_html_body([alert])
+    assert 'class="chart cmp"' in html and JP_COMPARE_LABEL in html
+    assert "998407.O" in html and "998405.T" in html
+
+    # 2) 米株の記事: 52週新高値と押し目の両方に入ること
+    us_highs = pd.DataFrame([
+        {"ticker": "NVDA", "code": "NVDA", "name": "NVIDIA", "market": "S&P500",
+         "sector": "Information Technology", "current_price": "182.45", "change_pct": "1.82",
+         "dist_to_high_pct": "2.03", "turnover_20d": "24500000000",
+         "volume_ratio_5d_20d": "1.34", "high_type": "52W_NEW_HIGH",
+         "earnings_date": "2026-11-18", "note_flags": ""},
+    ])
+    us_pullback = pd.DataFrame([
+        {"ticker": "AAPL", "code": "AAPL", "name": "Apple", "sector": "Information Technology",
+         "current_price": "245.30", "change_pct": "-1.10", "turnover_20d": "11200000000",
+         "volume_ratio_5d_20d": "0.95", "retest_52w": "False",
+         "ma25_touch": "True", "ma200_touch": "False", "ma240_touch": "False"},
+        {"ticker": "KO", "code": "KO", "name": "Coca-Cola", "sector": "Consumer Staples",
+         "current_price": "72.15", "change_pct": "-0.40", "turnover_20d": "820000000",
+         "volume_ratio_5d_20d": "1.02", "retest_52w": "True",
+         "ma25_touch": "False", "ma200_touch": "False", "ma240_touch": "False"},
+    ])
+    highs_md = nd.build_us_highs_note(us_highs, "2026-09-04")
+    pullback_md = nd.build_us_pullback_note(us_pullback, "2026-09-04")
+    assert f"📊 {US_COMPARE_LABEL}: {compare_chart_url_us('NVDA')}" in highs_md, highs_md
+    for ticker in ("AAPL", "KO"):
+        assert compare_chart_url_us(ticker) in pullback_md, ticker
+    # note は [文言](URL) を押せないので、比較リンクも裸のURLで書くこと
+    for text in (highs_md, pullback_md):
+        assert "](http" not in text
+
+    # 3) 日本株の記事: チャート行を足したら比較行も足す（片方だけ増えるのを防ぐ）
+    source = Path(__file__).resolve().parent / "note_draft.py"
+    note_lines = source.read_text(encoding="utf-8").split("\n")
+    chart_lines = [
+        i
+        for i, line in enumerate(note_lines)
+        if "📈 チャート: {_chart_url(" in line or "📈 6ヶ月日足チャート" in line
+    ]
+    assert len(chart_lines) == 3, chart_lines
+    for index in chart_lines:
+        following = "\n".join(note_lines[index : index + 8])
+        assert "📊 " in following and "compare_chart_url(" in following, following
+
+    print("self-test: 指数との比較チャートのリンク OK")
 
 
 def _test_us_calendar() -> None:

@@ -12,6 +12,7 @@ from urllib.parse import quote
 
 import pandas as pd
 
+from chart_links import JP_COMPARE_LABEL, compare_chart_url
 from scanner.highs import build_high_sections_markdown
 from scanner.openwork import add_openwork_scores, format_openwork_score
 from scanner.prices import fetch_next_earnings_date
@@ -958,6 +959,8 @@ def build_stock_cards(df: pd.DataFrame, max_rows: int | None = None) -> list[str
         if company_parts:
             lines.append("🏢 " + " / ".join(company_parts))
         lines.append(f"📈 チャート: {_chart_url(code)}")
+        # fix62(2026-09-13): 日経平均・TOPIXと重ねたチャートを1行足す（高重さんの指示）。
+        lines.append(f"📊 {JP_COMPARE_LABEL}: {compare_chart_url(code)}")
         openwork_url = _openwork_url(name)
         if openwork_url:
             lines.append(f"👥 OpenWork: {openwork_url}")
@@ -1380,6 +1383,8 @@ def _buy_reason_lines(open_rows: pd.DataFrame, orders: pd.DataFrame) -> list[str
             f"{_val(row, 'execution_date')} の寄付きで買付"
         )
         lines.append(f"　📈 チャート: {_chart_url(code)}")
+        # fix62(2026-09-13): 日経平均・TOPIXと重ねたチャートを1行足す（高重さんの指示）。
+        lines.append(f"　📊 {JP_COMPARE_LABEL}: {compare_chart_url(code)}")
         # fix48(2026-09-04): 3本すべてでOpenWorkも押せるようにする。
         #   評価値は載せない（規約）。検索リンクだけ。
         _ow = _openwork_url(_val(row, "name"))
@@ -2179,6 +2184,8 @@ def _stock_detail_block(row, rank: int, ref, ow_cache, is_new: bool) -> list[str
         f"📈 6ヶ月日足チャート（Yahoo!ファイナンス）: "
         f"https://finance.yahoo.co.jp/quote/{code}.T/chart?frm=dly&trm=6m&scl=stndrd&styl=cndl&evnts=volume&ovrIndctr=sma%2Cmma%2Clma&addIndctr=&compare="
     )
+    # fix62(2026-09-13): 日経平均・TOPIXと重ねたチャートを1行足す（高重さんの指示）。
+    lines.append(f"📊 {JP_COMPARE_LABEL}: {compare_chart_url(code)}")
     # fix48(2026-09-04): 52週新高値にもOpenWorkの検索リンクを置く。
     #   fix44 で「取得できず」を消した結果、ここに何も無くなっていた。
     #   評価値は載せない（規約）。読んだ人が自分で見に行くための入口だけ。

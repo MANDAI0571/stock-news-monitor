@@ -22,6 +22,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from chart_links import US_COMPARE_LABEL, compare_chart_url_us
+
 OUTPUT_DIR = Path(__file__).resolve().parent / "outputs"
 
 US_TITLES = {
@@ -181,6 +183,9 @@ def _detail_lines(row: pd.Series, rank: int) -> list[str]:
         add("フラグ：", flags)
     lines.append("")
     lines.append(f"📈 チャート: {chart_url(ticker)}")
+    # fix62(2026-09-13): S&P500と重ねたチャートを1行足す（高重さんの指示）。
+    #   finance.yahoo.com は比較の指定を無視したので、比較URLだけ Yahoo!ファイナンス（日本）を使う。
+    lines.append(f"📊 {US_COMPARE_LABEL}: {compare_chart_url_us(ticker)}")
     lines.append("")
     return lines
 
@@ -282,7 +287,13 @@ def build_us_pullback_note(pullback: pd.DataFrame, target_date: str) -> str:
         lines += ["- 該当なし", ""]
     else:
         for _, row in _sort_by_turnover(retest).head(PULLBACK_CARD_CAP).iterrows():
-            lines += _stock_lines(row) + [f"　📈 チャート: {chart_url(_text(row, 'ticker'))}", ""]
+            ticker = _text(row, "ticker")
+            lines += _stock_lines(row) + [
+                f"　📈 チャート: {chart_url(ticker)}",
+                # fix62(2026-09-13): S&P500と重ねたチャートを1行足す。
+                f"　📊 {US_COMPARE_LABEL}: {compare_chart_url_us(ticker)}",
+                "",
+            ]
 
     # 同じ銘柄が複数の線に触れていても、最初の分類で1回だけ載せる。
     touched: dict[str, list[str]] = {}
@@ -307,7 +318,12 @@ def build_us_pullback_note(pullback: pd.DataFrame, target_date: str) -> str:
             stock = _stock_lines(row)
             if also:
                 stock[0] += f"　🔁 {'・'.join(also)}にも同時タッチ"
-            lines += stock + [f"　📈 チャート: {chart_url(ticker)}", ""]
+            lines += stock + [
+                f"　📈 チャート: {chart_url(ticker)}",
+                # fix62(2026-09-13): S&P500と重ねたチャートを1行足す。
+                f"　📊 {US_COMPARE_LABEL}: {compare_chart_url_us(ticker)}",
+                "",
+            ]
 
     lines += DISCLAIMER_LINES
     return "\n".join(lines) + "\n"
