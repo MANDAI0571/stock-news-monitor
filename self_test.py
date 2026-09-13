@@ -25,13 +25,78 @@ from validate_note_artifact import validate_artifact
 import trade_verification as tv
 
 
+def _looks_like_upstream_outage(error: BaseException) -> bool:
+    """外部サイトに「届かなかった」だけかどうか。
+
+    fix62(2026-09-13): 届かないだけなら飛ばしてよい。
+    404・403・中身が変わった、は飛ばしてはいけない（JPXが .xls → .xlsx に
+    変えた事故を黙って見逃さないため）。
+    """
+    # 例外は包み直されることがある（例: JPXのダウンロード失敗 → 「取得できません」）。
+    # 外側のメッセージだけ見ると理由が消えるので、原因をたどって全部つなげて見る。
+    parts: list[str] = []
+    seen: set[int] = set()
+    current: BaseException | None = error
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        parts.append(f"{type(current).__name__}: {current}")
+        current = current.__cause__ or current.__context__
+    text = " || ".join(parts)
+    permanent = (
+        "404", "Not Found", "410", "Gone",
+        "403 Client", "401", "Unauthorized",
+        "列", "column", "parse", "Parse", "Excel", "empty",
+    )
+    if any(word in text for word in permanent):
+        return False
+    transient = (
+        "Max retries exceeded", "ConnectionError", "ConnectTimeout",
+        "ReadTimeout", "Timeout", "timed out", "Connection aborted",
+        "Connection refused", "Temporary failure", "Name or service not known",
+        "Tunnel connection failed", "ProxyError", "RemoteDisconnected",
+        "ServerDisconnected", "SSLError",
+    )
+    return any(word in text for word in transient)
+
+
+def _run_or_skip_on_outage(label: str, func) -> None:
+    """外部サイトが要るテストを走らせる。届かないだけなら1回やり直して、それでも駄目なら飛ばす。
+
+    fix62(2026-09-13): Trade Verification と screening は self_test.py を丸ごと
+    通していて、JPX が一瞬落ちただけでその日のシグナル記録が失われていた。
+    飛ばしたときは必ず WARNING を出す（黙って通さない）。
+    """
+    import time
+
+    for attempt in (1, 2):
+        try:
+            func()
+            return
+        except BaseException as error:  # noqa: BLE001
+            if not _looks_like_upstream_outage(error):
+                raise
+            if attempt == 1:
+                print(
+                    f"WARNING: {label} は外部サイトに届かなかった。15秒待ってやり直す。",
+                    flush=True,
+                )
+                time.sleep(15)
+                continue
+            print(
+                f"WARNING: {label} を飛ばした（外部サイトに届かない）。"
+                f"コードの確認はできていません: {type(error).__name__}: {str(error)[:200]}",
+                flush=True,
+            )
+            return
+
+
 def main() -> None:
     _test_indicators_and_scoring()
     _test_discipline_normal_and_stop()
     _test_market_regime_local_fallback()
     _test_market_snapshot_artifact_schema()
     _test_note_artifact_validator_contract()
-    _test_jpx_universe_cache()
+    _run_or_skip_on_outage("JPXキャッシュのテスト", _test_jpx_universe_cache)
     _test_gmail_body()
     _test_openwork_display_only()
     _test_note_autosave_and_mail_body()
@@ -53,18 +118,21 @@ def main() -> None:
     _test_openwork_manual_reflection_contract()
     _test_previous_52w_high_line_retest()
     _test_duke_old_high_support()
-    _test_9256_limit50_excluded_but_full_universe_included()
+    _run_or_skip_on_outage(
+        "JPX銘柄一覧のテスト", _test_9256_limit50_excluded_but_full_universe_included
+    )
     _test_swing_high_break_9256_style()
     _test_journal_and_pattern_learning()
     _test_intraday_watchlist()
     _test_intraday_line_is_prior_high()
+    _test_upstream_outage_judgement()
     _test_intraday_cloud_workflow_contract()
     _test_cloud_digest_mail()
     _test_note_mail_copy_and_preview()
     _test_note_copy_mails()
-    _test_us_screening_pipeline()
+    _run_or_skip_on_outage("米株スクリーナーのテスト", _test_us_screening_pipeline)
     _test_us_scoring()
-    _test_us_universe_build()
+    _run_or_skip_on_outage("米株の銘柄一覧のテスト", _test_us_universe_build)
     _test_us_calendar()
     _test_us_note_draft()
     _test_us_portfolio()
@@ -3693,6 +3761,43 @@ def _test_intraday_line_is_prior_high() -> None:
     assert near.line_price == 242.6
 
     print("self-test: ザラ場アラートの高値ライン OK")
+
+
+def _test_upstream_outage_judgement() -> None:
+    """「飛ばしてよい通信エラー」と「飛ばしてはいけない事故」の切り分け。
+
+    fix62(2026-09-13): Trade Verification が外部サイトの一瞬の不調で落ち、
+    その日のシグナル記録と成績レポートが失われていた（9/3・9/9・9/10・9/11）。
+    届かないだけなら飛ばす。ただし URL が変わった・中身が変わった場合は必ず落とす
+    （2026-09 に JPX が .xls → .xlsx に変えた事故を黙って見逃さないため）。
+    """
+    from self_test import _looks_like_upstream_outage as judge
+
+    # 届かないだけ → 飛ばしてよい
+    assert judge(RuntimeError("Max retries exceeded with url: /data_j.xlsx"))
+    assert judge(RuntimeError("HTTPSConnectionPool(host='www.jpx.co.jp'): Read timed out"))
+    assert judge(RuntimeError("Tunnel connection failed: 403 Forbidden"))  # プロキシが繋げない
+
+    # 事故 → 落とす
+    assert not judge(RuntimeError("404 Client Error: Not Found for url: .../data_j.xls"))
+    assert not judge(RuntimeError("403 Client Error: Forbidden for url: https://www.jpx.co.jp/"))
+    assert not judge(RuntimeError("列が足りません"))
+    assert not judge(AssertionError("9256 が含まれていない"))
+
+    # 包み直された形（本番で実際に出る形）でも中身を見ること
+    def wrapped(inner_message: str) -> BaseException:
+        try:
+            try:
+                raise RuntimeError(inner_message)
+            except RuntimeError as inner:
+                raise RuntimeError("JPX銘柄一覧を取得できません。正常なキャッシュが存在しないため中断します。") from inner
+        except RuntimeError as outer:
+            return outer
+
+    assert judge(wrapped("Max retries exceeded with url: /data_j.xlsx"))
+    assert not judge(wrapped("404 Client Error: Not Found for url: .../data_j.xls"))
+
+    print("self-test: 通信エラーの切り分け OK")
 
 
 if __name__ == "__main__":
