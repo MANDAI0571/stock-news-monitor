@@ -3,9 +3,9 @@
 2026-09-13: 高重さんの指示「日経平均のチャートと個別銘柄のチャートを同じ画面で重ねて見たい」。
 
 compare= に何を入れるかは推測せず、実際にブラウザで開いて確かめた（2026-09-13）。
-  ・日本株 https://finance.yahoo.co.jp/quote/7011.T/chart?frm=dly&trm=6m&compare=998407.O%2C998405.T
-      → 凡例が「7011.T ／ 日経平均 ／ TOPIX」の3本になる。指数は「,」でつなげば同時に重なる。
-      日経平均=998407.O、TOPIX=998405.T（ページの比較チェックボックスを押して出たURLで確認）。
+  ・日本株 https://finance.yahoo.co.jp/quote/7011.T/chart?frm=dly&trm=6m&compare=998407.O
+      → ページの「日経平均」が選択済みになり、個別銘柄と日経平均が重なることを確認。
+      日経平均=998407.O。依頼にない指数は足さない。
   ・米株  finance.yahoo.com は comparisons= を無視した（AAPLの1本のままだった）。
       Yahoo!ファイナンス（日本）の米国株ページなら compare=%5EGSPC で S&P500 と重なる
       （AAPL と JKHY で確認）。そのため比較URLだけ日本のドメインを使う。
@@ -20,9 +20,9 @@ compare= に何を入れるかは推測せず、実際にブラウザで開い�
 
 from __future__ import annotations
 
-# 日経平均とTOPIX。URLでは「,」が %2C になる。
-JP_COMPARE_CODES = "998407.O%2C998405.T"
-JP_COMPARE_LABEL = "日経平均・TOPIXと比較"
+# 日経平均。依頼にない指数は足さない。
+JP_COMPARE_CODES = "998407.O"
+JP_COMPARE_LABEL = "日経平均と比較"
 
 # S&P500（^GSPC）。URLでは「^」が %5E になる。
 US_COMPARE_CODES = "%5EGSPC"
@@ -36,7 +36,7 @@ def _clean_code(code: object) -> str:
 
 
 def compare_chart_url(code: object) -> str:
-    """日本株を日経平均・TOPIXと重ねた6ヶ月チャート。"""
+    """日本株を日経平均と重ねた6ヶ月チャート。"""
     return (
         f"https://finance.yahoo.co.jp/quote/{_clean_code(code)}.T/chart"
         f"?frm=dly&trm=6m&compare={JP_COMPARE_CODES}"

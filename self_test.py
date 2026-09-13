@@ -249,7 +249,7 @@ def _test_compare_chart_links() -> None:
     """指数と重ねた比較チャートのリンク（2026-09-13 高重さんの指示）。
 
     URLの形は推測ではなく、実際に Yahoo!ファイナンスを開いて確かめたもの。
-      ・日本株 compare=998407.O%2C998405.T → 「銘柄／日経平均／TOPIX」の3本になる
+      ・日本株 compare=998407.O → 「銘柄／日経平均」の2本になる
       ・米株   finance.yahoo.com は比較の指定を無視したので、比較URLだけ
                Yahoo!ファイナンス（日本）の米国株ページ（compare=%5EGSPC）を使う
     比較チャートは Yahoo 側が自動で線＋パフォーマンス表示にするため、
@@ -268,7 +268,7 @@ def _test_compare_chart_links() -> None:
 
     assert compare_chart_url("7011") == (
         "https://finance.yahoo.co.jp/quote/7011.T/chart"
-        "?frm=dly&trm=6m&compare=998407.O%2C998405.T"
+        "?frm=dly&trm=6m&compare=998407.O"
     )
     # CSV由来の "7011.0" でも銘柄コードが崩れないこと
     assert compare_chart_url("7011.0") == compare_chart_url("7011")
@@ -307,7 +307,7 @@ def _test_compare_chart_links() -> None:
 
     html = build_html_body([alert])
     assert 'class="chart cmp"' in html and JP_COMPARE_LABEL in html
-    assert "998407.O" in html and "998405.T" in html
+    assert "998407.O" in html and "998405.T" not in html
 
     # 2) 米株の記事: 52週新高値と押し目の両方に入ること
     us_highs = pd.DataFrame([

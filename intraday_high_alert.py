@@ -613,7 +613,7 @@ def _format_alert(alert: Alert) -> list[str]:
     # fix61(2026-09-11): 高重さんの指示「チャートをワンクリックで出せるように」。
     lines.append(f"  📈 チャート:{chart_url(alert.code)}")
     # fix62(2026-09-13): 高重さんの指示「日経平均と同じ画面で重ねて見たい」。
-    #   このURLは実際に開いて「7011.T／日経平均／TOPIX」の3本が出ることを確認した。
+    #   このURLは実際に開いて「日経平均」が選択済みになることを確認した。
     lines.append(f"  📊 {JP_COMPARE_LABEL}:{compare_chart_url(alert.code)}")
     url = openwork_search_url(alert.name)
     if url:
@@ -803,7 +803,7 @@ def _alert_html_card(alert: Alert) -> str:
         f'<a class="chart" href="{escape(chart_url(alert.code))}">'
         "📈 6ヶ月チャートを見る</a>"
     )
-    # fix62(2026-09-13): 日経平均・TOPIXと重ねたチャートも1タップで開けるようにする。
+    # fix62(2026-09-13): 日経平均と重ねたチャートも1タップで開けるようにする。
     rows.append(
         f'<a class="chart cmp" href="{escape(compare_chart_url(alert.code))}">'
         f"📊 {JP_COMPARE_LABEL}</a>"
