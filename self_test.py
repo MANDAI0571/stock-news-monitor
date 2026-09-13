@@ -158,7 +158,91 @@ def main() -> None:
     _test_note_split_for_mobile()
     _test_note_split_passes_quality_gate()
     _test_compare_chart_links()
+    _test_relative_position()
     print("self-test: OK")
+
+
+def _test_relative_position() -> None:
+    """指数に対する位置の数字（2026-09-13 高重さんの指示(2)）。
+
+    通信しない純関数なので、合成データだけで数字を最後まで確かめられる。
+    期待値は手で作った系列から出した実数をそのまま置いてある。
+    """
+    from scanner.relative import (
+        FORBIDDEN_WORDS,
+        compute_relative,
+        format_relative_line,
+        relative_line,
+    )
+
+    def _close(actual: float, expected: float, label: str, tol: float = 5e-4) -> None:
+        assert abs(actual - expected) < tol, f"{label}: {actual} != {expected}"
+
+    # ① 指数は横ばい。比率は280本目まで上がって、そこから下げて中値まで戻る系列。
+    #    1年レンジ(直近252本)は下端1.048・上端1.279、最後は1.1635＝ちょうど真ん中。
+    index_flat = [20000.0] * 300
+    ratio = [1.0 + 0.001 * i for i in range(280)]
+    peak = ratio[-1]
+    ratio += [peak - 0.005775 * k for k in range(1, 21)]
+    closes = [r * 20000.0 for r in ratio]
+
+    rel = compute_relative(closes, index_flat)
+    assert rel is not None, "①の系列で数字が出なかった"
+    _close(rel["range_pos_pct"], 50.0, "1年レンジ内の位置")
+    _close(rel["range_low"], 1.048, "レンジ下端")
+    _close(rel["range_high"], 1.279, "レンジ上端")
+    _close(rel["ma25_gap_pct"], -5.413, "25日線からの乖離")
+    _close(rel["ma200_gap_pct"], -2.423, "200日線からの乖離")
+    _close(rel["trend_20d_pct"], -9.030, "20営業日の比率の方向")
+    _close(rel["index_20d_pct"], 0.0, "20営業日の指数の方向")
+    assert rel["bars"] == 300
+
+    line = format_relative_line(rel)
+    assert line.startswith("日経平均に対して："), line
+    assert "1年レンジの下から50%" in line, line
+    assert "25日線 -5.4%" in line and "200日線 -2.4%" in line, line
+    assert "直近20営業日は下向き（-9.0%）" in line, line
+    assert "日経平均自体は横ばい（+0.0%）" in line, line
+
+    # ② 株価は動かず指数だけ上がる＝指数に対しては下向き。レンジ内の位置は下端0%。
+    index_up = [20000.0 + 60.0 * i for i in range(300)]
+    rel2 = compute_relative([2000.0] * 300, index_up)
+    assert rel2 is not None, "②の系列で数字が出なかった"
+    _close(rel2["range_pos_pct"], 0.0, "②の位置")
+    _close(rel2["trend_20d_pct"], -3.163, "②の比率の方向")
+    _close(rel2["index_20d_pct"], 3.266, "②の指数の方向")
+    line2 = format_relative_line(rel2)
+    assert "直近20営業日は下向き（-3.2%）" in line2, line2
+    assert "日経平均自体は上向き（+3.3%）" in line2, line2
+
+    # ③ 指数の呼び名は差し替えられる（米株は S&P500 に対して、と書けること）。
+    line_us = format_relative_line(rel2, "S&P500")
+    assert line_us.startswith("S&P500に対して："), line_us
+    assert "S&P500自体は上向き" in line_us, line_us
+    assert "日経平均" not in line_us, line_us
+
+    # ④ 出せないときは埋めずに None。呼ぶ側が行ごと落とせるようにする。
+    cases = {
+        "本数が足りない": ([2000.0] * 251, [20000.0 + i for i in range(251)]),
+        "長さが違う": ([2000.0] * 300, [20000.0 + i for i in range(299)]),
+        "レンジが無い": ([2000.0] * 300, [20000.0] * 300),
+        "0が混ざる": ([2000.0] * 299 + [0.0], [20000.0 + i for i in range(300)]),
+        "数でない値": ([2000.0] * 299 + ["未取得"], [20000.0 + i for i in range(300)]),
+    }
+    for label, (a, b) in cases.items():
+        assert compute_relative(a, b) is None, f"{label}: Noneを返すべきなのに数字が出た"
+        assert relative_line(a, b) is None, f"{label}: Noneを返すべきなのに行が出た"
+
+    # ⑤ 断定する言葉と、別の物差し(PER/PBR)を混ぜていないこと。
+    for text in (line, line2, line_us):
+        for word in FORBIDDEN_WORDS:
+            assert word not in text, f"断定/別物差しの語が入っている: {word} / {text}"
+        assert "に対して" in text, text
+
+    # ⑥ 入り口の relative_line() も同じ一行を返すこと。
+    assert relative_line(closes, index_flat) == line
+
+    print("self-test: 指数に対する位置の数字 OK")
 
 
 def _test_compare_chart_links() -> None:
