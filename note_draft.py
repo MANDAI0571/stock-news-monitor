@@ -510,6 +510,8 @@ NOTE4_TITLES = {
     "claude": "Claudeが300万円運用｜本日のAI売買候補",
     "pullback": "52週新高値後の押し目候補｜新高値ライン戻り・25MA・200MA・240MAタッチ銘柄",
     "highs": "52週新高値タッチ・接近銘柄｜本日の高値更新候補",
+    # fix67(2026-09-14): 高重さんの指示で1本増やす。題名の時点で「位置の話」と分かるようにする。
+    "relative": "日経平均に対して1年レンジの下にいる銘柄｜位置だけを機械的に並べたリスト",
 }
 NOTE4_MANIFEST_PATH = OUTPUT_DIR / "note_drafts_manifest.json"
 NOTE4_VALID_REGIMES = ("NORMAL", "CAUTION", "RISK", "STOP")
@@ -2371,6 +2373,174 @@ def build_highs_note(highs: pd.DataFrame, source: Path | None) -> str:
     return _scrub_forbidden_tokens("\n".join(lines))
 
 
+# fix67(2026-09-14): 「日経平均に対して1年レンジの下にいる銘柄」の記事で載せる件数。
+#   表は多めに、詳細は少なめに。長くなりすぎたら build_note4 が分割する。
+RELATIVE_TABLE_ROW_CAP = 30   # 一覧表に載せる行数
+RELATIVE_DETAIL_CAP = 10      # 詳細を書く銘柄数
+# 見出しに「日経平均に対して」を必ず入れる。位置の話だと題名だけで分かるようにするため。
+_RELATIVE_TITLE_SUFFIX = "日経平均に対して1年レンジの下にいる銘柄"
+
+
+def _relative_data_date(relative: pd.DataFrame) -> tuple[pd.DataFrame, object, int]:
+    """fix67(2026-09-14): 基準日がそろっている行だけ残す。日付の違う行は混ぜない。
+
+    比率は「同じ日の個別終値 ÷ 同じ日の日経平均終値」なので、
+    基準日の違う行を1つの表に並べると読む人が比べられない。
+    空っぽのときは「該当なし」の記事として成立させる（前営業日を基準日として返す）。
+    """
+    if relative.empty:
+        return relative.copy(), _prev_jst_business_day(), 0
+    if "data_date" not in relative.columns:
+        raise ValueError("screening_relative に行はあるが data_date 列が無い")
+    parsed = pd.to_datetime(relative["data_date"], errors="coerce").dt.date
+    valid = parsed.dropna()
+    if valid.empty:
+        raise ValueError("screening_relative に行はあるが data_date がすべて欠損／不正")
+    target = max(valid)
+    keep = parsed.eq(target)
+    filtered = relative.loc[keep].copy()
+    excluded = int((~keep).sum())
+    print(
+        f"note_relative_data_date={target.isoformat()} kept={len(filtered)} excluded_mixed_or_missing={excluded}",
+        flush=True,
+    )
+    return filtered, target, excluded
+
+
+def _relative_table(df: pd.DataFrame) -> list[str]:
+    """fix67(2026-09-14): 一覧表。数字が読めない欄は「取得できず」と書き、埋めない。"""
+    lines = [
+        "| # | コード | 銘柄名 | 市場 | 日経平均に対する位置 | 比率の25日線 | 比率の200日線 | 直近20営業日 |",
+        "|---:|---|---|---|---:|---:|---:|---:|",
+    ]
+
+    def _cell(row, key: str, suffix: str, digits: int = 1) -> str:
+        value = _highs_num(row, key)
+        return "取得できず" if value is None else f"{value:+.{digits}f}{suffix}"
+
+    for rank, (_, row) in enumerate(df.iterrows(), start=1):
+        position = _highs_num(row, "range_pos_pct")
+        position_text = "取得できず" if position is None else f"下から{position:.0f}%"
+        lines.append(
+            f"| {rank} | {_code_text(row)} | {row.get('name', '')} | {row.get('market', '')} "
+            f"| {position_text} | {_cell(row, 'ratio_ma25_gap_pct', '%')} "
+            f"| {_cell(row, 'ratio_ma200_gap_pct', '%')} | {_cell(row, 'ratio_trend_20d_pct', '%')} |"
+        )
+    return lines
+
+
+def build_relative_note(relative: pd.DataFrame, source: Path | None) -> str:
+    """fix67(2026-09-14): 高重さんの指示「日経平均と比べて一番下にいる銘柄を出したい」。
+
+    並んでいるのは「日経平均に対する位置」だけ。割安・割高の話では無いので、
+    そう読まれない書き方にする（scanner/relative.py の FORBIDDEN_WORDS も見張る）。
+    数字は run_screening.py が書いた screening_relative_*.csv をそのまま読む。
+    ここで計算し直したり、足りない数字を埋めたりはしない。
+    """
+    from jptime import jst_today
+
+    relative, ref, excluded = _relative_data_date(relative)
+    if not relative.empty and "range_pos_pct" in relative.columns:
+        # CSVは既に並んでいるが、念のためここでも下から順にそろえる。
+        relative = relative.assign(
+            _pos=pd.to_numeric(relative["range_pos_pct"], errors="coerce")
+        ).sort_values("_pos", na_position="last").drop(columns=["_pos"])
+
+    lines = [f"# {_jp_date_text(ref)} {_RELATIVE_TITLE_SUFFIX}", ""]
+    lines.append(f"※ 基準日（価格データ最終日 data_as_of）：**{ref.isoformat()}**")
+    if excluded:
+        lines.append(f"※ 基準日と異なる行・日付欠損行は{excluded}件除外しました。")
+    if jst_today() != ref:
+        lines.append(f"※ 対象は直近取引日 **{_jp_date_text(ref)}** の日本株データです（生成日と異なります）。")
+    lines.append("")
+
+    lines.append("## この記事で分かること・分からないこと")
+    lines.append("")
+    lines.append(
+        "- 分かるのは**日経平均に対する位置**だけです。「個別銘柄の終値 ÷ 日経平均の終値」という比率を"
+        "直近1年（252営業日）ぶん並べ、その値幅の中で今どこにいるかを0〜100%で表しています。"
+        "0%に近いほど、この1年のなかでは日経平均に対して最も下の位置にいる、という意味です。"
+    )
+    lines.append(
+        "- **分からないのは、その会社の価値に対して株価が安いか高いかです。**"
+        "この数字は位置を測っただけで、企業価値の評価ではありません。業績・財務・受注などは一切見ていません。"
+    )
+    lines.append(
+        "- 位置が下にあるのは、日経平均より下げた／上がり方が弱かったことの裏返しでもあります。"
+        "下にいること自体は良いことでも悪いことでもありません。"
+    )
+    lines.append(
+        "- 掲載対象は東証プライム・スタンダード・グロースの全銘柄のうち、"
+        "20日平均売買代金が1億円以上あり、1年ぶんの株価と日経平均がそろっている銘柄です。"
+        "数字がそろわない銘柄は、推測で埋めずに一覧から外しています。"
+    )
+    lines.append("")
+
+    if source is None or relative.empty:
+        lines.append(
+            "> データ不足：本日の位置データ（screening_relative）が未生成または空のため、"
+            "一覧を表示できません。下書きは規定どおり生成しています。"
+        )
+        lines.append("")
+    else:
+        lines.append(
+            f"本日の集計対象は**{len(relative)}銘柄**です。"
+            f"このうち日経平均に対して1年レンジの下にいる順に並べています。"
+        )
+        lines.append("")
+        lines.append(f"## 一覧（日経平均に対して1年レンジの下から順・上位{min(RELATIVE_TABLE_ROW_CAP, len(relative))}銘柄）")
+        lines.append("")
+        table_df = relative.head(RELATIVE_TABLE_ROW_CAP)
+        lines.extend(_relative_table(table_df))
+        lines.append("")
+        if len(relative) > len(table_df):
+            lines.append(
+                f"※ 対象は全{len(relative)}銘柄です。表には上位{len(table_df)}銘柄を載せています"
+                f"（全件はメール添付の screening_relative_*.csv）。"
+            )
+            lines.append("")
+
+        lines.append(f"## 上位{min(RELATIVE_DETAIL_CAP, len(relative))}銘柄の詳細")
+        lines.append("")
+        for rank, (_, row) in enumerate(relative.head(RELATIVE_DETAIL_CAP).iterrows(), start=1):
+            code = _code_text(row)
+            lines.append(f"### {rank}. {row.get('name', '')}（{code}）")
+            lines.append("")
+            sector = str(row.get("sector", "") or "").strip()
+            market = str(row.get("market", "") or "").strip()
+            if market or sector:
+                lines.append(f"- 市場・業種: {market}{'／' + sector if sector else ''}")
+            text = _relative_text(row)
+            if text:
+                lines.append(f"- {text}")
+            lines.append(f"- 📈 6ヶ月日足チャート: {_chart_url(code)}")
+            lines.append(f"- 📊 {JP_COMPARE_LABEL}: {compare_chart_url(code)}")
+            lines.append("")
+
+    lines.append("## この一覧の使いかた")
+    lines.append("")
+    lines.append(
+        "- 「下にいる」＝「これから上がる」ではありません。下げ続けている銘柄がそのまま下げ続けることもあります。"
+    )
+    lines.append(
+        "- 位置の数字は、その会社に何が起きているかを何も説明しません。"
+        "気になった銘柄は、決算や適時開示など一次情報をご自身で確かめてください。"
+    )
+    lines.append(
+        "- 毎営業日、同じ基準で機械的に並べています。基準がぶれないことがこのリストの値打ちです。"
+    )
+    lines.append("")
+
+    lines.append("## 注意書き")
+    lines.append("")
+    lines.append("- 本記事は投資助言ではありません。売買判断はご自身の責任でお願いします。")
+    lines.append("- 本記事は情報提供を目的としたもので、特定銘柄の売買を推奨するものではありません。")
+    lines.append("- 数値は取得済みデータに基づく機械集計です。「取得できず」は文字どおりの意味で、推測では補いません。")
+    lines.append("- 位置を測る相手は日経平均です。ほかの指数とは比べていません。")
+    lines.append(f"- source={source.name if source else '未生成'}")
+    return _scrub_forbidden_tokens("\n".join(lines))
+
+
 # ============================================================================
 # T-P(2026-08-10): noteの下書きがスマホで開けない問題への対策。
 #   note本文が3万字級になるとnoteのエディタ（ProseMirror）が描画しきれず、
@@ -2511,6 +2681,9 @@ def build_note4(sources: SourceFiles, screening: pd.DataFrame, discipline: pd.Da
     highs_src = latest_aux("screening_highs")
     pullback = load_aux(pullback_src)
     highs = load_aux(highs_src)
+    # fix67(2026-09-14): 日経平均に対する位置のCSV（run_screening.py が fix66 で書き出す）。
+    relative_src = latest_aux("screening_relative")
+    relative = load_aux(relative_src)
 
     # fix34(2026-08-28): 高重さんの指示で記事は1本に収める。
     #   まず上限どおりに作り、分割しきい値を超えていたら件数を1件ずつ減らして作り直す。
@@ -2523,6 +2696,8 @@ def build_note4(sources: SourceFiles, screening: pd.DataFrame, discipline: pd.Da
             "claude": build_claude_note(screening, discipline, backtest, sources),
             "pullback": build_pullback_note(pullback, pullback_src),
             "highs": build_highs_note(highs, highs_src),
+            # fix67(2026-09-14): 4本目。日経平均に対する位置だけを並べた記事。
+            "relative": build_relative_note(relative, relative_src),
         }
         over = {k: len(v) for k, v in notes.items() if k in NOTE_SPLIT_KEYS and len(v) > budget}
         if not over:
