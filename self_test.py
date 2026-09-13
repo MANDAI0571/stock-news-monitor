@@ -160,6 +160,7 @@ def main() -> None:
     _test_compare_chart_links()
     _test_relative_position()
     _test_relative_line_in_note()
+    _test_relative_rank_csv()
     print("self-test: OK")
 
 
@@ -4240,6 +4241,83 @@ def _test_relative_line_in_note() -> None:
     assert "relative_line" in rs.AUX_COLUMNS["screening_highs"]
 
     print("self-test: 位置の数字が記事とメールに載る OK")
+
+
+def _test_relative_rank_csv() -> None:
+    """全銘柄の「日経平均に対する位置」を集めて並べられること（2026-09-14 高重さんの指示）。
+
+    通信しない。合成データで、集める→ふるいにかける→並べる、の3つだけを見る。
+    確かめるのは順番と落とし方であって、どの銘柄が良いかではない。
+    """
+    import pandas as pd
+
+    import run_screening as rs
+    from scanner.relative import FORBIDDEN_WORDS
+
+    days = [f"2026-{(i // 28) + 1:02d}-{(i % 28) + 1:02d}" for i in range(260)]
+    index_pairs = [(day, 20000.0 + 10.0 * i) for i, day in enumerate(days)]
+    levels = [value for _, value in index_pairs]
+    base = {"market": "プライム", "sector": "電気機器"}
+
+    def _history(ratios: list[float]) -> pd.DataFrame:
+        closes = [ratio * level for ratio, level in zip(ratios, levels)]
+        return pd.DataFrame({"Close": closes}, index=pd.to_datetime(days[:len(closes)]))
+
+    def _row(code, ratios, turnover=2_500_000_000, pairs=None):
+        return rs._collect_relative_row(
+            {"code": code, "ticker": f"{code}.T", "name": f"銘柄{code}", **base},
+            {"turnover_20d": turnover, "current_price": 2000.0},
+            _history(ratios),
+            index_pairs if pairs is None else pairs,
+        )
+
+    # 比率（個別 ÷ 指数）を先に決めて株価を作る。位置は比率で決まるため。
+    #   下がり続ける→レンジの一番下 ／ V字→まん中 ／ 上がり続ける→一番上
+    down = [0.10 - 0.02 * i / 259 for i in range(260)]
+    middle = [0.10 - 0.02 * i / 129 if i <= 129 else 0.08 + 0.01 * (i - 129) / 130 for i in range(260)]
+    up = [0.08 + 0.02 * i / 259 for i in range(260)]
+
+    rows = []
+    for code, ratios in (("3333", up), ("1111", down), ("2222", middle)):
+        row = _row(code, ratios)
+        assert row is not None, f"{code}: 位置が出るはずなのに落ちた"
+        rows.append(row)
+
+    # 集めない条件：売買代金が下限未満／日経平均が取れない／1年に足りない。
+    assert _row("4444", down, turnover=1_000_000) is None, "売買代金の下限を通り抜けた"
+    assert _row("5555", down, pairs=[]) is None, "指数が無いのに位置が出た"
+    assert _row("6666", down[:200]) is None, "本数が足りないのに位置が出た"
+
+    # 並べ替え：1年レンジの下にいる順。
+    rows.sort(key=rs._relative_sort_key)
+    assert [row["code"] for row in rows] == ["1111", "2222", "3333"], [r["code"] for r in rows]
+    assert rows[0]["range_pos_pct"] < rows[-1]["range_pos_pct"]
+
+    # 値が読めない行は先頭に来ない（記事の一番上に変な行を置かないため）。
+    broken = dict(rows[0], code="9999", range_pos_pct="")
+    mixed = sorted(rows + [broken], key=rs._relative_sort_key)
+    assert mixed[-1]["code"] == "9999", [r["code"] for r in mixed]
+
+    # 同点のときの順番が毎回同じであること（実行ごとに入れ替わらない）。
+    ties = sorted(
+        [dict(rows[0], code=code, ratio_ma200_gap_pct=gap)
+         for code, gap in (("7777", -5.0), ("6666", -5.0), ("8888", -9.0))],
+        key=rs._relative_sort_key,
+    )
+    assert [row["code"] for row in ties] == ["8888", "6666", "7777"], [r["code"] for r in ties]
+
+    # 文言に断定する言葉が入っていないこと。CSVの列が行に揃っていること。
+    columns = rs.AUX_COLUMNS["screening_relative"]
+    for key in ("range_pos_pct", "ratio_ma200_gap_pct", "relative_line", "data_date", "turnover_20d"):
+        assert key in columns, key
+    for row in rows:
+        assert row["relative_line"].startswith("日経平均に対して："), row["relative_line"]
+        for word in FORBIDDEN_WORDS:
+            assert word not in row["relative_line"], word
+        for key in columns:
+            assert key in row, f"CSVの列 {key} が行に無い"
+
+    print("self-test: 日経平均に対する位置の並べ替え OK")
 
 
 if __name__ == "__main__":

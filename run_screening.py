@@ -15,6 +15,8 @@ from scanner.highs import classify_high_profile, detect_52w_high_retest, detect_
 from scanner.patterns import detect_cup_with_handle
 from scanner.prices import fetch_next_earnings_date, fetch_price_history, prefetch_price_histories, timestamped_csv_path
 from scanner.relative import align_closes, relative_line
+# fix66(2026-09-14): 全銘柄ぶんの位置を集めるので、一行の文言だけでなく数字そのものも要る。
+from scanner.relative import DEFAULT_INDEX_LABEL, compute_relative, format_relative_line
 from scanner.scoring import assess_earnings_window, rejection_row, score_stock
 from scanner.universe import UniverseConfig, load_jpx_listed
 
@@ -25,6 +27,11 @@ CAPITAL = 3_000_000
 # fix65(2026-09-13): 「日経平均に対する位置」を出すための指数。yfinance の日経平均。
 # 1銘柄ごとに取りに行くのではなく、スクリーニング開始時に1回だけ取る。
 INDEX_TICKER = "^N225"
+
+# fix66(2026-09-14): 「日経平均に対して1年レンジの下にいる銘柄」を並べるときの下限。
+# 52週新高値リストと同じ「20日平均売買代金1億円」。ほとんど売買されていない銘柄を
+# 上位に並べても、読者はその値段では実際に売り買いできないため。
+RELATIVE_MIN_TURNOVER = 100_000_000
 
 
 # 結果CSV / コンソール表示で使う列。
@@ -169,6 +176,8 @@ def run_screening(
     pullback_rows: list[dict[str, object]] = []
     highs_rows: list[dict[str, object]] = []
     retest_rows: list[dict[str, object]] = []
+    # fix66(2026-09-14): 高値かどうかに関係なく、全銘柄の「日経平均に対する位置」を集める。
+    relative_rows: list[dict[str, object]] = []
     total = len(universe)
     today = jst_today()
 
@@ -230,6 +239,12 @@ def run_screening(
                 # fix65(2026-09-13): 日経平均に対する位置を数字で足す（高重さんの指示(3)）。
                 highs_extra["relative_line"] = _relative_line_for(history, index_pairs)
 
+            # fix66(2026-09-14): 高値に該当しない銘柄も含めて、位置の数字を集める。
+            #   ここで集めるだけ。並べ替えとCSVへの書き出しはループのあと。
+            relative_extra = _collect_relative_row(row_base, indicators, history, index_pairs)
+            if relative_extra is not None:
+                relative_rows.append(relative_extra)
+
             passed, reject_reasons = passes_base_filters(indicators)
             if not passed:
                 if include_rejected:
@@ -271,6 +286,12 @@ def run_screening(
     _write_aux_csv(pullback_rows, output_dir, "screening_pullback")
     _write_aux_csv(highs_rows, output_dir, "screening_highs")
     _write_aux_csv(retest_rows, output_dir, "screening_52w_retest")
+    # fix66(2026-09-14): 日経平均に対して1年レンジの下にいる順に並べる。
+    #   同じ値が並ぶので、同点のときは 200日線からの乖離が小さいほう、それも同じならコード順。
+    #   実行するたびに順番が入れ替わらないようにするため、必ず3つとも見る。
+    relative_rows.sort(key=_relative_sort_key)
+    _write_aux_csv(relative_rows, output_dir, "screening_relative")
+    print(f"relative_rank: rows={len(relative_rows)} index={INDEX_TICKER}", flush=True)
     if result.empty:
         _print_screening_summary(total, result, highs_rows, pullback_rows, retest_rows)
         _log_step("run_screening_total", time.perf_counter() - run_started, "candidates=0")
@@ -737,6 +758,62 @@ def _relative_line_for(history: pd.DataFrame, index_pairs: list[tuple[str, float
     return relative_line(closes, index_closes) or ""
 
 
+def _collect_relative_row(
+    row_base: dict[str, object],
+    indicators: dict[str, float],
+    history: pd.DataFrame,
+    index_pairs: list[tuple[str, float]],
+    min_turnover: float = RELATIVE_MIN_TURNOVER,
+) -> dict[str, object] | None:
+    """fix66(2026-09-14): 1銘柄ぶんの「日経平均に対する位置」を並べ替えできる形で返す。
+
+    52週新高値かどうかは見ない。全銘柄が対象。日経平均が取れない／売買代金が
+    下限に届かない／1年ぶんの本数が無い／位置を定義できない銘柄は None を返し、
+    行ごと落とす（数字を埋めない）。並べ替えの鍵は range_pos_pct。
+    これは位置であって、企業の価値が高い・低いという意味ではない。
+    """
+    if not index_pairs:
+        return None
+    if float(indicators.get("turnover_20d", 0)) < min_turnover:
+        return None
+    closes, index_closes = align_closes(_close_pairs(history), index_pairs)
+    if closes is None:
+        return None
+    rel = compute_relative(closes, index_closes)
+    if rel is None:
+        return None
+    return {
+        **row_base,
+        "screen_type": "RELATIVE_TO_INDEX",
+        "screen_tags": "RELATIVE_TO_INDEX",
+        "index_ticker": INDEX_TICKER,
+        "index_label": DEFAULT_INDEX_LABEL,
+        "range_pos_pct": round(float(rel["range_pos_pct"]), 1),
+        "ratio_ma25_gap_pct": round(float(rel["ma25_gap_pct"]), 2),
+        "ratio_ma200_gap_pct": round(float(rel["ma200_gap_pct"]), 2),
+        "ratio_trend_20d_pct": round(float(rel["trend_20d_pct"]), 2),
+        "index_trend_20d_pct": round(float(rel["index_20d_pct"]), 2),
+        "bars": int(rel["bars"]),
+        "current_price": _round_or_blank(indicators.get("current_price"), 1),
+        "turnover_20d": int(indicators.get("turnover_20d", 0)),
+        "relative_line": format_relative_line(rel),
+        **_daily_price_fields(history),
+    }
+
+
+def _relative_sort_key(row: dict[str, object]) -> tuple[float, float, str]:
+    """fix66(2026-09-14): 並べ替えの鍵。読めない値は末尾に回す（記事の先頭に置かない）。"""
+    try:
+        position = float(row.get("range_pos_pct"))
+    except (TypeError, ValueError):
+        position = float("inf")
+    try:
+        ma200_gap = float(row.get("ratio_ma200_gap_pct"))
+    except (TypeError, ValueError):
+        ma200_gap = float("inf")
+    return (position, ma200_gap, str(row.get("code", "")))
+
+
 def _finalize_highs_row(extra: dict[str, object], ticker: str) -> None:
     """T-K: highs行にファンダ指標（検証済みのみ）と異常値判定を付与する（in-place）。
     取得失敗でもスクリーニングは止めない。"""
@@ -830,6 +907,16 @@ AUX_COLUMNS = {
     "screening_52w_retest": [
         "code", "ticker", "name", "market", "sector", "screen_type", "screen_tags",
         "rank", "score", "candidate_action", "reason",
+    ],
+    # fix66(2026-09-14): 日経平均に対する位置。1年レンジの下にいる順に並べて書き出す。
+    #   range_pos_pct は「位置」であって、割安・割高の判定ではない。
+    "screening_relative": [
+        "code", "ticker", "name", "market", "sector", "screen_type", "screen_tags",
+        "index_ticker", "index_label",
+        "range_pos_pct", "ratio_ma25_gap_pct", "ratio_ma200_gap_pct",
+        "ratio_trend_20d_pct", "index_trend_20d_pct", "bars",
+        "current_price", "turnover_20d", "data_date",
+        "relative_line",
     ],
 }
 
