@@ -14,12 +14,17 @@ from scanner.openwork import add_openwork_scores
 from scanner.highs import classify_high_profile, detect_52w_high_retest, detect_duke_old_high_support, detect_previous_52w_high_line_retest, high_quality_flags
 from scanner.patterns import detect_cup_with_handle
 from scanner.prices import fetch_next_earnings_date, fetch_price_history, prefetch_price_histories, timestamped_csv_path
+from scanner.relative import align_closes, relative_line
 from scanner.scoring import assess_earnings_window, rejection_row, score_stock
 from scanner.universe import UniverseConfig, load_jpx_listed
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 CAPITAL = 3_000_000
+
+# fix65(2026-09-13): 「日経平均に対する位置」を出すための指数。yfinance の日経平均。
+# 1銘柄ごとに取りに行くのではなく、スクリーニング開始時に1回だけ取る。
+INDEX_TICKER = "^N225"
 
 
 # 結果CSV / コンソール表示で使う列。
@@ -154,6 +159,9 @@ def run_screening(
     prefetch_stats = prefetch_price_histories([str(t) for t in universe["ticker"].tolist()]) if not universe.empty else {}
     _log_step("price_prefetch", time.perf_counter() - t0, f"stats={prefetch_stats}")
 
+    # fix65(2026-09-13): 日経平均を1回だけ取る。取れなければ位置の数字は出さない（捏造しない）。
+    index_pairs = _index_close_pairs()
+
     rows: list[dict[str, object]] = []
     # T-D(2026-06-28): メインの300万/ブレイク候補とは独立に、押し目(タッチ/リテスト)と
     # 高値更新(52週新高値・接近)を専用収集する。メインゲート(current>MA25/75/200 等)を通らない
@@ -219,6 +227,8 @@ def run_screening(
             if highs_extra is not None:
                 # T-K: note1本目用のファンダ取得（ヒット銘柄のみ）＋異常値チェック
                 _finalize_highs_row(highs_extra, stock.ticker)
+                # fix65(2026-09-13): 日経平均に対する位置を数字で足す（高重さんの指示(3)）。
+                highs_extra["relative_line"] = _relative_line_for(history, index_pairs)
 
             passed, reject_reasons = passes_base_filters(indicators)
             if not passed:
@@ -689,6 +699,44 @@ def _daily_price_fields(history: pd.DataFrame) -> dict[str, object]:
     return out
 
 
+def _close_pairs(history: pd.DataFrame) -> list[tuple[str, float]]:
+    """fix65: 価格データを (日付文字列, 終値) の列にする。読めない日は捨てる（埋めない）。"""
+    if history is None or history.empty or "Close" not in history.columns:
+        return []
+    pairs: list[tuple[str, float]] = []
+    for stamp, value in zip(history.index, history["Close"]):
+        try:
+            day = pd.Timestamp(stamp).date().isoformat()
+            close = float(value)
+        except (TypeError, ValueError):
+            continue
+        if close != close or close <= 0:   # NaN・0以下は比率に使えない
+            continue
+        pairs.append((day, close))
+    return pairs
+
+
+def _index_close_pairs() -> list[tuple[str, float]]:
+    """fix65: 日経平均の終値を1回だけ取る。取れなければ空（位置の数字は出さない）。"""
+    try:
+        pairs = _close_pairs(fetch_price_history(INDEX_TICKER))
+    except Exception as exc:
+        print(f"relative_index: 取得失敗のため位置の数字は出しません ({exc})", flush=True)
+        return []
+    print(f"relative_index: {INDEX_TICKER} bars={len(pairs)}", flush=True)
+    return pairs
+
+
+def _relative_line_for(history: pd.DataFrame, index_pairs: list[tuple[str, float]]) -> str:
+    """fix65: 日経平均に対する位置の一行。出せないときは空文字（記事側で行ごと落ちる）。"""
+    if not index_pairs:
+        return ""
+    closes, index_closes = align_closes(_close_pairs(history), index_pairs)
+    if closes is None:
+        return ""
+    return relative_line(closes, index_closes) or ""
+
+
 def _finalize_highs_row(extra: dict[str, object], ticker: str) -> None:
     """T-K: highs行にファンダ指標（検証済みのみ）と異常値判定を付与する（in-place）。
     取得失敗でもスクリーニングは止めない。"""
@@ -776,6 +824,8 @@ AUX_COLUMNS = {
         "per_actual", "per_forecast", "pbr", "dividend_yield_pct", "roe_pct", "op_margin_pct", "net_margin_pct",
         "sales_growth_pct", "profit_growth_pct", "market_cap_oku", "fundamentals_source",
         "data_anomaly", "anomaly_note",
+        # fix65(2026-09-13): 日経平均に対する位置（scanner/relative.py が作る一行）
+        "relative_line",
     ],
     "screening_52w_retest": [
         "code", "ticker", "name", "market", "sector", "screen_type", "screen_tags",

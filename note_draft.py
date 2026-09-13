@@ -1847,6 +1847,20 @@ def _highs_num(row, key) -> float | None:
     return value
 
 
+def _relative_text(row) -> str:
+    """fix65(2026-09-13): CSVの relative_line 列を読む。無ければ空文字（行ごと出さない）。
+
+    文言そのものは scanner/relative.py が作る。ここでは中身を書き換えず、
+    「日経平均に対して」で始まる行だけを通す。違うものが入っていたら出さない。
+    """
+    text = str(row.get("relative_line") or "").strip()
+    if not text or text.lower() in ("nan", "none", "null"):
+        return ""
+    if not text.startswith("日経平均に対して"):
+        return ""
+    return text
+
+
 def _scrub_forbidden_tokens(text: str) -> str:
     """NaN/None/null/inf を本文に残さない最終防衛（値の欠損は上流で行非表示にしている）。"""
     import re
@@ -2186,6 +2200,10 @@ def _stock_detail_block(row, rank: int, ref, ow_cache, is_new: bool) -> list[str
     )
     # fix62(2026-09-13): 日経平均と重ねたチャートを1行足す（高重さんの指示）。
     lines.append(f"📊 {JP_COMPARE_LABEL}: {compare_chart_url(code)}")
+    # fix65(2026-09-13): 上のチャートは目で見るだけなので、同じことを数字にした一行を続ける。
+    #   文言は scanner/relative.py が作る（必ず「日経平均に対して」で始まり、割安・割高は言わない）。
+    #   数字を出せなかった銘柄は空なので、この行ごと出ない（捏造しない）。
+    add("📐 ", _relative_text(row))
     # fix48(2026-09-04): 52週新高値にもOpenWorkの検索リンクを置く。
     #   fix44 で「取得できず」を消した結果、ここに何も無くなっていた。
     #   評価値は載せない（規約）。読んだ人が自分で見に行くための入口だけ。

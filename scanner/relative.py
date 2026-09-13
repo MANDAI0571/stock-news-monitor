@@ -156,3 +156,32 @@ def relative_line(
     if rel is None:
         return None
     return format_relative_line(rel, index_label)
+
+
+def align_closes(stock_pairs, index_pairs):
+    """(2026-09-13 fix65) 個別と指数の (日付, 終値) を、同じ日付の日だけに揃える。
+
+    比率は「同じ日の個別終値 ÷ 同じ日の指数終値」でなければ意味が無い。
+    個別銘柄と指数では休みの日がずれることがあるので、日付の文字列が
+    完全に一致する日だけを残す。前後の日で埋めることはしない。
+
+    返り値は (個別の終値リスト, 指数の終値リスト) を日付の昇順で。
+    揃った日が MIN_BARS に足りないときは (None, None)（呼ぶ側は行ごと落とす）。
+    """
+    index_map: dict[str, object] = {}
+    for day, value in index_pairs:
+        index_map[str(day)] = value
+
+    merged: list[tuple[str, object, object]] = []
+    seen: set[str] = set()
+    for day, value in stock_pairs:
+        key = str(day)
+        if key in seen or key not in index_map:
+            continue
+        seen.add(key)
+        merged.append((key, value, index_map[key]))
+
+    if len(merged) < MIN_BARS:
+        return None, None
+    merged.sort(key=lambda item: item[0])
+    return [item[1] for item in merged], [item[2] for item in merged]

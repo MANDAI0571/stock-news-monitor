@@ -159,6 +159,7 @@ def main() -> None:
     _test_note_split_passes_quality_gate()
     _test_compare_chart_links()
     _test_relative_position()
+    _test_relative_line_in_note()
     print("self-test: OK")
 
 
@@ -4156,6 +4157,89 @@ def _test_failure_mail_has_diagnosis() -> None:
     assert source.rstrip().endswith("_run_main_with_log()")
 
     print("self-test: 障害メールに原因が載る OK")
+
+
+def _test_relative_line_in_note() -> None:
+    """位置の数字が記事とメールに載ること（2026-09-13 高重さんの指示(3)）。
+
+    通信しない。日付の突き合わせ（align_closes）と、記事の一行までを合成データで見る。
+    記事の本文は outputs/note_highs.md にそのまま入り、コピー用メールも同じ本文を読むので、
+    ここで記事に出ていればメールにも出る。
+    """
+    import pandas as pd
+
+    import run_screening as rs
+    from chart_links import JP_COMPARE_LABEL
+    from note_draft import _relative_text, build_highs_note
+    from scanner.relative import align_closes, relative_line
+
+    # ① 日付が完全に一致する日だけを使う。個別だけ・指数だけの日は捨てる（埋めない）。
+    days = [f"2026-{(i // 28) + 1:02d}-{(i % 28) + 1:02d}" for i in range(260)]
+    stock_pairs = [(day, 2000.0) for day in days]
+    index_pairs = [(day, 20000.0 + 10.0 * i) for i, day in enumerate(days)]
+    index_pairs.append(("2026-12-31", 99999.0))          # 指数にしか無い日
+    stock_pairs.append(("2026-12-30", 1.0))              # 個別にしか無い日
+    closes, index_closes = align_closes(stock_pairs, index_pairs)
+    assert closes is not None and len(closes) == 260, len(closes or [])
+    assert index_closes[-1] == 20000.0 + 10.0 * 259, index_closes[-1]
+    assert 1.0 not in closes and 99999.0 not in index_closes
+
+    # ② 揃った日が252本に足りなければ数字を出さない（推測で埋めない）。
+    short_a, short_b = align_closes(stock_pairs[:200], index_pairs[:200])
+    assert short_a is None and short_b is None
+
+    # ③ 突き合わせた列から出る一行。株価が動かず指数が上がる＝指数に対して下向き。
+    line = relative_line(closes, index_closes)
+    assert line is not None and line.startswith("日経平均に対して："), line
+    assert "割安" not in line and "割高" not in line, line
+
+    # ④ run_screening 側：価格データから (日付, 終値) を作り、同じ一行になること。
+    #    NaN・0以下の日は比率に使えないので落ちること。通信はしない（合成データ）。
+    history = pd.DataFrame(
+        {"Close": [2000.0] * 259 + [float("nan")] + [2000.0]},
+        index=pd.to_datetime(days + ["2026-12-30"]),
+    )
+    pairs = rs._close_pairs(history)
+    assert len(pairs) == 260, len(pairs)
+    assert pairs[0] == ("2026-01-01", 2000.0), pairs[0]
+    assert rs._close_pairs(pd.DataFrame()) == []
+    assert rs._relative_line_for(history, index_pairs) == line
+    # 指数が取れなかった日は、位置の数字を出さない。
+    assert rs._relative_line_for(history, []) == ""
+
+    # ⑤ CSVに入っていない銘柄・変な値は行ごと落とす。正しい行だけ通す。
+    assert _relative_text({"relative_line": line}) == line
+    for bad in ("", None, float("nan"), "割安です", "きょうは上がります"):
+        assert _relative_text({"relative_line": bad}) == "", bad
+    assert _relative_text({}) == ""
+
+    # ⑥ 記事の本文に、比較チャートのリンクの直後の行として出ること。
+    rows = [
+        {"code": "1111", "ticker": "1111.T", "name": "位置あり", "sector": "電気機器",
+         "high_type": "52W_NEW_HIGH", "current_price": 1500.0, "dist_to_high_pct": 0.0,
+         "turnover_20d": 2_500_000_000, "breaks_20d": 1, "first_break_60d": True,
+         "inago_suspect": False, "tob_suspect": False, "data_anomaly": False, "anomaly_note": "",
+         "note_flags": "", "earnings_date": "", "data_date": "2026-07-10",
+         "relative_line": line},
+        {"code": "2222", "ticker": "2222.T", "name": "位置なし", "sector": "サービス業",
+         "high_type": "52W_NEW_HIGH", "current_price": 980.0, "dist_to_high_pct": 0.0,
+         "turnover_20d": 300_000_000, "breaks_20d": 0, "first_break_60d": False,
+         "inago_suspect": False, "tob_suspect": False, "data_anomaly": False, "anomaly_note": "",
+         "note_flags": "", "earnings_date": "", "data_date": "2026-07-10",
+         "relative_line": ""},
+    ]
+    text = build_highs_note(pd.DataFrame(rows), Path("screening_highs_test.csv"))
+    assert f"📐 {line}" in text, "記事に位置の数字の行が無い"
+    body_lines = text.splitlines()
+    position = body_lines.index(f"📐 {line}")
+    assert body_lines[position - 1].startswith(f"📊 {JP_COMPARE_LABEL}"), body_lines[position - 1]
+    # 数字を出せなかった銘柄は、行ごと出ない（空の行を置かない）。
+    assert text.count("📐 ") == 1, text.count("📐 ")
+
+    # ⑦ CSVに列が無ければ記事まで届かないので、書き出す列に入っていること。
+    assert "relative_line" in rs.AUX_COLUMNS["screening_highs"]
+
+    print("self-test: 位置の数字が記事とメールに載る OK")
 
 
 if __name__ == "__main__":
