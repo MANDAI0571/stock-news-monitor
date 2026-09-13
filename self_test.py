@@ -138,6 +138,7 @@ def main() -> None:
     _test_us_calendar()
     _test_us_note_draft()
     _test_us_portfolio()
+    _test_us_fill_uses_only_given_prices()
     _test_us_mail_digest()
     _test_us_daily_runner()
     _test_us_note_gate()
@@ -3518,6 +3519,63 @@ def _test_us_portfolio() -> None:
     assert "##" not in plain and "|" not in plain
 
     print("self-test: 米株$20,000運用 OK")
+
+
+def _test_us_fill_uses_only_given_prices() -> None:
+    """約定の値段の出どころ：prices を渡したらネットを見ない。渡さない時だけ見に行く。
+
+    ここが曖昧だと、自己テストの結果が「その日ネットで何が取れるか」で変わる。
+    実際 2026-09-08 が過去になった途端に _test_us_portfolio が落ちていた。
+    """
+    from datetime import date
+
+    import us_portfolio as up
+
+    orders_seed = pd.DataFrame([{
+        "decision_date": "2026-09-04", "execution_date": "2026-09-08",
+        "side": "BUY", "ticker": "KO", "name": "Coca-Cola",
+        "shares": "10", "reason": "テスト", "status": "PENDING",
+    }])
+
+    calls: list[str] = []
+
+    def _spy(ticker: str, trading_date: date) -> float | None:
+        calls.append(ticker)
+        return 72.15
+
+    real_open_price = up.open_price
+    up.open_price = _spy
+    try:
+        # ① prices を渡した場合：その中に無い銘柄は約定しない・ネットも見ない。
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            orders_path = root / "orders.csv"
+            journal_path = root / "journal.csv"
+            up.write_ledger(orders_seed.copy(), orders_path, up.ORDER_COLUMNS)
+            orders, journal = up.fill_us_orders(
+                date(2026, 9, 8), orders_path=orders_path,
+                journal_path=journal_path, prices={},
+            )
+            assert calls == [], f"pricesを渡したのにネットを見た: {calls}"
+            assert orders.loc[orders["ticker"].eq("KO"), "status"].iloc[0] == "PENDING"
+            assert len(up.status_rows(journal, "OPEN")) == 0
+
+        # ② prices を渡さない場合：これまでどおり寄り値を取りに行って約定する。
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            orders_path = root / "orders.csv"
+            journal_path = root / "journal.csv"
+            up.write_ledger(orders_seed.copy(), orders_path, up.ORDER_COLUMNS)
+            orders, journal = up.fill_us_orders(
+                date(2026, 9, 8), orders_path=orders_path, journal_path=journal_path,
+            )
+            assert calls == ["KO"], f"pricesを渡していないのに取りに行かなかった: {calls}"
+            assert orders.loc[orders["ticker"].eq("KO"), "status"].iloc[0] == "FILLED"
+            assert len(up.status_rows(journal, "OPEN")) == 1
+    finally:
+        up.open_price = real_open_price
+
+    print("self-test: 約定の値段の出どころ OK")
 
 
 def _test_us_mail_digest() -> None:

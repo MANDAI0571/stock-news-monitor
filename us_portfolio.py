@@ -345,8 +345,13 @@ def fill_us_orders(
             continue
         ticker = _text(row, "ticker")
         shares = _num(row.get("shares"))
-        price = (prices or {}).get(ticker)
-        if price is None:
+        # fix63(2026-09-13): declare_us_orders と同じ作法に揃える。
+        # prices を渡されたら「その値段だけで約定させる」。渡されなかった時だけ
+        # 寄り値を取りに行く。以前は渡した値段に無い銘柄をネットに取りに行くので、
+        # 自己テストの結果が「その日ネットで何が取れるか」で変わってしまっていた。
+        if prices is not None:
+            price = prices.get(ticker)
+        else:
             price = open_price(ticker, trading_day)
         if not ticker or shares is None or price is None:
             print(f"us_fill: {ticker} は寄り値が取れないので見送り", flush=True)
