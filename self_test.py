@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import json
 import time
 from pathlib import Path
@@ -126,6 +127,7 @@ def main() -> None:
     _test_intraday_watchlist()
     _test_intraday_line_is_prior_high()
     _test_upstream_outage_judgement()
+    _test_failure_mail_has_diagnosis()
     _test_intraday_cloud_workflow_contract()
     _test_cloud_digest_mail()
     _test_note_mail_copy_and_preview()
@@ -3800,5 +3802,111 @@ def _test_upstream_outage_judgement() -> None:
     print("self-test: 通信エラーの切り分け OK")
 
 
+def _run_main_with_log() -> None:
+    """main() を動かし、出力を outputs/self_test_last.log にも残す。
+
+    fix63(2026-09-13): 障害メールに実行ログURLしか入っておらず、
+    何が落ちたのか分からなかった。ここで痕跡を残し、
+    notify_workflow_failure.py がメールに載せる。
+    ログを残せなくても自己テスト自体は止めない。
+    """
+    import io
+    import traceback
+
+    buffer = io.StringIO()
+
+    class _Tee:
+        def __init__(self, *streams):
+            self._streams = streams
+
+        def write(self, text):
+            for stream in self._streams:
+                try:
+                    stream.write(text)
+                except Exception:
+                    pass
+            return len(text)
+
+        def flush(self):
+            for stream in self._streams:
+                try:
+                    stream.flush()
+                except Exception:
+                    pass
+
+    original_out, original_err = sys.stdout, sys.stderr
+    sys.stdout = _Tee(original_out, buffer)
+    sys.stderr = _Tee(original_err, buffer)
+    failed: BaseException | None = None
+    try:
+        main()
+    except BaseException as error:  # noqa: BLE001 - 記録してから投げ直す
+        failed = error
+        buffer.write("\n" + traceback.format_exc())
+    finally:
+        sys.stdout, sys.stderr = original_out, original_err
+        try:
+            log_path = Path(__file__).resolve().parent / "outputs" / "self_test_last.log"
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            head = "self_test 結果: " + ("失敗" if failed else "成功") + "\n"
+            log_path.write_text(head + buffer.getvalue(), encoding="utf-8")
+        except Exception as write_error:  # noqa: BLE001
+            print(f"self_test_log=failed {write_error}", flush=True)
+    if failed is not None:
+        raise failed
+
+
+def _test_failure_mail_has_diagnosis() -> None:
+    """障害メールに「どこまで進んだか」と「自己テストの結果」が載ること。
+
+    fix63(2026-09-13): 障害メールが実行ログURLだけで、原因を追えなかった。
+    高重さんの「直してこればっかりくる」に対する直接の答え。
+    """
+    import importlib
+
+    import notify_workflow_failure as nwf
+    import self_test as st
+
+    root = Path(nwf.__file__).resolve().parent
+    log = root / "outputs" / "self_test_last.log"
+    backup = log.read_text(encoding="utf-8") if log.exists() else None
+    log.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        # ① 自己テストが落ちた場合 → 最後の行がメールに載る
+        log.write_text(
+            "self_test 結果: 失敗\nself-test: なにか OK\nRuntimeError: これが原因です\n",
+            encoding="utf-8",
+        )
+        importlib.reload(nwf)
+        text = "\n".join(nwf._diagnosis_lines())
+        assert "どこまで進んだか" in text
+        assert "自己テストが落ちています" in text
+        assert "RuntimeError: これが原因です" in text
+
+        # ② 自己テストが通っていた場合 → 一言で済ませ、成功ログは垂れ流さない
+        log.write_text("self_test 結果: 成功\nself-test: OK\n", encoding="utf-8")
+        text = "\n".join(nwf._diagnosis_lines())
+        assert "自己テストは通っています → その先のステップで落ちています。" in text
+        assert "self-test: OK" not in text
+
+        # ③ ログが無い場合 → そう書く（捏造しない）
+        log.unlink()
+        text = "\n".join(nwf._diagnosis_lines())
+        assert "自己テストまで到達していない可能性があります" in text
+    finally:
+        if backup is None:
+            if log.exists():
+                log.unlink()
+        else:
+            log.write_text(backup, encoding="utf-8")
+
+    # 自己テスト自身がログを残す入口を持っていること
+    assert hasattr(st, "_run_main_with_log")
+    source = Path(st.__file__).read_text(encoding="utf-8")
+    assert source.rstrip().endswith("_run_main_with_log()")
+
+    print("self-test: 障害メールに原因が載る OK")
+
+
 if __name__ == "__main__":
-    main()
+    _run_main_with_log()
