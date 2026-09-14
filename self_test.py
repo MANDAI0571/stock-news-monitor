@@ -3339,7 +3339,14 @@ def _test_note_article_lists_cover_all() -> None:
     for key in sorted(keys):
         assert f'"{key}"),' in source, key
 
-    print("self-test: 記事の一覧がメール4ヶ所とそろっている OK")
+    # fix71(2026-09-14): 品質ゲートの一覧も同じ基準で見張る。
+    # ここが3本のままだと、記事を1本作り損ねても本番が赤くならない。
+    import validate_note_artifact as vna
+
+    assert set(vna.NOTE4_KEYS) == keys, vna.NOTE4_KEYS
+    assert set(vna.NOTE4_LABELS) == keys, vna.NOTE4_LABELS
+
+    print("self-test: 記事の一覧がメール4ヶ所＋品質ゲートとそろっている OK")
 
 def _test_note_copy_mails() -> None:
     """note下書きは1本1通、本文だけのプレーンメールでも届く（iPhone用の逃げ道）。"""
