@@ -823,9 +823,17 @@ BUY条件を満たす銘柄がないため、現金を守ります。
             "## 本日の買い候補（未約定・当日試算）\n\n- 本日の買い候補: なし（CASH判断 3枠）\n"
         )
         note4_manifest = []
-        for key in ["highs", "pullback", "claude"]:
+        for key in ["highs", "pullback", "claude", "relative"]:
             if key == "claude":
                 body = f"# ダミー {key} 2026-07-07\n\n{status_block}{portfolio_block}"
+            elif key == "relative":
+                # 位置の一覧記事。候補ではなく位置の列を門番が見る。
+                body = (
+                    f"# ダミー {key} 2026-07-07\n\n{status_block}"
+                    "## 一覧（日経平均に対して1年レンジの下から順・上位1銘柄）\n\n"
+                    "| # | コード | 日経平均に対する位置 |\n|---:|---|---:|\n"
+                    "| 1 | 6315 | 下から0% |\n"
+                )
             else:
                 body = f"# ダミー {key} 2026-07-07\n\n{status_block}- 該当なし\n"
             (out_dir / f"note_{key}.md").write_text(body, encoding="utf-8")

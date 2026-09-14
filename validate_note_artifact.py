@@ -29,12 +29,13 @@ REQUIRED_FILES = [
     "note_highs.md",
 ]
 
-# 正しい3本（fix25 2026-08-23: ChatGPT版を廃止）
-NOTE4_KEYS = ("highs", "pullback", "claude")
+# 正しい4本（fix25 ChatGPT版を廃止 / fix70 2026-09-14 4本目を追加）
+NOTE4_KEYS = ("highs", "pullback", "claude", "relative")
 NOTE4_LABELS = {
     "highs": "52週新高値到達・接近",
     "pullback": "新高値後の押し目（25MA・200MAタッチ）",
     "claude": "300万円運用 Claude",
+    "relative": "日経平均に対する位置",
 }
 VALID_REGIMES = ("NORMAL", "CAUTION", "RISK", "STOP")
 
@@ -365,6 +366,16 @@ def _note4_content_issue(key: str, text: str) -> str | None:
         if NOTE4_LEDGER_MARKER not in holdings:
             return "保有銘柄・CASH判断が運用台帳（*_300man_journal.csv）由来ではありません"
         return None
+    # fix70(2026-09-14): 4本目（日経平均に対する位置）の確かめ方。
+    # 位置を並べただけの記事で「候補」「理由列」は無い。下の物差しでは必ず落ちる。
+    if key == "relative":
+        if "## 一覧（日経平均に対して" in text:
+            if "日経平均に対する位置" not in text:
+                return "一覧はあるが「日経平均に対する位置」の列がありません"
+            return None
+        if "データ不足" not in text:
+            return "一覧が無く、「データ不足」の明記もありません"
+        return None
     # highs / pullback: 候補銘柄一覧＋理由、無い場合は「該当なし」「データ不足」の明記が必須
     # 全候補がイナゴ/TOB疑いでカードが無い日でも、従来表があれば「候補あり」として扱う
     # T-K: highs新形式（A/B/C構成）は「### 一覧表」を候補ありの根拠として扱う
@@ -395,7 +406,7 @@ def _note4_content_issue(key: str, text: str) -> str | None:
 
 
 def _validate_note4(result: ArtifactValidation) -> None:
-    """正しい3本（highs/pullback/claude）が生成され、各冒頭に市場ステータスが入っているか。"""
+    """正しい4本（highs/pullback/claude/relative）が生成され、各冒頭に市場ステータスが入っているか。"""
     manifest_path = result.artifact_dir / "note_drafts_manifest.json"
     manifest_keys: set[str] = set()
     if manifest_path.exists():
@@ -410,7 +421,7 @@ def _validate_note4(result: ArtifactValidation) -> None:
             result.fail(f"note_drafts_manifest.json: {label}（{key}）がありません")
         md_path = result.artifact_dir / f"note_{key}.md"
         if not md_path.exists() or md_path.stat().st_size == 0:
-            result.fail(f"note_{key}.md: {label} の下書きがありません（3本必須）")
+            result.fail(f"note_{key}.md: {label} の下書きがありません（4本必須）")
             result.note4_status[label] = "未生成"
             continue
         text = _read_text(md_path)
