@@ -219,6 +219,9 @@ def run_screening(
             # T-D: 押し目(タッチ/リテスト)・高値更新の専用収集（メインゲートとは独立）。
             pullback_extra = _collect_pullback_row(row_base, indicators, high_info, history)
             if pullback_extra is not None:
+                # fix72(2026-09-14): 押し目の記事にも位置の数字を持たせる。
+                # 文言は scanner/relative.py が作る（52週新高値と同じ物差し）。
+                pullback_extra["relative_line"] = _relative_line_for(history, index_pairs)
                 pullback_rows.append(pullback_extra)
             retest_extra = _collect_previous_52w_retest_row(row_base, indicators, history)
             if retest_extra is not None:
@@ -891,6 +894,8 @@ AUX_COLUMNS = {
     "screening_pullback": [
         "code", "ticker", "name", "market", "sector", "screen_type", "screen_tags",
         "ma25_touch", "ma200_touch", "retest_52w",
+        # fix72(2026-09-14): 日経平均に対する位置（押し目の記事のカードで使う）
+        "relative_line",
     ],
     "screening_highs": [
         "code", "ticker", "name", "market", "sector", "screen_type", "screen_tags",

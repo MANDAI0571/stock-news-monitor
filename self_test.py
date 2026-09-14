@@ -4294,6 +4294,26 @@ def _test_relative_line_in_note() -> None:
 
     # ⑦ CSVに列が無ければ記事まで届かないので、書き出す列に入っていること。
     assert "relative_line" in rs.AUX_COLUMNS["screening_highs"]
+    assert "relative_line" in rs.AUX_COLUMNS["screening_pullback"]
+
+    # ⑧ 押し目の記事のカードにも、比較チャートの直後に同じ一行が出ること。
+    #    通信はさせない（数字の補完はこの試験に関係ない）。
+    import os
+
+    from note_draft import build_stock_cards
+
+    saved = os.environ.get("NOTE_FETCH_FUNDAMENTALS")
+    os.environ["NOTE_FETCH_FUNDAMENTALS"] = "0"
+    try:
+        cards = build_stock_cards(pd.DataFrame(rows))
+    finally:
+        if saved is None:
+            os.environ.pop("NOTE_FETCH_FUNDAMENTALS", None)
+        else:
+            os.environ["NOTE_FETCH_FUNDAMENTALS"] = saved
+    place = cards.index(f"📐 {line}")
+    assert cards[place - 1].startswith(f"📊 {JP_COMPARE_LABEL}"), cards[place - 1]
+    assert sum(1 for c in cards if c.startswith("📐 ")) == 1
 
     print("self-test: 位置の数字が記事とメールに載る OK")
 

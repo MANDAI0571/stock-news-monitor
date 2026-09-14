@@ -963,6 +963,11 @@ def build_stock_cards(df: pd.DataFrame, max_rows: int | None = None) -> list[str
         lines.append(f"📈 チャート: {_chart_url(code)}")
         # fix62(2026-09-13): 日経平均と重ねたチャートを1行足す（高重さんの指示）。
         lines.append(f"📊 {JP_COMPARE_LABEL}: {compare_chart_url(code)}")
+        # fix72(2026-09-14): 上の比較チャートと同じことを数字にした一行。
+        # 列が無い／文言が違うときは空になり、この行ごと出ない。
+        _rel = _relative_text(row)
+        if _rel:
+            lines.append(f"📐 {_rel}")
         openwork_url = _openwork_url(name)
         if openwork_url:
             lines.append(f"👥 OpenWork: {openwork_url}")
