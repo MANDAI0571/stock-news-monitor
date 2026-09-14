@@ -34,6 +34,7 @@ NOTE_SECTIONS = (
     ("claude", "300万円 Claude"),
     ("pullback", "25MA/押し目・200MA/240MA"),
     ("highs", "52週新高値"),
+    ("relative", "日経平均比較"),
 )
 
 FIXED_ATTACHMENTS = (
@@ -46,6 +47,9 @@ FIXED_ATTACHMENTS = (
     "note_claude_title.txt",
     "note_pullback_title.txt",
     "note_highs_title.txt",
+    "note_relative.md",
+    "note_relative.html",
+    "note_relative_title.txt",
     "note_copy_pack.html",
     "note_drafts_manifest.json",
     "note_cloud_artifact_manifest.json",
@@ -53,6 +57,7 @@ FIXED_ATTACHMENTS = (
     "note_draft_url_claude.txt",
     "note_draft_url_pullback.txt",
     "note_draft_url_highs.txt",
+    "note_draft_url_relative.txt",
     "market_snapshot.json",
     "metron_kpi_report.md",
     "metron_kpi.json",
@@ -323,6 +328,7 @@ def build_digest(output_dir: Path, now: datetime | None = None) -> DigestMail:
         ("300万円 Claude版", "claude"),
         ("押し目候補版", "pullback"),
         ("52週新高値版", "highs"),
+        ("日経平均比較版", "relative"),
     )
     # T-P(2026-08-11): 1本目の保存が失敗しても2本目以降のURLを落とさない。
     #   （run #72 では pullback/highs の1本目だけ保存に失敗し、
