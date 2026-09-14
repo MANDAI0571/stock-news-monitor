@@ -132,6 +132,7 @@ def main() -> None:
     _test_cloud_digest_mail()
     _test_note_mail_copy_and_preview()
     _test_note_copy_mails()
+    _test_note_article_lists_cover_all()
     _run_or_skip_on_outage("米株スクリーナーのテスト", _test_us_screening_pipeline)
     _test_us_scoring()
     _run_or_skip_on_outage("米株の銘柄一覧のテスト", _test_us_universe_build)
@@ -3293,6 +3294,44 @@ def _test_note_split_passes_quality_gate() -> None:
         assert validate_note_artifact._note4_content_issue("pullback", text) is None
 
     print("self-test: 分割した下書きは連結して品質ゲートを通る OK")
+
+
+def _test_note_article_lists_cover_all() -> None:
+    """記事を1本足したら、メールの一覧4ヶ所にも必ず足すこと。
+
+    fix69(2026-09-14): この突き合わせが無かったせいで、fix67 の4本目が
+    NOTE_ARTICLES / NOTE_SECTIONS / FIXED_ATTACHMENTS / note_urls から漏れ、
+    1通も届かなかった。二度と起こさないための見張り。
+    """
+    import inspect
+
+    import cloud_mail_digest as cmd
+    from note_draft import NOTE4_TITLES
+    from note_mail_html import NOTE_ARTICLES
+
+    keys = set(NOTE4_TITLES)
+
+    # 【コピー用】メールとコピー用ページが拾う一覧
+    assert {key for key, _ in NOTE_ARTICLES} == keys, NOTE_ARTICLES
+    # まとめメールの見出し
+    assert {key for key, _ in cmd.NOTE_SECTIONS} == keys, cmd.NOTE_SECTIONS
+
+    # 添付。本文・見た目・題名・下書きURL の4つを記事ごとに付ける
+    for key in sorted(keys):
+        for name in (
+            f"note_{key}.md",
+            f"note_{key}.html",
+            f"note_{key}_title.txt",
+            f"note_draft_url_{key}.txt",
+        ):
+            assert name in cmd.FIXED_ATTACHMENTS, name
+
+    # まとめメール本文に並べる下書きURLの一覧
+    source = inspect.getsource(cmd.build_digest)
+    for key in sorted(keys):
+        assert f'"{key}"),' in source, key
+
+    print("self-test: 記事の一覧がメール4ヶ所とそろっている OK")
 
 def _test_note_copy_mails() -> None:
     """note下書きは1本1通、本文だけのプレーンメールでも届く（iPhone用の逃げ道）。"""
