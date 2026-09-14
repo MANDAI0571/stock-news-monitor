@@ -161,6 +161,7 @@ def main() -> None:
     _test_relative_position()
     _test_relative_line_in_note()
     _test_relative_rank_csv()
+    _test_relative_note()
     print("self-test: OK")
 
 
@@ -346,7 +347,7 @@ def _test_compare_chart_links() -> None:
         for i, line in enumerate(note_lines)
         if "📈 チャート: {_chart_url(" in line or "📈 6ヶ月日足チャート" in line
     ]
-    assert len(chart_lines) == 3, chart_lines
+    assert len(chart_lines) == 4, chart_lines
     for index in chart_lines:
         following = "\n".join(note_lines[index : index + 8])
         assert "📊 " in following and "compare_chart_url(" in following, following
@@ -4318,6 +4319,124 @@ def _test_relative_rank_csv() -> None:
             assert key in row, f"CSVの列 {key} が行に無い"
 
     print("self-test: 日経平均に対する位置の並べ替え OK")
+
+
+def _test_relative_note() -> None:
+    """fix67(2026-09-14): 位置だけを並べた記事（高重さんの指示「CSV＋note記事に新しい1本」）。
+
+    通信しない。合成CSVから本文を作り、次の6つだけを見る。
+      ① 1年レンジの下から順に並ぶこと（CSVの並びが崩れていても記事側でそろえる）
+      ② 基準日の違う行・日付の無い行を同じ表に混ぜないこと
+      ③ 読めない数字は「取得できず」と書き、推測で埋めないこと
+      ④ 割安・割高と読める言葉を書かず、免責を必ず入れること
+      ⑤ 銘柄ごとに日経平均と重ねた比較チャートのURLが載ること
+      ⑥ 上限どおりの件数で、分割しきい値を超えない長さに収まること
+    見るのは位置の並べ方と書きぶりだけで、どの銘柄が良いかは一切見ない。
+    """
+    import re
+
+    import pandas as pd
+
+    import note_draft as nd
+    import run_screening as rs
+    from chart_links import JP_COMPARE_CODES, JP_COMPARE_LABEL
+    from scanner.relative import FORBIDDEN_WORDS
+
+    def _row(code: str, pos, date: str = "2026-09-11", **kw) -> dict:
+        row = {
+            "code": code, "ticker": f"{code}.T", "name": f"銘柄{code}",
+            "market": "プライム", "sector": "電気機器",
+            "screen_type": "RELATIVE_TO_INDEX", "screen_tags": "RELATIVE_TO_INDEX",
+            "index_ticker": "^N225", "index_label": "日経平均",
+            "range_pos_pct": pos, "ratio_ma25_gap_pct": -1.5,
+            "ratio_ma200_gap_pct": -8.0, "ratio_trend_20d_pct": -2.0,
+            "index_trend_20d_pct": 1.2, "bars": 260,
+            "current_price": 1234.0, "turnover_20d": 500_000_000,
+            "data_date": date,
+            "relative_line": (
+                "日経平均に対して：1年レンジの下から3%／比率は25日線 -1.5%・200日線 -8.0%"
+                "／直近20営業日は下向き（-2.0%）。日経平均自体は上向き（+1.2%）。"
+                "位置を測った数字で、企業価値の評価ではありません。"
+            ),
+        }
+        row.update(kw)
+        return row
+
+    # わざと順番を崩して渡す。除外されるべき行（基準日違い・日付なし）も混ぜる。
+    rows = [
+        _row("3333", 41.0),
+        _row("1111", 3.0),
+        _row("2222", 12.0),
+        _row("9999", 0.5, date="2026-09-10"),   # 基準日が1日古い
+        _row("8888", 0.1, date=""),             # 日付が取れていない
+        _row("4444", 77.0, ratio_ma25_gap_pct="", ratio_trend_20d_pct=float("nan")),
+    ]
+    source = Path("screening_relative_20260911_215838.csv")
+    text = nd.build_relative_note(pd.DataFrame(rows), source)
+
+    # ① 下から順に並ぶこと。1111(3.0) → 2222(12.0) → 3333(41.0) → 4444(77.0)
+    for rank, code in ((1, "1111"), (2, "2222"), (3, "3333"), (4, "4444")):
+        assert f"| {rank} | {code} |" in text, f"{rank}位が{code}になっていない"
+    assert "| 1 | 1111 | 銘柄1111 | プライム | 下から3% | -1.5% | -8.0% | -2.0% |" in text
+    assert "下から12%" in text and "下から41%" in text
+
+    # ② 基準日の違う行・日付の無い行は混ぜない（数字が小さくても入れない）。
+    assert "9999" not in text and "8888" not in text, "基準日の違う行が混ざっている"
+    assert "※ 基準日と異なる行・日付欠損行は2件除外しました。" in text
+    assert "2026-09-11" in text, "基準日が本文に無い"
+
+    # ③ 読めない数字は「取得できず」。NaN/None をそのまま出さない。
+    assert text.count("取得できず") >= 2, text.count("取得できず")
+    # 「finance」のように語の中に nan を含むURLは消さない。単語として残っていないことだけ見る。
+    leftover = re.findall(r"(?<![A-Za-z0-9_])(nan|NaN|None|none|null|inf|Inf)(?![A-Za-z0-9_])", text)
+    assert not leftover, leftover
+
+    # ④ 割安・割高と読める言葉を書かない。免責は必ず入れる。
+    for word in FORBIDDEN_WORDS:
+        if word == "推奨":
+            continue  # 「推奨するものではありません」という打ち消しでだけ使う
+        assert word not in text, word
+    assert text.count("推奨") == 1 and "推奨するものではありません" in text
+    assert "本記事は投資助言ではありません。売買判断はご自身の責任でお願いします。" in text
+    assert text.startswith("# ") and "日経平均に対して1年レンジの下にいる銘柄" in text.splitlines()[0]
+    assert "企業価値の評価ではありません" in text
+
+    # ⑤ 銘柄ごとに、日経平均と重ねた比較チャートのURLが載ること。
+    expected = (
+        f"- 📊 {JP_COMPARE_LABEL}: https://finance.yahoo.co.jp/quote/1111.T/chart"
+        f"?frm=dly&trm=6m&compare={JP_COMPARE_CODES}"
+    )
+    assert expected in text, expected
+
+    # ⑥ 件数の上限どおりで、分割しきい値を超えない長さに収まること。
+    #    relative は NOTE_SPLIT_KEYS に入れていないので、ここで収まらないと分割されず長いまま出る。
+    many = [_row(f"{5000 + i}", i * 0.05) for i in range(120)]
+    big = nd.build_relative_note(pd.DataFrame(many), source)
+    assert big.count("\n| ") == nd.RELATIVE_TABLE_ROW_CAP + 1, big.count("\n| ")  # 見出し行ぶん+1
+    assert big.count("### ") == nd.RELATIVE_DETAIL_CAP, big.count("### ")
+    assert "※ 対象は全120銘柄です。" in big
+    assert len(big) < nd.NOTE_SPLIT_MAX_CHARS, len(big)
+    assert "relative" not in nd.NOTE_SPLIT_KEYS, nd.NOTE_SPLIT_KEYS
+
+    # ⑦ 空でも記事として成立する（見出しと免責は出る。表は出さない）。
+    empty = nd.build_relative_note(pd.DataFrame(), None)
+    assert "データ不足" in empty and "本記事は投資助言ではありません" in empty
+    assert "| # |" not in empty
+    assert "source=未生成" in empty
+
+    # ⑧ 配線: 4本目として登録され、見出し画像を要求しないこと（無いと例外になるため）。
+    assert "relative" in nd.NOTE4_TITLES
+    assert "日経平均に対して" in nd.NOTE4_TITLES["relative"]
+    assert "relative" not in nd.NOTE4_FIXED_HEADERS and "relative" not in nd.NOTE4_CHART_CODES
+    assert nd.chart_rel_path("relative") is None
+
+    # ⑨ 記事が読む列が、CSVを書く側の列に揃っていること（揃っていないと空欄になる）。
+    columns = rs.AUX_COLUMNS["screening_relative"]
+    for key in ("code", "name", "market", "sector", "range_pos_pct", "ratio_ma25_gap_pct",
+                "ratio_ma200_gap_pct", "ratio_trend_20d_pct", "data_date", "relative_line"):
+        assert key in columns, key
+
+    print("self-test: 日経平均に対して下にいる銘柄の記事 OK")
 
 
 if __name__ == "__main__":
