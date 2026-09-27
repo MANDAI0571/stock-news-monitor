@@ -1,0 +1,25 @@
+{
+  "restart_date": "2026-09-28",
+  "mode": "paper",
+  "accounts": {
+    "codex": {
+      "starting_capital_jpy": 3000000,
+      "strategy": "増収増益かつ長期上昇トレンド中の押し目"
+    },
+    "claude": {
+      "starting_capital_jpy": 3000000,
+      "strategy": "出来高を伴うSランク上昇トレンド"
+    }
+  },
+  "execution": "当日大引け後に宣言し、次の東証営業日寄り付きでペーパー約定",
+  "shared_risk_rules": {
+    "max_positions": 3,
+    "slot_capital_jpy": 600000,
+    "stop_loss_pct": -5,
+    "take_profit_pct": 12,
+    "timeout_business_days": 15,
+    "max_entry_gap_pct": 3,
+    "drawdown_reduce_pct": -5,
+    "drawdown_stop_pct": -10
+  }
+}

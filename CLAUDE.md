@@ -115,16 +115,20 @@ CI（GitHub Actions）では `python3 self_test.py` を丸ごと流すので、�
   後続は `run_us_daily.py` の中で止まる（メールの二重送信を防ぐ）。
 - **OpenWork は米株の記事に入れない。** 日本のサービスなので、無理に別のものを当てはめない。
 
-## 6. 300万円運用（claude勘定）
+## 6. 300万円運用（Codex / Claudeの独立勘定）
 
-- 台帳は `data/claude_300man_orders.csv`（注文）と `data/claude_300man_journal.csv`（約定）。
-  **記事に載せる保有・損益は、必ずこの2つから作る。** スクリーニング結果を保有として書かない。
-- 規律: 1枠100万円・最大3銘柄 / 損切 -7% / 利確 +15% / 10営業日で手じまい。
-- **銘柄の選び方はチャートと出来高だけ**（`scanner/scoring.py` の `score_stock`）。
-  ニュース本文や業績予想は使っていない。決算は「発表日が確認できているか」だけを見て、
-  未確認なら S ランクを A に落とす。記事にもそう書く。
-- 買付を決めた時点で、当てはまった条件を注文台帳の `reason` に `｜` 区切りで残す
-  （`claude_300man_declare.py`）。記事はそれを読者の言葉に言い換えて出す。
+- Claude台帳は `data/claude_300man_orders.csv` と `data/claude_300man_journal.csv`、
+  Codex台帳は `data/codex_300man_orders.csv` と `data/codex_300man_journal.csv`。
+  **記事・比較表に載せる保有と損益は必ず各正本CSVから作る。** 候補を保有として書かない。
+- 2026-09-28に両口座を各300万円・保有0で同時再スタート。
+- 共通規律: 1枠60万円・最大3銘柄 / 損切 -5% / 利確 +12% / 15営業日で手じまい。
+  宣言時価格から翌営業日始値が±3%を超えた買いはキャンセルする。
+- ClaudeはSランクの出来高増加・上昇トレンドだけを選ぶ。A/Bランクは買わない。
+- Codexは長期上昇トレンド中の6〜25%押しから、yfinanceで増収増益を確認できた銘柄だけを選ぶ。
+- 両口座とも `adverse_news_gate.py` と `data/adverse_materials_watchlist.csv` で悪材料を確認し、
+  確認不能時は新規買いを見送る。口座損益が-5%以下なら最大1枠、-10%以下なら新規停止。
+- 買付を決めた時点で、当てはまった条件を注文台帳の `reason` に残す
+  （`claude_300man_declare.py` / `codex_300man_declare.py`）。
 
 ## 7. 過去にやらかしたこと（同じ轍を踏まない）
 

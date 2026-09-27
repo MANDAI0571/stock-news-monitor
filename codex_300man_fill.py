@@ -11,9 +11,9 @@ from jpx_calendar import fetch_open_price_yfinance, is_jpx_business_day
 
 
 ROOT = Path(__file__).resolve().parent
-ORDERS_PATH = ROOT / "data" / "claude_300man_orders.csv"
-JOURNAL_PATH = ROOT / "data" / "claude_300man_journal.csv"
-LEDGER_PATH = ROOT / "docs" / "claude_300man_ledger.md"
+ORDERS_PATH = ROOT / "data" / "codex_300man_orders.csv"
+JOURNAL_PATH = ROOT / "data" / "codex_300man_journal.csv"
+LEDGER_PATH = ROOT / "docs" / "codex_300man_ledger.md"
 JST = ZoneInfo("Asia/Tokyo")
 INITIAL_CASH = 3_000_000
 MAX_ENTRY_GAP_PCT = 3.0
@@ -60,9 +60,9 @@ def _write_ledger(orders: pd.DataFrame, journal: pd.DataFrame) -> None:
     closed_rows = journal[journal["status"].str.upper().eq("CLOSED")] if not journal.empty else journal
     realized = _numbers(closed_rows.get("realized_pnl")).sum()
     lines = [
-        "# Claudeが300万円運用 - 運用台帳（正本）",
+        "# Codexが300万円運用 - 運用台帳（正本）",
         "",
-        "Claude運用専用のペーパー運用記録です。",
+        "Codex運用専用のペーパー運用記録です。",
         "",
         f"- 再スタート日: {START_DATE}",
         f"- 初期資金: {INITIAL_CASH:,}円",
@@ -139,7 +139,7 @@ def _fill_buy(
         return journal, False
     value = round(price * shares)
     if value > _cash_balance(journal):
-        print(f"claude_300man_fill=skipped code={order['code']} reason=capital_limit")
+        print(f"codex_300man_fill=skipped code={order['code']} reason=capital_limit")
         return journal, False
     row = {
         "entry_date": target_date.isoformat(),
@@ -152,7 +152,7 @@ def _fill_buy(
         "entry_price": f"{price:.2f}",
         "shares": str(shares),
         "position_value": str(value),
-        "strategy": order.get("strategy", "claude_momentum"),
+        "strategy": order.get("strategy", "codex_quality_pullback"),
         "source_order_date": order["decision_date"],
     }
     journal = pd.concat([journal, pd.DataFrame([row])], ignore_index=True).fillna("")
@@ -182,7 +182,7 @@ def _fill_sell(
     )
     available = _numbers(journal.loc[open_mask, "shares"]).sum()
     if available < shares:
-        print(f"claude_300man_fill=skipped code={order['code']} reason=insufficient_position")
+        print(f"codex_300man_fill=skipped code={order['code']} reason=insufficient_position")
         return journal, False
     remaining = shares
     for journal_idx in journal.index[open_mask]:
@@ -213,7 +213,7 @@ def _fill_sell(
 
 def run(target_date: date) -> int:
     if not is_jpx_business_day(target_date):
-        print(f"claude_300man_fill=skipped reason=jpx_holiday date={target_date}")
+        print(f"codex_300man_fill=skipped reason=jpx_holiday date={target_date}")
         return 0
     orders = _read(ORDERS_PATH, ORDER_COLUMNS)
     journal = _read(JOURNAL_PATH, JOURNAL_COLUMNS)
@@ -225,15 +225,15 @@ def run(target_date: date) -> int:
     for idx, order in due.iterrows():
         shares = int(float(order["shares"] or 0))
         if shares <= 0 or shares % 100:
-            print(f"claude_300man_fill=skipped code={order['code']} reason=invalid_shares")
+            print(f"codex_300man_fill=skipped code={order['code']} reason=invalid_shares")
             continue
         side = order["side"].strip().upper()
         if side not in {"BUY", "SELL"}:
-            print(f"claude_300man_fill=skipped code={order['code']} reason=invalid_side")
+            print(f"codex_300man_fill=skipped code={order['code']} reason=invalid_side")
             continue
         price = fetch_open_price_yfinance(order["ticker"], target_date)
         if price is None:
-            print(f"claude_300man_fill=pending code={order['code']} reason=open_unavailable")
+            print(f"codex_300man_fill=pending code={order['code']} reason=open_unavailable")
             continue
         if side == "BUY":
             try:
@@ -242,12 +242,12 @@ def run(target_date: date) -> int:
                 decision_price = 0
             if decision_price <= 0:
                 orders.at[idx, "status"] = "CANCELLED_NO_DECISION_PRICE"
-                print(f"claude_300man_fill=cancelled code={order['code']} reason=decision_price_missing")
+                print(f"codex_300man_fill=cancelled code={order['code']} reason=decision_price_missing")
                 continue
             gap_pct = (price - decision_price) / decision_price * 100
             if abs(gap_pct) > MAX_ENTRY_GAP_PCT:
                 orders.at[idx, "status"] = "CANCELLED_GAP"
-                print(f"claude_300man_fill=cancelled code={order['code']} gap={gap_pct:+.2f}%")
+                print(f"codex_300man_fill=cancelled code={order['code']} gap={gap_pct:+.2f}%")
                 continue
             journal, changed = _fill_buy(orders, journal, idx, order, target_date, price, shares)
         else:
@@ -256,7 +256,7 @@ def run(target_date: date) -> int:
     _write(orders, ORDERS_PATH, ORDER_COLUMNS)
     _write(journal, JOURNAL_PATH, JOURNAL_COLUMNS)
     _write_ledger(orders, journal)
-    print(f"claude_300man_fill_date={target_date.isoformat()} filled={filled}")
+    print(f"codex_300man_fill_date={target_date.isoformat()} filled={filled}")
     return filled
 
 

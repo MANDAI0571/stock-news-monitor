@@ -1,0 +1,4 @@
+﻿decision_date,execution_date,side,code,ticker,name,sector,shares,decision_price,strategy,reason,status
+2026-09-25,2026-09-28,BUY,4689,4689.T,ＬＩＮＥヤフー,情報・通信業,1100,512.30,codex_quality_pullback,Codex増収増益押し目｜売上成長+13.1%・利益成長+24.1%・高値比-9.3%・25日線乖離-4.60%・悪材料ゲート通過,DECLARED
+2026-09-25,2026-09-28,BUY,4911,4911.T,資生堂,化学,100,3500.00,codex_quality_pullback,Codex増収増益押し目｜売上成長+10.5%・利益成長+264.8%・高値比-7.1%・25日線乖離-1.07%・悪材料ゲート通過,DECLARED
+2026-09-25,2026-09-28,BUY,9508,9508.T,九州電力,電気・ガス業,200,2061.50,codex_quality_pullback,Codex増収増益押し目｜売上成長+6.9%・利益成長+30.6%・高値比-6.7%・25日線乖離-0.98%・悪材料ゲート通過,DECLARED

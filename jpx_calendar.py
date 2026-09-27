@@ -1,9 +1,7 @@
 """JPX（東証）の営業日判定と、寄り付き価格の取得。
 
-fix25(2026-08-23): 高重さんの指示「ChatGPT(Codex)の300万円運用は削除」に伴い、
-fix25 が chatgpt_300man_note.py を丸ごと消した。ただしこの2つの道具だけは
-claude_300man_fill.py がそのまま使い続けるので、ここへ引っ越した。
-中身は移動前と一字一句同じ（挙動を変えないため）。
+2026-09-28再スタート後は claude_300man_fill.py と codex_300man_fill.py が
+同じ東証営業日・始値取得処理を使う。
 """
 
 from __future__ import annotations

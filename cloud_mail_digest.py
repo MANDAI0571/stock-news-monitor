@@ -11,7 +11,8 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from claude_300man_declare import declare_production
+from claude_300man_declare import declare_production as declare_claude_300man
+from codex_300man_declare import declare_production as declare_codex_300man
 from gmail_notify import DISCLAIMER, load_gmail_config, send_gmail
 from note_mail_html import (
     COPY_PAGE_URL,
@@ -337,9 +338,13 @@ def build_digest(output_dir: Path, now: datetime | None = None) -> DigestMail:
             available_urls.append((label if total <= 1 else f"{label}（{index}/{total}）", url))
     if available_urls:
         lines.append("## iPhoneでの表示方法")
-        lines.append("note iOSアプリの下書き読込不具合を回避するため、下書きリンクはメール本文に載せていません。")
+        lines.append("note iOSアプリの下書き読込不具合を回避するため、下書きURLはクリック用リンクにしていません。")
         lines.append("記事全文はこのメール本文、または添付の note_*.html で確認できます。")
-        lines.append("PC編集用の下書きURLは添付の note_draft_url_*.txt に保存しています。")
+        lines.append("PCで編集するときは、次のコード表示URLをコピーしてブラウザへ貼り付けてください。")
+        # 分割記事の2本目以降だけは、欠落確認のためコード表示で残す。
+        # 単独記事URLはiOSのUniversal Link誤起動を避け、添付txtだけに置く。
+        lines.extend(f"- {label}: `{url}`" for label, url in available_urls if "（" in label)
+        lines.append("同じURLは添付の note_draft_url_*.txt にも保存しています。")
         lines.append("")
     if missing_parts:
         lines.append("## note下書きの保存に失敗した本")
@@ -591,9 +596,10 @@ def _chart_url(code: str) -> str:
 def main() -> None:
     args = parse_args()
     output_dir = Path(args.output_dir)
-    # 規律ルールどおりに翌営業日の注文を宣告してから記事・メールを組む。
+    # 同じ当日データで両口座を宣告する。台帳と戦略は完全に分離する。
     # 本番の outputs/ のときだけ動く。
-    declare_production(output_dir)
+    declare_claude_300man(output_dir)
+    declare_codex_300man(output_dir)
     digest = build_digest(output_dir)
     write_digest_artifacts(output_dir, digest)
 

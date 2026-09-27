@@ -1,4 +1,4 @@
-"""Claude 300万円ペーパー運用：規律ルールどおりに翌営業日の注文を宣告する。
+"""Codex 300万円ペーパー運用：規律ルールどおりに翌営業日の注文を宣告する。
 
 高重さんの指示(2026-08-18)「規律ルールで自動発注」。
 これまでは買い候補が毎日出ていても注文台帳に入る仕組みが無く、
@@ -29,10 +29,11 @@ import pandas as pd
 from jptime import is_jpx_business_day
 from market_regime import fetch_regime
 from adverse_news_gate import live_news_gate
+from fundamentals import fetch_fundamentals
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-ORDERS_PATH = PROJECT_ROOT / "data" / "claude_300man_orders.csv"
-JOURNAL_PATH = PROJECT_ROOT / "data" / "claude_300man_journal.csv"
+ORDERS_PATH = PROJECT_ROOT / "data" / "codex_300man_orders.csv"
+JOURNAL_PATH = PROJECT_ROOT / "data" / "codex_300man_journal.csv"
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "outputs"
 REGIME_PATH = PROJECT_ROOT / "regime.txt"
 JST = ZoneInfo("Asia/Tokyo")
@@ -46,9 +47,7 @@ STOP_LOSS_PCT = -5.0
 TAKE_PROFIT_PCT = 12.0
 TIMEOUT_DAYS = 15
 MIN_SCORE = 105.0
-MIN_TURNOVER = 1_000_000_000.0
-MIN_VOLUME_RATIO = 1.15
-MAX_MA25_GAP_PCT = 8.0
+MIN_TURNOVER = 300_000_000.0
 CIRCUIT_REDUCE_PCT = -5.0
 CIRCUIT_STOP_PCT = -10.0
 
@@ -115,7 +114,7 @@ def load_regime() -> str:
     try:
         return fetch_regime().value
     except Exception as error:  # noqa: BLE001
-        print(f"claude_300man_declare=regime_unreadable err={error}")
+        print(f"codex_300man_declare=regime_unreadable err={error}")
         return "STOP"
 
 
@@ -149,17 +148,17 @@ def load_screening(output_dir: Path, today: date | None = None) -> pd.DataFrame:
     else:
         found = sorted(output_dir.glob("screening_result_*.csv"))
         if not found:
-            print("claude_300man_declare=no_screening_file")
+            print("codex_300man_declare=no_screening_file")
             return pd.DataFrame()
         path = found[-1]
     day = _file_day(path)
     if day != today:
-        print(f"claude_300man_declare=screening_stale file={path.name} day={day} today={today}")
+        print(f"codex_300man_declare=screening_stale file={path.name} day={day} today={today}")
         return pd.DataFrame()
     try:
         return pd.read_csv(path, dtype=str).fillna("")
     except Exception as error:  # noqa: BLE001
-        print(f"claude_300man_declare=screening_unreadable err={error}")
+        print(f"codex_300man_declare=screening_unreadable err={error}")
         return pd.DataFrame()
 
 
@@ -213,35 +212,39 @@ def _truthy(value: object) -> bool:
     return str(value or "").strip().lower() in {"1", "1.0", "true", "yes", "y"}
 
 
-def _claude_candidates(screening: pd.DataFrame) -> pd.DataFrame:
-    """出来高を伴う上昇トレンドだけを残すClaude用の厳格ゲート。"""
+def _codex_candidates(screening: pd.DataFrame) -> pd.DataFrame:
+    """長期上昇トレンド中の一時的な押し目を残すCodex用ゲート。
+
+    増収増益かどうかは、このローカル価格ゲートを通過した上位候補だけを
+    yfinanceで確認する。通信失敗や欠損時は買わない。
+    """
     if screening.empty:
         return screening
     ranked = screening.copy()
-    ranked["_rank"] = ranked.get("rank", "").astype(str).str.upper()
     for source, target in (
-        ("score", "_score"),
         ("turnover_20d", "_turnover"),
-        ("volume_ratio_5d_20d", "_volume_ratio"),
+        ("dist_52w_high_pct", "_high_drawdown"),
         ("ma25_gap_pct", "_ma25_gap"),
         ("ma75_gap_pct", "_ma75_gap"),
+        ("ma200_gap_pct", "_ma200_gap"),
         ("lot_value_100", "_lot_value"),
+        ("duke_support_score", "_support_score"),
     ):
         ranked[target] = pd.to_numeric(ranked.get(source), errors="coerce")
-    earnings_ok = ranked.get("earnings_status", "").astype(str).eq("確認済")
-    earnings_block = ranked.get("exclude_for_earnings", False).map(_truthy)
+    ma75_rising = ranked.get("ma75_rising", False).map(_truthy)
+    ma200_rising = ranked.get("ma200_rising", False).map(_truthy)
     ranked = ranked[
-        ranked["_rank"].eq("S")
-        & ranked["_score"].ge(MIN_SCORE)
-        & ranked["_turnover"].ge(MIN_TURNOVER)
-        & ranked["_volume_ratio"].ge(MIN_VOLUME_RATIO)
-        & ranked["_ma25_gap"].between(0, MAX_MA25_GAP_PCT)
-        & ranked["_ma75_gap"].gt(0)
+        ranked["_turnover"].ge(MIN_TURNOVER)
+        & ranked["_high_drawdown"].between(6, 25)
+        & ranked["_ma25_gap"].between(-8, 3)
+        & ranked["_ma75_gap"].gt(-3)
+        & ranked["_ma200_gap"].gt(0)
         & ranked["_lot_value"].le(SLOT_YEN)
-        & earnings_ok
-        & ~earnings_block
+        & ma75_rising
+        & ma200_rising
     ]
-    return ranked.sort_values(["_score", "_volume_ratio"], ascending=[False, False])
+    ranked["_support_score"] = ranked["_support_score"].fillna(0)
+    return ranked.sort_values(["_support_score", "_turnover"], ascending=[False, False]).head(12)
 
 
 def _open_positions(journal: pd.DataFrame) -> pd.DataFrame:
@@ -295,7 +298,7 @@ def declare(output_dir: Path, today: date | None = None) -> int:
             shares = int(float(row.get("shares") or 0))
             entry_date = date.fromisoformat(str(row.get("entry_date")).strip())
         except (TypeError, ValueError):
-            print(f"claude_300man_declare=skip_exit code={code} reason=broken_row")
+            print(f"codex_300man_declare=skip_exit code={code} reason=broken_row")
             continue
         if shares <= 0:
             continue
@@ -312,12 +315,12 @@ def declare(output_dir: Path, today: date | None = None) -> int:
             "sector": str(row.get("sector") or ""),
             "shares": str(shares),
             "decision_price": str(prices.get(code, "")),
-            "strategy": str(row.get("strategy") or "claude_momentum"),
+            "strategy": str(row.get("strategy") or "codex_quality_pullback"),
             "reason": reason,
             "status": "DECLARED",
         })
         selling.add(code)
-        print(f"claude_300man_declare=sell code={code} reason={reason}")
+        print(f"codex_300man_declare=sell code={code} reason={reason}")
 
     # --- 未約定のBUYぶんを先に取り置く ---------------------------------------
     # 前日の宣告が約定しなかった（始値が上振れた等）まま残っていると、
@@ -342,25 +345,25 @@ def declare(output_dir: Path, today: date | None = None) -> int:
     account_return = _portfolio_return_pct(journal, prices)
     if account_return <= CIRCUIT_STOP_PCT:
         slots_by_regime = 0
-        print(f"claude_300man_declare=circuit_stop return={account_return:.2f}%")
+        print(f"codex_300man_declare=circuit_stop return={account_return:.2f}%")
     elif account_return <= CIRCUIT_REDUCE_PCT:
         slots_by_regime = min(slots_by_regime, 1)
-        print(f"claude_300man_declare=circuit_reduce return={account_return:.2f}%")
+        print(f"codex_300man_declare=circuit_reduce return={account_return:.2f}%")
     used_slots = len(held_codes) - len(selling) + len(pending_buy)
     free_slots = min(slots_by_regime, MAX_POSITIONS - used_slots)
     cash = _cash_balance(journal) - reserved
     bought = 0
     if unpriced_pending:
-        print("claude_300man_declare=no_new reason=pending_order_price_unknown")
+        print("codex_300man_declare=no_new reason=pending_order_price_unknown")
     elif free_slots <= 0:
         print(
-            f"claude_300man_declare=no_new_slot regime={regime} held={len(held_codes)} "
+            f"codex_300man_declare=no_new_slot regime={regime} held={len(held_codes)} "
             f"selling={len(selling)} pending_buy={len(pending_buy)}"
         )
     elif screening.empty:
-        print("claude_300man_declare=no_screening")
+        print("codex_300man_declare=no_screening")
     else:
-        ranked = _claude_candidates(screening)
+        ranked = _codex_candidates(screening)
         used_sectors = set(open_rows.get("sector", pd.Series(dtype=str)).astype(str))
         if not pending_buy.empty:
             used_sectors.update(pending_buy.get("sector", pd.Series(dtype=str)).astype(str))
@@ -379,9 +382,22 @@ def declare(output_dir: Path, today: date | None = None) -> int:
             shares = int(SLOT_YEN // price // 100) * 100
             if shares <= 0:
                 continue
+            fundamentals = fetch_fundamentals(str(row.get("ticker") or f"{code}.T"), price)
+            sales_growth = fundamentals.get("sales_growth_pct")
+            profit_growth = fundamentals.get("profit_growth_pct")
+            try:
+                growth_ok = float(sales_growth) > 0 and float(profit_growth) > 0
+            except (TypeError, ValueError):
+                growth_ok = False
+            if not growth_ok:
+                print(
+                    f"codex_300man_declare=fundamentals_block code={code} "
+                    f"sales_growth={sales_growth} profit_growth={profit_growth}"
+                )
+                continue
             news = live_news_gate(code, str(row.get("name") or ""), today=today)
             if news.status != "CLEAR":
-                print(f"claude_300man_declare=news_block code={code} status={news.status} reason={news.reason}")
+                print(f"codex_300man_declare=news_block code={code} status={news.status} reason={news.reason}")
                 continue
             # 約定は翌営業日の始値。上に飛んでも足りるよう5%の余裕を見る。
             cost = price * shares
@@ -397,11 +413,12 @@ def declare(output_dir: Path, today: date | None = None) -> int:
                 "sector": sector,
                 "shares": str(shares),
                 "decision_price": f"{price:.2f}",
-                "strategy": "claude_momentum",
+                "strategy": "codex_quality_pullback",
                 # fix39(2026-09-03): 当てはまった条件も残す。あとから記事で説明できるようにするため。
                 "reason": (
-                    f"改善後Claude順張り Sランク・スコア{row.get('score')}"
-                    f"｜売買代金10億円以上・出来高比{_float(row, 'volume_ratio_5d_20d') or 0:.2f}倍"
+                    f"Codex増収増益押し目"
+                    f"｜売上成長{float(sales_growth):+.1f}%・利益成長{float(profit_growth):+.1f}%"
+                    f"・高値比-{_float(row, 'dist_52w_high_pct') or 0:.1f}%"
                     f"・25日線乖離{_float(row, 'ma25_gap_pct') or 0:+.2f}%・悪材料ゲート通過"
                 ),
                 "status": "DECLARED",
@@ -411,11 +428,11 @@ def declare(output_dir: Path, today: date | None = None) -> int:
                 used_sectors.add(sector)
             cash -= cost
             bought += 1
-            print(f"claude_300man_declare=buy code={code} shares={shares} price={price}")
+            print(f"codex_300man_declare=buy code={code} shares={shares} price={price}")
 
     if not declared_now:
         print(
-            f"claude_300man_declare=none regime={regime} held={len(held_codes)} "
+            f"codex_300man_declare=none regime={regime} held={len(held_codes)} "
             f"pending={len(pending_codes)} execution_date={execution_date.isoformat()}"
         )
         return 0
@@ -423,7 +440,7 @@ def declare(output_dir: Path, today: date | None = None) -> int:
     orders = pd.concat([orders, pd.DataFrame(declared_now)], ignore_index=True).fillna("")
     _write(orders, ORDERS_PATH, ORDER_COLUMNS)
     print(
-        f"claude_300man_declare=written count={len(declared_now)} regime={regime} "
+        f"codex_300man_declare=written count={len(declared_now)} regime={regime} "
         f"execution_date={execution_date.isoformat()}"
     )
     return len(declared_now)
@@ -443,31 +460,31 @@ def push_orders() -> bool:
 
     try:
         if run("git", "rev-parse", "--is-inside-work-tree").returncode != 0:
-            print("claude_300man_declare=push_skipped reason=not_a_git_repo")
+            print("codex_300man_declare=push_skipped reason=not_a_git_repo")
             return False
         run("git", "config", "user.name", "github-actions[bot]")
         run("git", "config", "user.email", "github-actions[bot]@users.noreply.github.com")
         if run("git", "add", str(ORDERS_PATH.relative_to(PROJECT_ROOT))).returncode != 0:
-            print("claude_300man_declare=push_failed step=add")
+            print("codex_300man_declare=push_failed step=add")
             return False
         if run("git", "diff", "--cached", "--quiet").returncode == 0:
-            print("claude_300man_declare=push_skipped reason=no_change")
+            print("codex_300man_declare=push_skipped reason=no_change")
             return True
         today = datetime.now(JST).date().isoformat()
         commit = run("git", "commit", "-m", f"chore: declare 300man orders {today} [skip ci]")
         if commit.returncode != 0:
-            print(f"claude_300man_declare=push_failed step=commit err={commit.stderr.strip()[:200]}")
+            print(f"codex_300man_declare=push_failed step=commit err={commit.stderr.strip()[:200]}")
             return False
         branch = os.environ.get("GITHUB_REF_NAME") or "main"
         run("git", "pull", "--rebase", "origin", branch)
         push = run("git", "push", "origin", f"HEAD:{branch}")
         if push.returncode != 0:
-            print(f"claude_300man_declare=push_failed step=push err={push.stderr.strip()[:200]}")
+            print(f"codex_300man_declare=push_failed step=push err={push.stderr.strip()[:200]}")
             return False
     except Exception as error:  # noqa: BLE001
-        print(f"claude_300man_declare=push_failed reason={error}")
+        print(f"codex_300man_declare=push_failed reason={error}")
         return False
-    print("claude_300man_declare=pushed")
+    print("codex_300man_declare=pushed")
     return True
 
 
@@ -475,14 +492,14 @@ def declare_production(output_dir: Path, today: date | None = None) -> int:
     """本番の outputs/ のときだけ発注する（セルフテストの一時ディレクトリでは動かない）。"""
     try:
         if output_dir.resolve() != DEFAULT_OUTPUT_DIR.resolve():
-            print(f"claude_300man_declare=skipped reason=not_production_output_dir dir={output_dir}")
+            print(f"codex_300man_declare=skipped reason=not_production_output_dir dir={output_dir}")
             return 0
         count = declare(output_dir, today)
         if count:
             push_orders()
         return count
     except Exception as error:  # noqa: BLE001 - 発注に失敗してもメールは送る
-        print(f"claude_300man_declare=failed reason={error}")
+        print(f"codex_300man_declare=failed reason={error}")
         return 0
 
 
