@@ -306,7 +306,19 @@ jobs:
           else
             python3 cloud_mail_digest.py --output-dir outputs --dry-run
           fi
- 
+
+      - name: Update and persist phase 2 trading metrics
+        run: |
+          python3 dual_300man_metrics.py
+          python3 dual_300man_compare.py
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/claude_300man_journal.csv data/codex_300man_journal.csv docs/claude_300man_ledger.md docs/codex_300man_ledger.md docs/dual_300man_metrics.md docs/dual_300man_comparison.md
+          git diff --cached --quiet && exit 0
+          git commit -m "chore: update phase 2 trading metrics [skip ci]"
+          git pull --rebase origin "${GITHUB_REF_NAME}"
+          git push origin HEAD:"${GITHUB_REF_NAME}"
+
       - name: Upload Note draft artifact
         if: always()
         uses: actions/upload-artifact@v7

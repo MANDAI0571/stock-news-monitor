@@ -1523,9 +1523,13 @@ def _portfolio_status_block(discipline: pd.DataFrame, operation: str = "claude")
 
 PORTFOLIO_SECTION_RECORD = "## 確定トレードの成績"
 
-# 規律の値。paper_portfolio_discipline.py / claude_300man_declare.py と同じ。
+# 規律の値。data/dual_300man_start.json を正本にする。
+from dual_300man_config import CONFIG as DUAL_300MAN_CONFIG
+
 PORTFOLIO_RULE_LINE = (
-    "ルール：1枠100万円・最大3銘柄 ／ 損切 -7% ／ 利確 +15% ／ 10営業日で手じまい"
+    f"ルール：1枠{DUAL_300MAN_CONFIG.slot_yen // 10_000}万円・最大{DUAL_300MAN_CONFIG.max_positions}銘柄"
+    f" ／ 損切 {DUAL_300MAN_CONFIG.stop_loss_pct:.0f}% ／ 利確 +{DUAL_300MAN_CONFIG.take_profit_pct:.0f}%"
+    f" ／ {DUAL_300MAN_CONFIG.timeout_days}営業日で手じまい"
 )
 
 

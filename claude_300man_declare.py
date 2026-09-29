@@ -4,11 +4,11 @@
 これまでは買い候補が毎日出ていても注文台帳に入る仕組みが無く、
 2026-07-21の1件（良品計画）以外は1件も約定していなかった。
 
-ルール（note記事に書いてあるものと同じ）:
-  - 新規はS→A→Bの上位から。地合いNORMAL=最大3銘柄 / CAUTION=1銘柄 / RISK・STOP=新規なし
-  - 1枠およそ100万円・100株単位・現金の範囲内
+ルール（data/dual_300man_start.json が正本）:
+  - 新規は厳格ゲートを通ったSランク。地合いNORMAL=最大3銘柄 / CAUTION=1銘柄 / RISK・STOP=新規なし
+  - 1枠60万円・100株単位・現金の範囲内
   - 保有は最大3銘柄。すでに持っている銘柄は買い増ししない
-  - 手仕舞い: 損切 -7% / 利確 +15% / 10営業日タイムアウト
+  - 手仕舞い: 損切 -5% / 利確 +12% / 15営業日タイムアウト
 
 実データ（outputs/screening_result*.csv・regime.txt・台帳CSV）だけで判断する。
 値段が取れないものは見送る。推測では埋めない。
@@ -27,8 +27,17 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 
 from jptime import is_jpx_business_day
+from jpx_calendar import fetch_close_price_yfinance
 from market_regime import fetch_regime
 from adverse_news_gate import live_news_gate
+from dual_300man_config import (
+    CONFIG,
+    JOURNAL_COLUMNS,
+    ORDER_COLUMNS,
+    order_compatibility,
+    order_metadata,
+    production_rules_are_clean,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 ORDERS_PATH = PROJECT_ROOT / "data" / "claude_300man_orders.csv"
@@ -37,30 +46,18 @@ DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "outputs"
 REGIME_PATH = PROJECT_ROOT / "regime.txt"
 JST = ZoneInfo("Asia/Tokyo")
 
-INITIAL_CASH = 3_000_000
-# 旧ルールの100万円枠では寄り付きギャップ時の損失が大きかったため、
-# 1枠を60万円へ縮小して最大40%を現金として残す。
-SLOT_YEN = 600_000
-MAX_POSITIONS = 3
-STOP_LOSS_PCT = -5.0
-TAKE_PROFIT_PCT = 12.0
-TIMEOUT_DAYS = 15
+INITIAL_CASH = CONFIG.initial_cash
+SLOT_YEN = CONFIG.slot_yen
+MAX_POSITIONS = CONFIG.max_positions
+STOP_LOSS_PCT = CONFIG.stop_loss_pct
+TAKE_PROFIT_PCT = CONFIG.take_profit_pct
+TIMEOUT_DAYS = CONFIG.timeout_days
 MIN_SCORE = 105.0
 MIN_TURNOVER = 1_000_000_000.0
 MIN_VOLUME_RATIO = 1.15
 MAX_MA25_GAP_PCT = 8.0
-CIRCUIT_REDUCE_PCT = -5.0
-CIRCUIT_STOP_PCT = -10.0
-
-ORDER_COLUMNS = [
-    "decision_date", "execution_date", "side", "code", "ticker",
-    "name", "sector", "shares", "decision_price", "strategy", "reason", "status",
-]
-JOURNAL_COLUMNS = [
-    "entry_date", "fill_time_jst", "status", "code", "ticker",
-    "name", "sector", "entry_price", "shares", "position_value", "strategy", "source_order_date",
-    "exit_date", "exit_price", "exit_value", "realized_pnl", "exit_order_date",
-]
+CIRCUIT_REDUCE_PCT = CONFIG.circuit_reduce_pct
+CIRCUIT_STOP_PCT = CONFIG.circuit_stop_pct
 
 # 地合いごとの新規建て上限
 REGIME_SLOTS = {"NORMAL": 3, "CAUTION": 1, "RISK": 0, "STOP": 0}
@@ -250,22 +247,62 @@ def _open_positions(journal: pd.DataFrame) -> pd.DataFrame:
     return journal[journal["status"].astype(str).str.upper().eq("OPEN")]
 
 
+def _ensure_position_prices(
+    prices: dict[str, float], open_rows: pd.DataFrame, today: date
+) -> dict[str, float]:
+    """候補から外れた保有銘柄も必ず手仕舞い判定できるよう終値を補う。"""
+    out = dict(prices)
+    for _, row in open_rows.iterrows():
+        code = str(row.get("code", "")).strip()
+        if not code or code in out:
+            continue
+        ticker = str(row.get("ticker") or f"{code}.T")
+        price = fetch_close_price_yfinance(ticker, today)
+        if price is None:
+            print(f"claude_300man_declare=position_price_unavailable code={code}")
+            continue
+        out[code] = price
+    return out
+
+
 def _declared(orders: pd.DataFrame) -> pd.DataFrame:
     if orders.empty:
         return orders
     return orders[orders["status"].astype(str).str.upper().eq("DECLARED")]
 
 
-def _exit_reason(entry_price: float, price: float | None, held_days: int) -> str | None:
+def _exit_reason(entry_price: float, price: float | None, held_days: int) -> tuple[str, str] | None:
     if price is not None and entry_price > 0:
         change = (price - entry_price) / entry_price * 100
         if change <= STOP_LOSS_PCT:
-            return f"損切ルール {change:+.1f}%（-7%以下）"
+            return "STOP_LOSS", f"損切ルール {change:+.1f}%（{STOP_LOSS_PCT:.0f}%以下）"
         if change >= TAKE_PROFIT_PCT:
-            return f"利確ルール {change:+.1f}%（+15%以上）"
+            return "TAKE_PROFIT", f"利確ルール {change:+.1f}%（+{TAKE_PROFIT_PCT:.0f}%以上）"
     if held_days >= TIMEOUT_DAYS:
-        return f"タイムアウト {held_days}営業日（10営業日）"
+        return "TIMEOUT", f"タイムアウト {held_days}営業日（{TIMEOUT_DAYS}営業日）"
     return None
+
+
+def _cancel_incompatible_pending(orders: pd.DataFrame, today: date) -> bool:
+    changed = False
+    for idx, row in _declared(orders).iterrows():
+        compatible, reason = order_compatibility(row)
+        if not compatible:
+            orders.at[idx, "status"] = f"CANCELLED_{reason}"
+            orders.at[idx, "status_note"] = "現在の期・ルールと不一致"
+            changed = True
+            continue
+        try:
+            execution_date = date.fromisoformat(str(row.get("execution_date", "")))
+        except ValueError:
+            orders.at[idx, "status"] = "CANCELLED_INVALID_EXECUTION_DATE"
+            changed = True
+            continue
+        if business_days_between(execution_date, today) > CONFIG.pending_expiry_business_days:
+            orders.at[idx, "status"] = "CANCELLED_EXPIRED"
+            orders.at[idx, "status_note"] = "予定日の始値を取得できないまま期限切れ"
+            changed = True
+    return changed
 
 
 def declare(output_dir: Path, today: date | None = None) -> int:
@@ -274,14 +311,15 @@ def declare(output_dir: Path, today: date | None = None) -> int:
     execution_date = next_business_day(today)
     orders = _read(ORDERS_PATH, ORDER_COLUMNS)
     journal = _read(JOURNAL_PATH, JOURNAL_COLUMNS)
+    orders_changed = _cancel_incompatible_pending(orders, today)
     screening = load_screening(output_dir, today)
-    prices = _price_map(screening)
     regime = load_regime()
     declared_now: list[dict[str, str]] = []
 
     pending = _declared(orders)
     pending_codes = set(pending["code"].astype(str)) if not pending.empty else set()
     open_rows = _open_positions(journal)
+    prices = _ensure_position_prices(_price_map(screening), open_rows, today)
     held_codes = set(open_rows["code"].astype(str)) if not open_rows.empty else set()
 
     # --- 手仕舞い（損切 / 利確 / タイムアウト） -------------------------------
@@ -299,10 +337,15 @@ def declare(output_dir: Path, today: date | None = None) -> int:
             continue
         if shares <= 0:
             continue
-        reason = _exit_reason(entry_price, prices.get(code), business_days_between(entry_date, today))
-        if reason is None:
+        held_days = business_days_between(entry_date, today)
+        exit_signal = _exit_reason(entry_price, prices.get(code), held_days)
+        if exit_signal is None:
             continue
+        exit_type, reason = exit_signal
+        decision_price = prices.get(code)
+        decision_return = ((decision_price / entry_price - 1) * 100) if decision_price else None
         declared_now.append({
+            **order_metadata(),
             "decision_date": today.isoformat(),
             "execution_date": execution_date.isoformat(),
             "side": "SELL",
@@ -311,8 +354,11 @@ def declare(output_dir: Path, today: date | None = None) -> int:
             "name": str(row.get("name") or ""),
             "sector": str(row.get("sector") or ""),
             "shares": str(shares),
-            "decision_price": str(prices.get(code, "")),
+            "decision_price": str(decision_price or ""),
             "strategy": str(row.get("strategy") or "claude_momentum"),
+            "exit_type": exit_type,
+            "decision_return_pct": f"{decision_return:.2f}" if decision_return is not None else "",
+            "holding_business_days": str(held_days),
             "reason": reason,
             "status": "DECLARED",
         })
@@ -388,6 +434,7 @@ def declare(output_dir: Path, today: date | None = None) -> int:
             if cost * 1.05 > cash:
                 continue
             declared_now.append({
+                **order_metadata(),
                 "decision_date": today.isoformat(),
                 "execution_date": execution_date.isoformat(),
                 "side": "BUY",
@@ -398,6 +445,9 @@ def declare(output_dir: Path, today: date | None = None) -> int:
                 "shares": str(shares),
                 "decision_price": f"{price:.2f}",
                 "strategy": "claude_momentum",
+                "exit_type": "",
+                "decision_return_pct": "",
+                "holding_business_days": "",
                 # fix39(2026-09-03): 当てはまった条件も残す。あとから記事で説明できるようにするため。
                 "reason": (
                     f"改善後Claude順張り Sランク・スコア{row.get('score')}"
@@ -414,6 +464,8 @@ def declare(output_dir: Path, today: date | None = None) -> int:
             print(f"claude_300man_declare=buy code={code} shares={shares} price={price}")
 
     if not declared_now:
+        if orders_changed:
+            _write(orders, ORDERS_PATH, ORDER_COLUMNS)
         print(
             f"claude_300man_declare=none regime={regime} held={len(held_codes)} "
             f"pending={len(pending_codes)} execution_date={execution_date.isoformat()}"
@@ -476,6 +528,10 @@ def declare_production(output_dir: Path, today: date | None = None) -> int:
     try:
         if output_dir.resolve() != DEFAULT_OUTPUT_DIR.resolve():
             print(f"claude_300man_declare=skipped reason=not_production_output_dir dir={output_dir}")
+            return 0
+        clean, details = production_rules_are_clean()
+        if not clean:
+            print(f"claude_300man_declare=skipped reason=uncommitted_strategy_changes details={details}")
             return 0
         count = declare(output_dir, today)
         if count:

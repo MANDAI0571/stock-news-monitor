@@ -11,6 +11,7 @@ CRITICAL_TESTS = {
     "_test_journal_and_pattern_learning",
     "_test_decision_engine",
     "_test_trade_verification",
+    "_test_dual_300man_phase2_controls",
 }
 
 

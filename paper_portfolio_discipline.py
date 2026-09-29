@@ -7,16 +7,18 @@ from pathlib import Path
 import pandas as pd
 
 from market_regime import Regime, fetch_regime
+from dual_300man_config import CONFIG
+from jpx_calendar import add_jpx_business_days
 from scanner.prices import timestamped_csv_path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-CAPITAL = 3_000_000
-MAX_POSITIONS = 3
-SLOT_CAPITAL = 1_000_000
-STOP_LOSS_PCT = 0.07
-TAKE_PROFIT_PCT = 0.15
-TIMEOUT_BUSINESS_DAYS = 10
+CAPITAL = CONFIG.initial_cash
+MAX_POSITIONS = CONFIG.max_positions
+SLOT_CAPITAL = CONFIG.slot_yen
+STOP_LOSS_PCT = abs(CONFIG.stop_loss_pct) / 100
+TAKE_PROFIT_PCT = CONFIG.take_profit_pct / 100
+TIMEOUT_BUSINESS_DAYS = CONFIG.timeout_days
 
 
 def build_discipline_portfolio(screening: pd.DataFrame, regime: Regime | str) -> pd.DataFrame:
@@ -44,7 +46,7 @@ def build_discipline_portfolio(screening: pd.DataFrame, regime: Regime | str) ->
             continue
         position_value = int(shares * price)
         entry_date = date.today()
-        timeout_date = pd.bdate_range(start=pd.Timestamp(entry_date), periods=TIMEOUT_BUSINESS_DAYS + 1)[-1].date()
+        timeout_date = add_jpx_business_days(entry_date, TIMEOUT_BUSINESS_DAYS)
         rows.append(
             {
                 "slot": len(rows) + 1,
@@ -61,7 +63,11 @@ def build_discipline_portfolio(screening: pd.DataFrame, regime: Regime | str) ->
                 "stop_loss": round(price * (1 - STOP_LOSS_PCT), 1),
                 "take_profit": round(price * (1 + TAKE_PROFIT_PCT), 1),
                 "timeout_date": timeout_date.isoformat(),
-                "rule": f"Sランクのみ / 地合い{regime_value}は最大{max_positions}銘柄 / 1枠100万円 / 損切7% / 利確15% / 10営業日タイムアウト",
+                "rule": (
+                    f"Sランクのみ / 地合い{regime_value}は最大{max_positions}銘柄 / "
+                    f"1枠{SLOT_CAPITAL // 10_000}万円 / 損切{abs(CONFIG.stop_loss_pct):.0f}% / "
+                    f"利確{CONFIG.take_profit_pct:.0f}% / {TIMEOUT_BUSINESS_DAYS}営業日タイムアウト"
+                ),
                 "cash_reason": "",
             }
         )
@@ -101,7 +107,7 @@ def _cash_rows(regime: str, reason: str, count: int, start_slot: int = 1) -> pd.
                 "stop_loss": "",
                 "take_profit": "",
                 "timeout_date": "",
-                "rule": "最大3銘柄 / Sランクのみ",
+                "rule": f"最大{MAX_POSITIONS}銘柄 / 1枠{SLOT_CAPITAL // 10_000}万円 / Sランクのみ",
                 "cash_reason": reason,
             }
             for i in range(count)

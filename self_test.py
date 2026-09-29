@@ -4109,6 +4109,113 @@ def _test_upstream_outage_judgement() -> None:
     print("self-test: 通信エラーの切り分け OK")
 
 
+def _test_dual_300man_phase2_controls() -> None:
+    """第2期の期ガード・遅延約定・計測列をオフラインで確認する。"""
+    import tempfile
+    from datetime import date
+
+    import dual_300man_fill as fill
+    import dual_300man_metrics as metrics
+    import claude_300man_declare as claude_declare
+    from dual_300man_config import CONFIG, JOURNAL_COLUMNS, ORDER_COLUMNS, order_metadata
+
+    assert CONFIG.restart_date.isoformat() == "2026-09-28"
+    assert CONFIG.slot_yen == 600_000
+    assert CONFIG.stop_loss_pct == -5
+    assert CONFIG.take_profit_pct == 12
+    assert CONFIG.timeout_days == 15
+    assert len(CONFIG.rule_hash) == 12
+    assert claude_declare._exit_reason(100, 94.9, 1)[0] == "STOP_LOSS"
+    assert claude_declare._exit_reason(100, 112.0, 1)[0] == "TAKE_PROFIT"
+    assert claude_declare._exit_reason(100, 105.0, 15)[0] == "TIMEOUT"
+
+    saved_close_fetch = claude_declare.fetch_close_price_yfinance
+    try:
+        claude_declare.fetch_close_price_yfinance = lambda _ticker, _day: 94.0
+        held = pd.DataFrame([{"code": "1111", "ticker": "1111.T"}])
+        assert claude_declare._ensure_position_prices({}, held, date(2026, 9, 29))["1111"] == 94.0
+        # 候補CSVに価格があるときは直接取得せず、その価格を優先する。
+        claude_declare.fetch_close_price_yfinance = lambda *_args: (_ for _ in ()).throw(AssertionError())
+        assert claude_declare._ensure_position_prices({"1111": 95.0}, held, date(2026, 9, 29))["1111"] == 95.0
+    finally:
+        claude_declare.fetch_close_price_yfinance = saved_close_fetch
+
+    saved_fill_paths = fill.account_paths
+    saved_fetch = fill.fetch_open_price_yfinance
+    saved_fill_ledger = fill.write_ledger
+    saved_metric_paths = metrics.account_paths
+    saved_metric_ledger = metrics.write_ledger
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            orders_path = root / "orders.csv"
+            journal_path = root / "journal.csv"
+            ledger_path = root / "ledger.md"
+            meta = order_metadata()
+            orders = pd.DataFrame([
+                {
+                    **meta, "decision_date": "2026-09-25", "execution_date": "2026-09-28",
+                    "side": "BUY", "code": "1111", "ticker": "1111.T", "name": "有効",
+                    "sector": "テスト", "shares": "100", "decision_price": "100",
+                    "strategy": "test", "reason": "test", "status": "DECLARED",
+                },
+                {
+                    **meta, "phase_id": "old-phase", "decision_date": "2026-09-25",
+                    "execution_date": "2026-09-28", "side": "BUY", "code": "2222",
+                    "ticker": "2222.T", "name": "旧期", "sector": "テスト", "shares": "100",
+                    "decision_price": "100", "strategy": "test", "reason": "test", "status": "DECLARED",
+                },
+            ]).reindex(columns=ORDER_COLUMNS).fillna("")
+            orders.to_csv(orders_path, index=False, encoding="utf-8-sig")
+            pd.DataFrame(columns=JOURNAL_COLUMNS).to_csv(journal_path, index=False, encoding="utf-8-sig")
+
+            paths = lambda _account: (orders_path, journal_path, ledger_path)
+            fill.account_paths = paths
+            fill.fetch_open_price_yfinance = lambda _ticker, _day: 101.0
+            fill.write_ledger = lambda *_args, **_kwargs: None
+            # 9/28のジョブが失敗しても、9/29に「9/28始値」で補完する。
+            assert fill.run("claude", date(2026, 9, 29)) == 1
+            got_orders = pd.read_csv(orders_path, dtype=str).fillna("")
+            assert got_orders.iloc[0]["status"] == "FILLED"
+            assert got_orders.iloc[0]["fill_date"] == "2026-09-28"
+            assert got_orders.iloc[1]["status"] == "CANCELLED_PHASE_MISMATCH"
+            got_journal = pd.read_csv(journal_path, dtype=str).fillna("")
+            assert len(got_journal) == 1
+            assert got_journal.iloc[0]["entry_gap_pct"] == "1.00"
+            assert got_journal.iloc[0]["planned_stop_risk_pct_initial"] == "0.02"
+
+            days = pd.bdate_range("2026-09-28", periods=12)
+            history = pd.DataFrame({
+                "Open": [101.0] * 12,
+                "High": [102.0, 105.0, 110.0] + [108.0] * 9,
+                "Low": [99.0, 98.0, 97.0] + [100.0] * 9,
+                "Close": [101.0, 104.0, 108.0] + [107.0] * 9,
+                "Volume": [1000] * 12,
+            }, index=days)
+            metrics.account_paths = paths
+            metrics.write_ledger = lambda *_args, **_kwargs: None
+            updated, stats = metrics.update_account(
+                "claude", fetcher=lambda _ticker: history, as_of=date(2026, 10, 13)
+            )
+            assert stats["updated"] == 1
+            assert updated.iloc[0]["mfe_pct"] == "8.91"
+            assert updated.iloc[0]["mae_pct"] == "-3.96"
+            report = metrics.build_report(
+                {"codex": updated.iloc[0:0], "claude": updated},
+                {"codex": {"rows": 0, "updated": 0, "price_unavailable": 0}, "claude": stats},
+            )
+            assert "20決済未満" in report
+            assert "判定翌朝の平均ギャップ" in report
+            assert "トレーリング: 0回" in report
+    finally:
+        fill.account_paths = saved_fill_paths
+        fill.fetch_open_price_yfinance = saved_fetch
+        fill.write_ledger = saved_fill_ledger
+        metrics.account_paths = saved_metric_paths
+        metrics.write_ledger = saved_metric_ledger
+    print("self-test: 第2期300万円運用(期ガード・補完約定・MFE/MAE) OK")
+
+
 def _run_main_with_log() -> None:
     """main() を動かし、出力を outputs/self_test_last.log にも残す。
 

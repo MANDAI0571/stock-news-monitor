@@ -114,6 +114,50 @@ def fetch_open_price_yfinance(ticker: str, trading_date: date) -> float | None:
     return None
 
 
+def fetch_close_price_yfinance(ticker: str, trading_date: date) -> float | None:
+    """保有銘柄が候補CSVから消えても、当日の損切り判定に使う終値を取る。"""
+    import yfinance as yf
+
+    start = trading_date.isoformat()
+    end = (trading_date + timedelta(days=1)).isoformat()
+    try:
+        data = yf.download(
+            ticker,
+            start=start,
+            end=end,
+            interval="1d",
+            auto_adjust=False,
+            progress=False,
+            prepost=False,
+            threads=False,
+            timeout=20,
+        )
+    except Exception as exc:
+        print(f"close_price_fetch_error[{ticker}]={exc}", flush=True)
+        return None
+    if data is None or data.empty:
+        return None
+    frame = data.copy()
+    if isinstance(frame.columns, pd.MultiIndex):
+        levels0 = set(frame.columns.get_level_values(0))
+        if ticker in levels0:
+            frame = frame[ticker]
+        elif "Close" in levels0:
+            frame.columns = frame.columns.get_level_values(0)
+        else:
+            try:
+                series = frame.xs("Close", axis=1, level=-1).iloc[:, 0]
+                values = pd.to_numeric(series, errors="coerce").dropna()
+                return _positive_float(values.iloc[-1]) if not values.empty else None
+            except (KeyError, IndexError):
+                return None
+    if "Close" not in frame.columns:
+        return None
+    values = pd.to_numeric(frame["Close"], errors="coerce").dropna()
+    price = _positive_float(values.iloc[-1]) if not values.empty else None
+    return round(price, 2) if price is not None else None
+
+
 def _first_open(data: pd.DataFrame, ticker: str) -> float | None:
     if data is None or data.empty:
         return None

@@ -8,9 +8,11 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
+from dual_300man_config import CONFIG
+
 
 ROOT = Path(__file__).resolve().parent
-INITIAL_CASH = 3_000_000
+INITIAL_CASH = CONFIG.initial_cash
 JST = ZoneInfo("Asia/Tokyo")
 OUTPUT = ROOT / "docs" / "dual_300man_comparison.md"
 
@@ -55,9 +57,11 @@ def build() -> str:
     return "\n".join([
         "# Codex vs Claude 300万円ペーパー運用",
         "",
-        "- 再スタート日: 2026-09-28",
+        f"- 期: `{CONFIG.phase_id}`",
+        f"- ルール版: `{CONFIG.strategy_version}` / 設定 `{CONFIG.rule_hash}`",
+        f"- 再スタート日: {CONFIG.restart_date.isoformat()}",
         f"- 集計時刻: {now}",
-        "- 各口座の初期資金: 3,000,000円",
+        f"- 各口座の初期資金: {CONFIG.initial_cash:,}円",
         "",
         "| 口座 | 戦略 | 現金残 | 保有 | 実現損益 | 約定待ち |",
         "|---|---|---:|---:|---:|---:|",

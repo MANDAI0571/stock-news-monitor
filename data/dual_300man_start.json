@@ -1,4 +1,7 @@
 {
+  "schema_version": 2,
+  "phase_id": "claude-codex-phase2-2026-09-28",
+  "strategy_version": "2.0.0",
   "restart_date": "2026-09-28",
   "mode": "paper",
   "accounts": {
@@ -20,6 +23,12 @@
     "timeout_business_days": 15,
     "max_entry_gap_pct": 3,
     "drawdown_reduce_pct": -5,
-    "drawdown_stop_pct": -10
+    "drawdown_stop_pct": -10,
+    "pending_expiry_business_days": 3,
+    "execution_costs_jpy": 0,
+    "trailing_stop": {
+      "enabled": false,
+      "note": "数値ルール未定義。exit_typeとMFE/利益捕捉率を記録し、定義後に有効化する"
+    }
   }
 }

@@ -1,4 +1,4 @@
-﻿decision_date,execution_date,side,code,ticker,name,sector,shares,decision_price,strategy,reason,status
-2026-09-25,2026-09-28,BUY,7459,7459.T,メディパルホールディングス,卸売業,100,3161.00,claude_momentum,改善後Claude順張り Sランク・スコア123｜売買代金10億円以上・出来高比1.58倍・25日線乖離+7.88%・悪材料ゲート通過,DECLARED
-2026-09-25,2026-09-28,BUY,8359,8359.T,八十二長野銀行,銀行業,200,2840.00,claude_momentum,改善後Claude順張り Sランク・スコア121｜売買代金10億円以上・出来高比1.26倍・25日線乖離+5.66%・悪材料ゲート通過,DECLARED
-2026-09-25,2026-09-28,BUY,9044,9044.T,ＮＡＮＫＡＩ,陸運業,100,3244.00,claude_momentum,改善後Claude順張り Sランク・スコア114｜売買代金10億円以上・出来高比2.29倍・25日線乖離+4.04%・悪材料ゲート通過,DECLARED
+﻿phase_id,strategy_version,rule_hash,declaration_commit,decision_date,execution_date,side,code,ticker,name,sector,shares,decision_price,strategy,exit_type,decision_return_pct,holding_business_days,reason,status,fill_date,fill_price,fill_gap_pct,status_note
+claude-codex-phase2-2026-09-28,2.0.0,753eb2644c04,migration-1f14a0871aa6,2026-09-25,2026-09-28,BUY,7459,7459.T,メディパルホールディングス,卸売業,100,3161.00,claude_momentum,,,,改善後Claude順張り Sランク・スコア123｜売買代金10億円以上・出来高比1.58倍・25日線乖離+7.88%・悪材料ゲート通過,FILLED,2026-09-28,3161.00,0.00,第2期開始コミットから移行
+claude-codex-phase2-2026-09-28,2.0.0,753eb2644c04,migration-1f14a0871aa6,2026-09-25,2026-09-28,BUY,8359,8359.T,八十二長野銀行,銀行業,200,2840.00,claude_momentum,,,,改善後Claude順張り Sランク・スコア121｜売買代金10億円以上・出来高比1.26倍・25日線乖離+5.66%・悪材料ゲート通過,FILLED,2026-09-28,2881.00,1.44,第2期開始コミットから移行
+claude-codex-phase2-2026-09-28,2.0.0,753eb2644c04,migration-1f14a0871aa6,2026-09-25,2026-09-28,BUY,9044,9044.T,ＮＡＮＫＡＩ,陸運業,100,3244.00,claude_momentum,,,,改善後Claude順張り Sランク・スコア114｜売買代金10億円以上・出来高比2.29倍・25日線乖離+4.04%・悪材料ゲート通過,FILLED,2026-09-28,3263.00,0.59,第2期開始コミットから移行

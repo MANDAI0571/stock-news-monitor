@@ -36,12 +36,13 @@ jobs:
             python3 claude_300man_fill.py
             python3 codex_300man_fill.py
           fi
+          python3 dual_300man_metrics.py
           python3 dual_300man_compare.py
       - name: Commit both independent ledgers
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data/claude_300man_orders.csv data/claude_300man_journal.csv docs/claude_300man_ledger.md data/codex_300man_orders.csv data/codex_300man_journal.csv docs/codex_300man_ledger.md docs/dual_300man_comparison.md
+          git add data/claude_300man_orders.csv data/claude_300man_journal.csv docs/claude_300man_ledger.md data/codex_300man_orders.csv data/codex_300man_journal.csv docs/codex_300man_ledger.md docs/dual_300man_comparison.md docs/dual_300man_metrics.md
           git diff --cached --quiet && exit 0
           git commit -m "Update dual AI 300man journals [skip ci]"
           git pull --rebase origin "${GITHUB_REF_NAME}"

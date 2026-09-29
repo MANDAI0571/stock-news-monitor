@@ -147,7 +147,7 @@ Sランクはスコア合計だけではなく、以下のゲートをすべて�
 - `code` / `ticker` / `name`: 銘柄情報
 - `rank` / `score`: スクリーニング判定
 - `entry_price` / `shares` / `position_value`: エントリー価格、株数、投入額
-- `stop_loss` / `take_profit` / `timeout_date`: 損切り、利確、10営業日タイムアウト日
+- `stop_loss` / `take_profit` / `timeout_date`: 損切り、利確、15営業日タイムアウト日
 - `rule` / `cash_reason`: 適用ルール、現金保有理由
 
 ## 300万円規律版
@@ -173,15 +173,22 @@ Sランクはスコア合計だけではなく、以下のゲートをすべて�
 python paper_portfolio_discipline.py
 ```
 
-規律:
+規律（`data/dual_300man_start.json`が正本）:
 
 - 最大3銘柄
-- 1枠100万円
+- 1枠60万円
 - Sランクのみ
 - Sランク不足は現金保有
-- 損切7%
-- 利確15%
-- 10営業日タイムアウト
+- 損切5%
+- 利確12%
+- 15営業日タイムアウト
+
+第2期の検証レポートは `docs/dual_300man_metrics.md` に出力します。損切り判定時と
+翌朝約定時を分け、MFE/MAE、決済後5・10営業日、利益捕捉率、投入比率、決済理由を記録します。
+
+```bash
+python3 dual_300man_metrics.py
+```
 
 手動で一括確認する場合:
 
