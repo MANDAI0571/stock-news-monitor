@@ -1,1 +1,1 @@
-entry_date,fill_time_jst,status,code,ticker,name,sector,entry_price,shares,position_value,strategy,source_order_date,exit_date,exit_price,exit_value,realized_pnl,exit_order_date
+﻿entry_date,fill_time_jst,status,code,ticker,name,sector,entry_price,shares,position_value,strategy,source_order_date,exit_date,exit_price,exit_value,realized_pnl,exit_order_date

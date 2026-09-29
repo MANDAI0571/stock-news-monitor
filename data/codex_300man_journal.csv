@@ -1,1 +1,4 @@
-entry_date,fill_time_jst,status,code,ticker,name,sector,entry_price,shares,position_value,strategy,source_order_date,exit_date,exit_price,exit_value,realized_pnl,exit_order_date
+﻿entry_date,fill_time_jst,status,code,ticker,name,sector,entry_price,shares,position_value,strategy,source_order_date,exit_date,exit_price,exit_value,realized_pnl,exit_order_date
+2026-09-28,2026-09-28T09:20:35+09:00,OPEN,4689,4689.T,ＬＩＮＥヤフー,情報・通信業,509.00,1100,559900,codex_quality_pullback,2026-09-25,,,,,
+2026-09-28,2026-09-28T09:20:35+09:00,OPEN,4911,4911.T,資生堂,化学,3505.00,100,350500,codex_quality_pullback,2026-09-25,,,,,
+2026-09-28,2026-09-28T09:20:35+09:00,OPEN,9508,9508.T,九州電力,電気・ガス業,2066.00,200,413200,codex_quality_pullback,2026-09-25,,,,,

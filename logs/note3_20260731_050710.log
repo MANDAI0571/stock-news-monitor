@@ -1,0 +1,28 @@
+note_autosave_guard=手動実行のため保存します
+note_image_warning[chatgpt]=画像ファイルが存在しません: /Users/user/stock-news-monitor/outputs/charts_20260714/chart_chatgpt_7173.png
+note_image_warning[claude]=画像ファイルが存在しません: /Users/user/stock-news-monitor/outputs/charts_20260714/chart_claude_8524.png
+note_image_warning[pullback]=画像ファイルが存在しません: /Users/user/stock-news-monitor/outputs/charts_20260714/chart_pullback_7011.png
+note_image_warning[highs]=画像ファイルが存在しません: /Users/user/stock-news-monitor/outputs/charts_20260714/chart_highs_6951.png
+note_autosave_error_url=https://note.com/login?redirectPath=%2Fnotes%2Fnew
+note_autosave_error_title=ログイン｜note（ノート）
+note_autosave_error_screenshot=/Users/user/stock-news-monitor/outputs/note_autosave_error_chatgpt.png
+note_autosave_error_url=https://note.com/login?redirectPath=%2Fnotes%2Fnew
+note_autosave_error_title=ログイン｜note（ノート）
+note_autosave_error_screenshot=/Users/user/stock-news-monitor/outputs/note_autosave_error_claude.png
+note_autosave_error_url=https://note.com/login?redirectPath=%2Fnotes%2Fnew
+note_autosave_error_title=ログイン｜note（ノート）
+note_autosave_error_screenshot=/Users/user/stock-news-monitor/outputs/note_autosave_error_pullback.png
+note_autosave_error_url=https://note.com/login?redirectPath=%2Fnotes%2Fnew
+note_autosave_error_title=ログイン｜note（ノート）
+note_autosave_error_screenshot=/Users/user/stock-news-monitor/outputs/note_autosave_error_highs.png
+note_draft_error[chatgpt]=noteエディタの読み込みが完了しませんでした（描画待ちタイムアウト）
+note_draft_image[chatgpt]=none
+note_draft_error[claude]=noteエディタの読み込みが完了しませんでした（描画待ちタイムアウト）
+note_draft_image[claude]=none
+note_draft_error[pullback]=noteエディタの読み込みが完了しませんでした（描画待ちタイムアウト）
+note_draft_image[pullback]=none
+note_draft_error[highs]=noteエディタの読み込みが完了しませんでした（描画待ちタイムアウト）
+note_draft_image[highs]=none
+note_draft_saved=0/4
+note_draft_image_uploaded=0/0
+note_auth=credentials
