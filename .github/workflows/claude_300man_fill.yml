@@ -14,7 +14,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: dual-ai-300man-open-fill
+  group: dual-ai-300man-ledger-write
   cancel-in-progress: false
 
 jobs:

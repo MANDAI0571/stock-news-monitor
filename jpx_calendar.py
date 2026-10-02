@@ -115,7 +115,86 @@ def fetch_open_price_yfinance(ticker: str, trading_date: date) -> float | None:
 
 
 def fetch_close_price_yfinance(ticker: str, trading_date: date) -> float | None:
-    """保有銘柄が候補CSVから消えても、当日の損切り判定に使う終値を取る。"""
+    """保有銘柄が候補CSVから消えても、当日の損切り判定に使う終値を取る。
+
+    当日ぶんが取れないときは直近の営業日まで遡る（下の _close_fallback）。
+    価格が取れないと手仕舞いの判定が丸ごと飛び、損切りが静かに効かなくなるため。
+    2026-10-01 の 9508 九州電力で実際に発生した（前日9/30は取得できた）。
+    """
+    price = _close_on(ticker, trading_date)
+    if price is not None:
+        return price
+    return _close_fallback(ticker, trading_date)
+
+
+# さかのぼる上限。営業日で数える。
+_FALLBACK_BUSINESS_DAYS = 3
+# 営業日を数えるあいだに見る暦日の上限（年末年始の長い休みでも前営業日に届く）。
+_FALLBACK_CALENDAR_LIMIT = 15
+
+
+def _close_fallback(ticker: str, trading_date: date) -> float | None:
+    """当日が取れないとき、直前の営業日を最大3営業日さかのぼって探す。
+
+    暦日で5日さかのぼる書き方では、3連休や年末年始の前営業日に届かなかった。
+    JPXカレンダーで営業日だけを見るので、休みの長さに左右されない。
+
+    返した値が何営業日前の終値かをログに出す。黙って古い値を使うと、
+    実際より良い（または悪い）価格で損切り・利確を判定してしまうため。
+    """
+    tried = 0
+    for back in range(1, _FALLBACK_CALENDAR_LIMIT + 1):
+        day = trading_date - timedelta(days=back)
+        if not is_jpx_business_day(day):
+            continue
+        tried += 1
+        price = _close_on(ticker, day)
+        if price is not None:
+            print(
+                f"close_price_fallback[{ticker}] {trading_date}->{day} "
+                f"business_days_back={tried} price={price}",
+                flush=True,
+            )
+            return price
+        if tried >= _FALLBACK_BUSINESS_DAYS:
+            break
+    print(
+        f"close_price_unavailable[{ticker}] {trading_date} business_days_tried={tried}",
+        flush=True,
+    )
+    return None
+
+
+def _traded(data: "pd.DataFrame", ticker: str) -> bool:
+    """その足が本当に売買のあった日か。出来高0の足は値段として使わない。
+
+    Yahooは配信が遅れている日に、前営業日の終値をそのまま持った
+    出来高0の足を返すことがある。2026-09-29と09-30の9508(九州電力)が実例で、
+    どちらも終値2,098円・出来高0のまま、実際の10-01終値は1,993.5円だった。
+    これを使うと本物より5%高い値段で損切りを判定してしまう。
+    出来高が読めないときは判断せず True を返す（憶測で捨てない）。
+    """
+    frame = data.copy()
+    if isinstance(frame.columns, pd.MultiIndex):
+        levels0 = set(frame.columns.get_level_values(0))
+        if ticker in levels0:
+            frame = frame[ticker]
+        elif "Volume" in levels0:
+            frame.columns = frame.columns.get_level_values(0)
+        else:
+            try:
+                series = frame.xs("Volume", axis=1, level=-1).iloc[:, 0]
+            except (KeyError, IndexError):
+                return True
+            values = pd.to_numeric(series, errors="coerce").dropna()
+            return bool(values.empty or values.iloc[-1] > 0)
+    if "Volume" not in frame.columns:
+        return True
+    values = pd.to_numeric(frame["Volume"], errors="coerce").dropna()
+    return bool(values.empty or values.iloc[-1] > 0)
+
+
+def _close_on(ticker: str, trading_date: date) -> float | None:
     import yfinance as yf
 
     start = trading_date.isoformat()
@@ -136,6 +215,9 @@ def fetch_close_price_yfinance(ticker: str, trading_date: date) -> float | None:
         print(f"close_price_fetch_error[{ticker}]={exc}", flush=True)
         return None
     if data is None or data.empty:
+        return None
+    if not _traded(data, ticker):
+        print(f"close_price_zero_volume[{ticker}] {trading_date}", flush=True)
         return None
     frame = data.copy()
     if isinstance(frame.columns, pd.MultiIndex):
