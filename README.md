@@ -186,6 +186,13 @@ python paper_portfolio_discipline.py
 第2期の検証レポートは `docs/dual_300man_metrics.md` に出力します。損切り判定時と
 翌朝約定時を分け、MFE/MAE、決済後5・10営業日、利益捕捉率、投入比率、決済理由を記録します。
 
+Claude口座の注文宣告と約定は別workflowです。
+
+- `.github/workflows/claude_300man_declare.yml`: 毎営業日18:45 JST。当日の全市場スクリーニング後、損切り・利確・タイムアウト・新規買いを翌営業日分として宣告
+- `.github/workflows/claude_300man_fill.yml`: 毎営業日9:40 JST。Claude/Codex両口座の宣告済み注文を寄付で約定記録
+- 両workflowは`dual-ai-300man-ledger-write` concurrencyグループを共有し、注文台帳の同時更新を防止
+- 手動declareも16:00〜23:00 JSTのJPX営業日だけ実行し、引け前の古い終値による宣告を防止
+
 ```bash
 python3 dual_300man_metrics.py
 ```

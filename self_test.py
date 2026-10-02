@@ -4129,6 +4129,24 @@ def _test_dual_300man_phase2_controls() -> None:
     assert claude_declare._exit_reason(100, 112.0, 1)[0] == "TAKE_PROFIT"
     assert claude_declare._exit_reason(100, 105.0, 15)[0] == "TIMEOUT"
 
+    project_root = Path(__file__).resolve().parent
+    declare_workflow = (
+        project_root / ".github" / "workflows" / "claude_300man_declare.yml"
+    ).read_text(encoding="utf-8")
+    fill_workflow = (
+        project_root / ".github" / "workflows" / "claude_300man_fill.yml"
+    ).read_text(encoding="utf-8")
+    assert 'cron: "45 9 * * 1-5"' in declare_workflow
+    assert "daily_discipline_run.py --include-rejected --max-candidates 0" in declare_workflow
+    assert 'claude_300man_declare.py --date "${{ steps.guard.outputs.date }}"' in declare_workflow
+    assert "git add data/claude_300man_orders.csv" in declare_workflow
+    assert "permissions:\n  contents: write" in declare_workflow
+    assert "notify_workflow_failure.py" in declare_workflow
+    assert "declaration_lost_" in declare_workflow
+    assert "claude_300man_declare_date_moved" in declare_workflow
+    assert "group: dual-ai-300man-ledger-write" in declare_workflow
+    assert "group: dual-ai-300man-ledger-write" in fill_workflow
+
     saved_close_fetch = claude_declare.fetch_close_price_yfinance
     try:
         claude_declare.fetch_close_price_yfinance = lambda _ticker, _day: 94.0
