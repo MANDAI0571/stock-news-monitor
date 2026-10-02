@@ -3,7 +3,7 @@ name: Claude 300man Close Declare
 on:
   workflow_dispatch:
   schedule:
-    # 毎平日18:45 JST（09:45 UTC）。当日終値の確定後に、翌営業日の注文を宣告する。
+    # 毎平日18:45 JST（09:45 UTC）。当日終値の確定後に翌営業日の注文を宣告する。
     - cron: "45 9 * * 1-5"
 
 permissions:
@@ -42,7 +42,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Check JPX business day and delayed schedule
+      - name: Check JPX business day and close window
         id: guard
         run: |
           python3 - <<'PY'
@@ -53,19 +53,17 @@ jobs:
           from jpx_calendar import is_jpx_business_day
 
           now = datetime.now(ZoneInfo("Asia/Tokyo"))
-          scheduled = os.environ.get("GITHUB_EVENT_NAME") == "schedule"
           in_window = 16 <= now.hour < 23
-          # 遅れて動いた日は宣告しない。締切後に宣告しても翌朝09:40の約定に間に合わず、
-          # 日付をまたぐと「翌営業日」の判定がまるごと1日ずれるため。
-          if scheduled and not in_window:
-              # 宣告すべきだった日は、0時を回っていれば前日。その日が営業日なら
-              # 1日ぶんの宣告が失われているので、黙って成功にしない。
-              # （now.date() だけで休場判定すると、金曜18:45ぶんが土曜0時台に
-              #   押し出された場合に jpx_closed と誤判定して静かに消える。）
+          scheduled = os.environ.get("GITHUB_EVENT_NAME") == "schedule"
+          if not in_window:
               intended = now.date() if now.hour >= 16 else (now - timedelta(days=1)).date()
               run = False
-              reason = (f"declaration_lost_{intended:%Y%m%d}_ran_{now:%H%M}_JST"
-                        if is_jpx_business_day(intended) else "jpx_closed")
+              if scheduled and is_jpx_business_day(intended):
+                  reason = f"declaration_lost_{intended:%Y%m%d}_ran_{now:%H%M}_JST"
+              elif scheduled:
+                  reason = "jpx_closed"
+              else:
+                  reason = f"outside_close_window_{now:%H%M}_JST"
           else:
               run = is_jpx_business_day(now.date())
               reason = "jpx_business_day" if run else "jpx_closed"
@@ -73,17 +71,13 @@ jobs:
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
               output.write(f"run={'true' if run else 'false'}\n")
               output.write(f"reason={reason}\n")
-              # 対象日をここで固定する。混雑待ちでジョブが日付をまたいでも、
-              # 宣告スクリプトが別の日を見ないようにするため。
               output.write(f"date={now:%F}\n")
           PY
 
-      - name: Fail loudly when the declaration was skipped by delay
-        # 休場は静かに飛ばしてよい。だが遅延で宣告できなかった日を成功扱いにすると、
-        # その日は損切・利確・タイムアウト・新規建てが全部止まったまま気づけない。
-        if: steps.guard.outputs.run == 'false' && steps.guard.outputs.reason != 'jpx_closed'
+      - name: Fail when a declaration window was missed
+        if: steps.guard.outputs.run != 'true' && steps.guard.outputs.reason != 'jpx_closed'
         run: |
-          echo "claude_300man_declare_skipped reason=${{ steps.guard.outputs.reason }}"
+          echo "::error::Claude 300man declaration skipped: ${{ steps.guard.outputs.reason }}"
           exit 1
 
       - name: Critical trading self-test
@@ -94,24 +88,18 @@ jobs:
         if: steps.guard.outputs.run == 'true'
         run: python3 daily_discipline_run.py --include-rejected --max-candidates 0
 
-      - name: Fail loudly when the JST date moved while the job was running
-        # 宣告スクリプトは実行時刻のJST日付から「翌営業日」を決める。順番待ちや
-        # 全市場スクリーニングで0時をまたぐと、宣告先が丸ごと1日ずれる。
-        # ずれたまま宣告するより、宣告せずに気づける方を選ぶ（翌朝09:40の約定には
-        # どちらにしても間に合わないため）。
+      - name: Refuse a declaration after the target date moved
         if: steps.guard.outputs.run == 'true'
         run: |
           now=$(TZ=Asia/Tokyo date +%F)
-          guard="${{ steps.guard.outputs.date }}"
-          if [ "$now" != "$guard" ]; then
-            echo "claude_300man_declare_date_moved guard=$guard now=$now"
+          if [ "$now" != "${{ steps.guard.outputs.date }}" ]; then
+            echo "::error::claude_300man_declare_date_moved target=${{ steps.guard.outputs.date }} now=$now"
             exit 1
           fi
-          echo "claude_300man_declare_date_ok date=$now"
 
       - name: Declare Claude orders for next JPX business day
         if: steps.guard.outputs.run == 'true'
-        run: python3 claude_300man_declare.py
+        run: python3 claude_300man_declare.py --date "${{ steps.guard.outputs.date }}"
 
       - name: Show declaration summary
         if: always()
@@ -131,7 +119,7 @@ jobs:
             echo "claude_300man_declare=no_order_change"
             exit 0
           fi
-          git commit -m "chore: declare Claude 300man orders $(TZ=Asia/Tokyo date +%F) [skip ci]"
+          git commit -m "chore: declare Claude 300man orders ${{ steps.guard.outputs.date }} [skip ci]"
           git pull --rebase origin "${GITHUB_REF_NAME}"
           git push origin HEAD:"${GITHUB_REF_NAME}"
 

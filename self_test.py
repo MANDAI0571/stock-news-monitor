@@ -4138,60 +4138,44 @@ def _test_dual_300man_phase2_controls() -> None:
     ).read_text(encoding="utf-8")
     assert 'cron: "45 9 * * 1-5"' in declare_workflow
     assert "daily_discipline_run.py --include-rejected --max-candidates 0" in declare_workflow
-    assert "python3 claude_300man_declare.py" in declare_workflow
+    assert 'claude_300man_declare.py --date "${{ steps.guard.outputs.date }}"' in declare_workflow
     assert "git add data/claude_300man_orders.csv" in declare_workflow
     assert "permissions:\n  contents: write" in declare_workflow
     assert "notify_workflow_failure.py" in declare_workflow
+    assert "declaration_lost_" in declare_workflow
+    assert "claude_300man_declare_date_moved" in declare_workflow
     assert "group: dual-ai-300man-ledger-write" in declare_workflow
     assert "group: dual-ai-300man-ledger-write" in fill_workflow
 
-    # Codex側の宣告ジョブも同じ条件で守る。2026-10-02まで存在せず、
-    # Codex運用は買った銘柄が売られないまま固定されていた（誰も気づかなかった）。
+    # Codex側の宣告ジョブも同じ条件で守る。2026-10-02まで存在せず、Codex運用は
+    # 買った銘柄が売られないまま固定されていた（損切・利確・期限・新規建てが全部停止）。
+    # Claude側と1行ずつ同じ形にしてあるので、同じ検査をかける。
     codex_declare_workflow = (
         project_root / ".github" / "workflows" / "codex_300man_declare.yml"
     ).read_text(encoding="utf-8")
     assert 'cron: "50 9 * * 1-5"' in codex_declare_workflow
     assert "daily_discipline_run.py --include-rejected --max-candidates 0" in codex_declare_workflow
-    assert "python3 codex_300man_declare.py" in codex_declare_workflow
+    assert 'codex_300man_declare.py --date "${{ steps.guard.outputs.date }}"' in codex_declare_workflow
     assert "git add data/codex_300man_orders.csv" in codex_declare_workflow
     assert "permissions:\n  contents: write" in codex_declare_workflow
     assert "notify_workflow_failure.py" in codex_declare_workflow
+    assert "declaration_lost_" in codex_declare_workflow
+    assert "codex_300man_declare_date_moved" in codex_declare_workflow
     assert "group: dual-ai-300man-ledger-write" in codex_declare_workflow
-
-    # 両方の宣告ジョブで、対象日を固定し、遅延で飛ばした日を成功扱いにしない。
-    # 宣告が無い日は損切・利確・タイムアウト・新規建てが全部止まるため。
-    for name, text in (
-        ("claude", declare_workflow),
-        ("codex", codex_declare_workflow),
-    ):
-        assert f"python3 {name}_300man_declare.py\n" in text, name
-        assert "output.write(f\"date={now:%F}\\n\")" in text, name
-        assert f"{name}_300man_declare_date_moved" in text, name
-        assert 'now=$(TZ=Asia/Tokyo date +%F)' in text, name
-        assert "steps.guard.outputs.reason != 'jpx_closed'" in text, name
-        # 遅延が休場と誤判定されて静かに消えないこと（金曜ぶんが土曜0時台に
-        # 押し出された場合に起きていた）。
-        assert "declaration_lost_" in text, name
-        assert "intended = now.date() if now.hour >= 16" in text, name
 
     # 出来高0の足を値段に使わないこと。Yahooは配信の遅れた日に、前営業日の終値を
     # そのまま持った出来高0の足を返す（2026-09-29/30の9508が実例。終値2,098円・
     # 出来高0に対し、実際の10-01終値は1,993.5円で5%低い）。これを使うと
-    # 本物より高い値段で損切りを判定してしまう。
+    # 本物より5%高い値段で損切りを判定し、効くはずの損切りが効かない。
     import pandas as _pd
 
     from jpx_calendar import _traded as _jpx_traded
 
-    _zero = _pd.DataFrame({"Close": [2098.0], "Volume": [0]})
-    _real = _pd.DataFrame({"Close": [1993.5], "Volume": [1802900]})
-    _novol = _pd.DataFrame({"Close": [2098.0]})
-    assert _jpx_traded(_zero, "9508.T") is False
-    assert _jpx_traded(_real, "9508.T") is True
+    assert _jpx_traded(_pd.DataFrame({"Close": [2098.0], "Volume": [0]}), "9508.T") is False
+    assert _jpx_traded(_pd.DataFrame({"Close": [1993.5], "Volume": [1802900]}), "9508.T") is True
     # 出来高の列が無いときは憶測で捨てない。
-    assert _jpx_traded(_novol, "9508.T") is True
-    _multi = _pd.DataFrame(
-        {("Close", "9508.T"): [2098.0], ("Volume", "9508.T"): [0]}
-    )
+    assert _jpx_traded(_pd.DataFrame({"Close": [2098.0]}), "9508.T") is True
+    _multi = _pd.DataFrame({("Close", "9508.T"): [2098.0], ("Volume", "9508.T"): [0]})
     _multi.columns = _pd.MultiIndex.from_tuples(_multi.columns)
     assert _jpx_traded(_multi, "9508.T") is False
 
