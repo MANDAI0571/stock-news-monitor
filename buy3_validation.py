@@ -64,6 +64,8 @@ POLICIES = ("baseline", "candidate_v1")
 class ValidationConfig:
     days: int
     max_symbols: int | None
+    sample_mode: str
+    sample_offset: float
     period: str
     top_skip_per_day: int
     markets: tuple[str, ...]
@@ -113,14 +115,23 @@ def _load_universe(config: ValidationConfig) -> pd.DataFrame:
         axis=1,
     )
     universe = universe[mask].drop_duplicates("ticker").reset_index(drop=True)
-    preferred = _preferred_tickers_from_screening_outputs()
-    if preferred:
-        universe["_preferred_order"] = universe["ticker"].map({ticker: idx for idx, ticker in enumerate(preferred)})
-        preferred_part = universe[universe["_preferred_order"].notna()].sort_values("_preferred_order")
-        rest = universe[universe["_preferred_order"].isna()].sort_values("ticker")
-        universe = pd.concat([preferred_part, rest], ignore_index=True).drop(columns=["_preferred_order"])
-    if config.max_symbols:
-        universe = universe.head(config.max_symbols).reset_index(drop=True)
+    if config.sample_mode == "priority":
+        preferred = _preferred_tickers_from_screening_outputs()
+        if preferred:
+            universe["_preferred_order"] = universe["ticker"].map({ticker: idx for idx, ticker in enumerate(preferred)})
+            preferred_part = universe[universe["_preferred_order"].notna()].sort_values("_preferred_order")
+            rest = universe[universe["_preferred_order"].isna()].sort_values("ticker")
+            universe = pd.concat([preferred_part, rest], ignore_index=True).drop(columns=["_preferred_order"])
+        if config.max_symbols:
+            universe = universe.head(config.max_symbols).reset_index(drop=True)
+    elif config.max_symbols and config.max_symbols < len(universe):
+        # 先頭N件は証券コード帯・業種が偏るため、母集団全体から決定論的に等間隔抽出する。
+        step = len(universe) / config.max_symbols
+        positions = np.floor(
+            (np.arange(config.max_symbols, dtype=float) + config.sample_offset) * step
+        ).astype(int)
+        positions = np.clip(positions, 0, len(universe) - 1)
+        universe = universe.iloc[np.unique(positions)].reset_index(drop=True)
     return universe
 
 
@@ -401,23 +412,34 @@ def _summarize_group(df: pd.DataFrame, keys: list[str]) -> pd.DataFrame:
 def _metrics(sub: pd.DataFrame) -> dict[str, object]:
     ret5 = pd.to_numeric(sub.get("return_5d_pct"), errors="coerce").dropna()
     ret10 = pd.to_numeric(sub.get("return_10d_pct"), errors="coerce").dropna()
+    ret5_net = pd.to_numeric(sub.get("return_5d_net_pct"), errors="coerce").dropna()
+    ret10_net = pd.to_numeric(sub.get("return_10d_net_pct"), errors="coerce").dropna()
     max_up = pd.to_numeric(sub.get("max_up_10d_pct"), errors="coerce").dropna()
     max_down = pd.to_numeric(sub.get("max_down_10d_pct"), errors="coerce").dropna()
     gains = ret5[ret5 > 0].sum()
     losses = ret5[ret5 < 0].sum()
+    net_gains = ret5_net[ret5_net > 0].sum()
+    net_losses = ret5_net[ret5_net < 0].sum()
     return {
         "count": int(len(sub)),
         "win_rate_5d_pct": round(float((ret5 > 0).mean() * 100), 2) if len(ret5) else "",
         "avg_return_5d_pct": round(float(ret5.mean()), 4) if len(ret5) else "",
         "median_return_5d_pct": round(float(ret5.median()), 4) if len(ret5) else "",
+        "net_win_rate_5d_pct": round(float((ret5_net > 0).mean() * 100), 2) if len(ret5_net) else "",
+        "avg_return_5d_net_pct": round(float(ret5_net.mean()), 4) if len(ret5_net) else "",
+        "median_return_5d_net_pct": round(float(ret5_net.median()), 4) if len(ret5_net) else "",
         "win_rate_10d_pct": round(float((ret10 > 0).mean() * 100), 2) if len(ret10) else "",
         "avg_return_10d_pct": round(float(ret10.mean()), 4) if len(ret10) else "",
         "median_return_10d_pct": round(float(ret10.median()), 4) if len(ret10) else "",
+        "net_win_rate_10d_pct": round(float((ret10_net > 0).mean() * 100), 2) if len(ret10_net) else "",
+        "avg_return_10d_net_pct": round(float(ret10_net.mean()), 4) if len(ret10_net) else "",
+        "median_return_10d_net_pct": round(float(ret10_net.median()), 4) if len(ret10_net) else "",
         "max_profit_pct": round(float(ret5.max()), 4) if len(ret5) else "",
         "max_loss_pct": round(float(ret5.min()), 4) if len(ret5) else "",
         "avg_max_up_10d_pct": round(float(max_up.mean()), 4) if len(max_up) else "",
         "avg_max_down_10d_pct": round(float(max_down.mean()), 4) if len(max_down) else "",
         "profit_factor_like": round(float(gains / abs(losses)), 4) if losses < 0 else "",
+        "net_profit_factor_like": round(float(net_gains / abs(net_losses)), 4) if net_losses < 0 else "",
         "max_drawdown_like_pct": round(float(max_down.min()), 4) if len(max_down) else "",
     }
 
@@ -746,6 +768,7 @@ def _write_ab_report(ab_detail: pd.DataFrame, summary: pd.DataFrame, policy_chan
     lines.append("- baseline: 現行ロジックそのまま")
     lines.append("- candidate_v1: MULTIを無条件に強く扱わず、押し目/モメンタム優先、3営業日クールダウン、弱出来高MULTI降格、WATCH上位昇格を検証")
     lines.append("- 注意: 本番BUY条件は変更していません。検証CSV上で候補の並べ替え・昇降格を比較しています。")
+    lines.append("- `*_net_*` 列は往復スリッページ控除後。採用判断はnet列を優先します。")
     lines.append("")
     lines.append("## BUY成績比較")
     lines.append("")
@@ -806,6 +829,7 @@ def _write_report(
     lines.append(f"- 詳細行: {len(detail)} / BUY: {int((detail['decision'] == 'BUY').sum()) if not detail.empty else 0} / WATCH: {int((detail['decision'] == 'WATCH').sum()) if not detail.empty else 0} / SKIP: {int((detail['decision'] == 'SKIP').sum()) if not detail.empty else 0}")
     lines.append("- 決算予定ゲート: 過去時点の正確な予定表が無いため、未来情報回避のため今回の成績検証から除外")
     lines.append("- 約定仮定: 判定日の翌営業日寄り付きで100株、手数料なし版と往復スリッページ控除版を併記")
+    lines.append("- `*_net_*` 列は往復スリッページ控除後。採用判断はnet列を優先")
     lines.append(f"- 異常値要確認: {manifest.get('anomaly_rows', 0)}件（短期リターン±80%超または最大上昇100%超）")
     lines.append(f"- CASH判断日: {manifest.get('cash_days', 0)}日 / CASH日に大幅上昇候補あり: {manifest.get('cash_days_with_opportunity', 0)}日")
     lines.append("")
@@ -1002,6 +1026,8 @@ def run_validation(config: ValidationConfig) -> dict[str, object]:
         "period": config.period,
         "markets": list(config.markets),
         "max_symbols": config.max_symbols,
+        "sample_mode": config.sample_mode,
+        "sample_offset": config.sample_offset,
         "top_skip_per_day": config.top_skip_per_day,
         "slippage_roundtrip_pct": config.slippage_roundtrip_pct,
         "start_date": eval_dates[0].date().isoformat() if eval_dates else "",
@@ -1086,6 +1112,18 @@ def parse_args() -> ValidationConfig:
     parser = argparse.ArgumentParser(description="BUY3候補の過去データ精度検証")
     parser.add_argument("--days", type=int, default=int(os.environ.get("BUY3_VALIDATION_DAYS", "80")))
     parser.add_argument("--max-symbols", type=int, default=int(os.environ.get("BUY3_VALIDATION_MAX_SYMBOLS", "120")))
+    parser.add_argument(
+        "--sample-mode",
+        choices=("priority", "systematic"),
+        default=os.environ.get("BUY3_VALIDATION_SAMPLE_MODE", "priority"),
+        help="priority=従来の候補優先/先頭N件、systematic=全上場銘柄から等間隔抽出",
+    )
+    parser.add_argument(
+        "--sample-offset",
+        type=float,
+        default=float(os.environ.get("BUY3_VALIDATION_SAMPLE_OFFSET", "0.5")),
+        help="systematic抽出の区間内位置（0以上1未満）。異なる値で非重複標本を作る",
+    )
     parser.add_argument("--period", default=os.environ.get("BUY3_VALIDATION_PERIOD", "3y"))
     parser.add_argument("--top-skip-per-day", type=int, default=int(os.environ.get("BUY3_VALIDATION_TOP_SKIP", "5")))
     parser.add_argument("--markets", default=os.environ.get("BUY3_VALIDATION_MARKETS", "prime,standard,growth"))
@@ -1096,6 +1134,8 @@ def parse_args() -> ValidationConfig:
     return ValidationConfig(
         days=max(1, args.days),
         max_symbols=max_symbols,
+        sample_mode=args.sample_mode,
+        sample_offset=min(max(args.sample_offset, 0.0), 0.999999),
         period=args.period,
         top_skip_per_day=max(0, args.top_skip_per_day),
         markets=markets or ("prime", "standard", "growth"),
