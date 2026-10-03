@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "phase_id": "claude-codex-phase2-2026-09-28",
-  "strategy_version": "2.0.0",
+  "strategy_version": "2.1.0",
   "restart_date": "2026-09-28",
   "mode": "paper",
   "accounts": {
@@ -15,6 +15,37 @@
     }
   },
   "execution": "当日大引け後に宣言し、次の東証営業日寄り付きでペーパー約定",
+  "strategy_rules": {
+    "claude": {
+      "entry_priority": [
+        "pullback_combo_v1",
+        "strict_momentum"
+      ],
+      "reentry_cooldown_business_days": 5,
+      "strict_momentum": {
+        "rank": "S",
+        "score_min": 105,
+        "turnover_20d_min": 1000000000,
+        "volume_ratio_5d_20d_min": 1.15,
+        "ma25_gap_pct_min": 0,
+        "ma25_gap_pct_max": 8
+      },
+      "pullback_combo_v1": {
+        "rank": "A",
+        "score_min": 80,
+        "turnover_20d_min": 100000000,
+        "volume_ratio_5d_20d_min": 1.1,
+        "dist_52w_high_pct_min": 0,
+        "dist_52w_high_pct_max": 7,
+        "ma25_gap_pct_min": 0,
+        "ma25_gap_pct_max": 3,
+        "required_screen_tags": [
+          "25MA_PULLBACK",
+          "52W_PULLBACK"
+        ]
+      }
+    }
+  },
   "shared_risk_rules": {
     "max_positions": 3,
     "slot_capital_jpy": 600000,

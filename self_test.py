@@ -4124,10 +4124,42 @@ def _test_dual_300man_phase2_controls() -> None:
     assert CONFIG.stop_loss_pct == -5
     assert CONFIG.take_profit_pct == 12
     assert CONFIG.timeout_days == 15
+    assert CONFIG.strategy_version == "2.1.0"
+    assert CONFIG.strategy_rules["claude"]["reentry_cooldown_business_days"] == 5
     assert len(CONFIG.rule_hash) == 12
     assert claude_declare._exit_reason(100, 94.9, 1)[0] == "STOP_LOSS"
     assert claude_declare._exit_reason(100, 112.0, 1)[0] == "TAKE_PROFIT"
     assert claude_declare._exit_reason(100, 105.0, 15)[0] == "TIMEOUT"
+
+    screening = pd.DataFrame([
+        {
+            "code": "1111", "rank": "S", "score": "110", "turnover_20d": "2000000000",
+            "volume_ratio_5d_20d": "1.2", "dist_52w_high_pct": "2", "ma25_gap_pct": "4",
+            "ma75_gap_pct": "5", "lot_value_100": "500000", "earnings_status": "確認済",
+            "exclude_for_earnings": "false", "screen_tags": "52W_MOMENTUM",
+        },
+        {
+            "code": "2222", "rank": "A", "score": "85", "turnover_20d": "500000000",
+            "volume_ratio_5d_20d": "1.2", "dist_52w_high_pct": "6", "ma25_gap_pct": "2",
+            "ma75_gap_pct": "4", "lot_value_100": "400000", "earnings_status": "確認済",
+            "exclude_for_earnings": "false", "screen_tags": "52W_PULLBACK,25MA_PULLBACK",
+        },
+        {
+            "code": "3333", "rank": "A", "score": "85", "turnover_20d": "500000000",
+            "volume_ratio_5d_20d": "1.2", "dist_52w_high_pct": "8", "ma25_gap_pct": "2",
+            "ma75_gap_pct": "4", "lot_value_100": "400000", "earnings_status": "確認済",
+            "exclude_for_earnings": "false", "screen_tags": "52W_PULLBACK,25MA_PULLBACK",
+        },
+    ])
+    candidates = claude_declare._claude_candidates(screening)
+    assert candidates["code"].tolist() == ["2222", "1111"], candidates[["code", "_candidate_strategy"]]
+    assert candidates.iloc[0]["_candidate_strategy"] == "claude_pullback_combo_v1"
+    assert "検証済み押し目Aランク" in claude_declare._candidate_reason(candidates.iloc[0])
+    recent = pd.DataFrame([
+        {"code": "1111", "entry_date": "2026-09-28"},
+        {"code": "9999", "entry_date": "2026-09-18"},
+    ])
+    assert claude_declare._recent_entry_codes(recent, date(2026, 10, 5), 5) == {"1111"}
 
     project_root = Path(__file__).resolve().parent
     declare_workflow = (
