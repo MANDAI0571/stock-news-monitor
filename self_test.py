@@ -4193,6 +4193,8 @@ def _test_dual_300man_phase2_controls() -> None:
     assert "scheduled_delayed_recovery" in declare_workflow
     assert "Verify fresh screening target date" in declare_workflow
     assert "screening date mismatch" in declare_workflow
+    assert "Verify execution window is still open" in declare_workflow
+    assert "execution window already opened" in declare_workflow
     assert "group: dual-ai-300man-ledger-write" in declare_workflow
     assert "group: dual-ai-300man-ledger-write" in fill_workflow
 

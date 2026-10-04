@@ -141,6 +141,32 @@ jobs:
               raise SystemExit(f"screening date mismatch: target={target} dates={dates}")
           PY
 
+      - name: Verify execution window is still open
+        if: steps.guard.outputs.run == 'true'
+        run: |
+          python3 - <<'PY'
+          from datetime import date, datetime, time, timedelta
+          from zoneinfo import ZoneInfo
+
+          from jpx_calendar import is_jpx_business_day
+
+          target = date.fromisoformat("${{ steps.guard.outputs.date }}")
+          execution = target + timedelta(days=1)
+          for _ in range(30):
+              if is_jpx_business_day(execution):
+                  break
+              execution += timedelta(days=1)
+          else:
+              raise SystemExit(f"execution day not found after {target}")
+          now = datetime.now(ZoneInfo("Asia/Tokyo"))
+          deadline = datetime.combine(execution, time(9, 0), ZoneInfo("Asia/Tokyo"))
+          print(f"claude_300man_execution_window now={now.isoformat()} deadline={deadline.isoformat()}")
+          if now >= deadline:
+              raise SystemExit(
+                  f"execution window already opened: target={target} execution={execution}"
+              )
+          PY
+
       - name: Declare Claude orders for next JPX business day
         if: steps.guard.outputs.run == 'true'
         run: python3 claude_300man_declare.py --date "${{ steps.guard.outputs.date }}"
