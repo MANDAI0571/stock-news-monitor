@@ -4160,6 +4160,20 @@ def _test_dual_300man_phase2_controls() -> None:
         {"code": "9999", "entry_date": "2026-09-18"},
     ])
     assert claude_declare._recent_entry_codes(recent, date(2026, 10, 5), 5) == {"1111"}
+    with tempfile.TemporaryDirectory() as screening_tmp:
+        screening_dir = Path(screening_tmp)
+        fixed = screening_dir / "screening_result.csv"
+        pd.DataFrame([
+            {"code": "1111", "data_date": "2026-10-02", "current_price": "100"},
+            {"code": "2222", "data_date": "2026-10-02", "current_price": "200"},
+        ]).to_csv(fixed, index=False, encoding="utf-8-sig")
+        assert len(claude_declare.load_screening(screening_dir, date(2026, 10, 2))) == 2
+        pd.DataFrame([
+            {"code": "1111", "data_date": "2026-10-01", "current_price": "100"},
+            {"code": "2222", "data_date": "2026-10-02", "current_price": "200"},
+        ]).to_csv(fixed, index=False, encoding="utf-8-sig")
+        recovered = claude_declare.load_screening(screening_dir, date(2026, 10, 2))
+        assert recovered["code"].tolist() == ["2222"]
 
     project_root = Path(__file__).resolve().parent
     declare_workflow = (
@@ -4175,7 +4189,10 @@ def _test_dual_300man_phase2_controls() -> None:
     assert "permissions:\n  contents: write" in declare_workflow
     assert "notify_workflow_failure.py" in declare_workflow
     assert "declaration_lost_" in declare_workflow
-    assert "claude_300man_declare_date_moved" in declare_workflow
+    assert "target_date:" in declare_workflow
+    assert "scheduled_delayed_recovery" in declare_workflow
+    assert "Verify fresh screening target date" in declare_workflow
+    assert "screening date mismatch" in declare_workflow
     assert "group: dual-ai-300man-ledger-write" in declare_workflow
     assert "group: dual-ai-300man-ledger-write" in fill_workflow
 

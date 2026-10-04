@@ -193,7 +193,9 @@ Claude口座の注文宣告と約定は別workflowです。
 - `.github/workflows/claude_300man_declare.yml`: 毎営業日18:45 JST。当日の全市場スクリーニング後、損切り・利確・タイムアウト・新規買いを翌営業日分として宣告
 - `.github/workflows/claude_300man_fill.yml`: 毎営業日9:40 JST。Claude/Codex両口座の宣告済み注文を寄付で約定記録
 - 両workflowは`dual-ai-300man-ledger-write` concurrencyグループを共有し、注文台帳の同時更新を防止
-- 手動declareも16:00〜23:00 JSTのJPX営業日だけ実行し、引け前の古い終値による宣告を防止
+- 通常の手動declareは16:00〜23:00 JSTのJPX営業日だけ実行し、引け前の古い終値による宣告を防止
+- GitHub側のcronが翌日08:00 JSTより前まで遅延した場合は、価格データの日付を検証して前営業日分を自動補完
+- `workflow_dispatch`の`target_date`を指定すると、次の営業日09:00 JSTより前まで安全に未宣告日を補完できる
 
 ```bash
 python3 dual_300man_metrics.py

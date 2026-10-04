@@ -2,6 +2,11 @@ name: Claude 300man Close Declare
 
 on:
   workflow_dispatch:
+    inputs:
+      target_date:
+        description: "補完する判定日 (YYYY-MM-DD)。空欄は当日引け後のみ"
+        required: false
+        type: string
   schedule:
     # 毎平日18:45 JST（09:45 UTC）。当日終値の確定後に翌営業日の注文を宣告する。
     - cron: "45 9 * * 1-5"
@@ -44,34 +49,68 @@ jobs:
 
       - name: Check JPX business day and close window
         id: guard
+        env:
+          INPUT_TARGET_DATE: ${{ github.event.inputs.target_date || '' }}
         run: |
           python3 - <<'PY'
           import os
-          from datetime import datetime, timedelta
+          from datetime import date, datetime, timedelta
           from zoneinfo import ZoneInfo
 
           from jpx_calendar import is_jpx_business_day
 
           now = datetime.now(ZoneInfo("Asia/Tokyo"))
-          in_window = 16 <= now.hour < 23
           scheduled = os.environ.get("GITHUB_EVENT_NAME") == "schedule"
-          if not in_window:
-              intended = now.date() if now.hour >= 16 else (now - timedelta(days=1)).date()
+          requested = os.environ.get("INPUT_TARGET_DATE", "").strip()
+
+          def next_business_day(day: date) -> date:
+              cursor = day + timedelta(days=1)
+              for _ in range(30):
+                  if is_jpx_business_day(cursor):
+                      return cursor
+                  cursor += timedelta(days=1)
+              raise RuntimeError(f"next business day not found after {day}")
+
+          if requested:
+              try:
+                  target = date.fromisoformat(requested)
+              except ValueError:
+                  target = now.date()
+                  run = False
+                  reason = "invalid_target_date"
+              else:
+                  execution = next_business_day(target) if is_jpx_business_day(target) else target
+                  market_closed = now.date() > target or (now.date() == target and now.hour >= 16)
+                  before_execution = now.date() < execution or (now.date() == execution and now.hour < 9)
+                  run = is_jpx_business_day(target) and market_closed and before_execution
+                  reason = "manual_recovery" if run else "unsafe_manual_recovery"
+          elif scheduled and now.hour < 8:
+              # 18:45 JSTのcronがGitHub都合で深夜に遅延した場合だけ、前日分を補完する。
+              target = (now - timedelta(days=1)).date()
+              run = is_jpx_business_day(target)
+              reason = "scheduled_delayed_recovery" if run else "jpx_closed"
+          elif 16 <= now.hour and (scheduled or now.hour < 23):
+              target = now.date()
+              run = is_jpx_business_day(target)
+              reason = "jpx_business_day" if run else "jpx_closed"
+          else:
+              target = now.date()
               run = False
+              intended = (now - timedelta(days=1)).date() if now.hour < 16 else now.date()
               if scheduled and is_jpx_business_day(intended):
                   reason = f"declaration_lost_{intended:%Y%m%d}_ran_{now:%H%M}_JST"
               elif scheduled:
                   reason = "jpx_closed"
               else:
                   reason = f"outside_close_window_{now:%H%M}_JST"
-          else:
-              run = is_jpx_business_day(now.date())
-              reason = "jpx_business_day" if run else "jpx_closed"
-          print(f"claude_300man_declare_guard run={run} reason={reason} date={now:%F}")
+          print(
+              f"claude_300man_declare_guard run={run} reason={reason} "
+              f"target={target} now={now:%F_%H%M}"
+          )
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
               output.write(f"run={'true' if run else 'false'}\n")
               output.write(f"reason={reason}\n")
-              output.write(f"date={now:%F}\n")
+              output.write(f"date={target:%F}\n")
           PY
 
       - name: Fail when a declaration window was missed
@@ -88,14 +127,19 @@ jobs:
         if: steps.guard.outputs.run == 'true'
         run: python3 daily_discipline_run.py --include-rejected --max-candidates 0
 
-      - name: Refuse a declaration after the target date moved
+      - name: Verify fresh screening target date
         if: steps.guard.outputs.run == 'true'
         run: |
-          now=$(TZ=Asia/Tokyo date +%F)
-          if [ "$now" != "${{ steps.guard.outputs.date }}" ]; then
-            echo "::error::claude_300man_declare_date_moved target=${{ steps.guard.outputs.date }} now=$now"
-            exit 1
-          fi
+          python3 - <<'PY'
+          import pandas as pd
+
+          target = "${{ steps.guard.outputs.date }}"
+          screening = pd.read_csv("outputs/screening_result.csv", dtype=str).fillna("")
+          dates = sorted({value[:10] for value in screening.get("data_date", []) if value})
+          print(f"claude_300man_screening_dates target={target} dates={dates}")
+          if not dates or dates[-1] != target:
+              raise SystemExit(f"screening date mismatch: target={target} dates={dates}")
+          PY
 
       - name: Declare Claude orders for next JPX business day
         if: steps.guard.outputs.run == 'true'

@@ -150,6 +150,22 @@ def _file_day(path: Path) -> date | None:
         return None
 
 
+def _screening_data_days(screening: pd.DataFrame) -> set[date]:
+    """各銘柄に記録した実価格日の集合を返す。壊れた値は鮮度不明として無視する。"""
+    if screening.empty or "data_date" not in screening.columns:
+        return set()
+    parsed: set[date] = set()
+    for value in screening["data_date"].astype(str):
+        text = value.strip()
+        if not text or text.lower() in {"nan", "none", "nat"}:
+            continue
+        try:
+            parsed.add(date.fromisoformat(text[:10]))
+        except ValueError:
+            continue
+    return parsed
+
+
 def load_screening(output_dir: Path, today: date | None = None) -> pd.DataFrame:
     """当日のスクリーニング結果だけを使う。
 
@@ -167,15 +183,27 @@ def load_screening(output_dir: Path, today: date | None = None) -> pd.DataFrame:
             print("claude_300man_declare=no_screening_file")
             return pd.DataFrame()
         path = found[-1]
-    day = _file_day(path)
-    if day != today:
-        print(f"claude_300man_declare=screening_stale file={path.name} day={day} today={today}")
-        return pd.DataFrame()
     try:
-        return pd.read_csv(path, dtype=str).fillna("")
+        screening = pd.read_csv(path, dtype=str).fillna("")
     except Exception as error:  # noqa: BLE001
         print(f"claude_300man_declare=screening_unreadable err={error}")
         return pd.DataFrame()
+    data_days = _screening_data_days(screening)
+    file_day = _file_day(path)
+    day = max(data_days) if data_days else file_day
+    if day != today:
+        print(
+            f"claude_300man_declare=screening_stale file={path.name} "
+            f"data_days={sorted(data_days)} file_day={file_day} today={today}"
+        )
+        return pd.DataFrame()
+    if data_days and "data_date" in screening.columns:
+        # 売買停止・一時欠損で古い最終バーしかない銘柄は、全体を止めず候補から除外する。
+        target = today.isoformat()
+        screening = screening[
+            screening["data_date"].astype(str).str.slice(0, 10) == target
+        ].copy()
+    return screening
 
 
 def _price_map(screening: pd.DataFrame) -> dict[str, float]:
