@@ -4117,6 +4117,7 @@ def _test_dual_300man_phase2_controls() -> None:
     import dual_300man_fill as fill
     import dual_300man_metrics as metrics
     import claude_300man_declare as claude_declare
+    import claude_300man_daily_review as daily_review
     import claude_300man_shadow as claude_shadow
     from claude_shadow_exits import EXIT_VARIANTS, simulate_exit
     from dual_300man_config import CONFIG, JOURNAL_COLUMNS, ORDER_COLUMNS, order_metadata
@@ -4243,12 +4244,79 @@ def _test_dual_300man_phase2_controls() -> None:
     assert len(preserved_rows) == len(EXIT_VARIANTS)
     assert preserved_rows["exit_type"].eq("PRESERVED_TEST").all()
 
+    improvement_rows = []
+    for trade_number in range(40):
+        current_return = 4.0 if trade_number % 2 == 0 else -2.0
+        for variant in EXIT_VARIANTS:
+            candidate_return = (
+                current_return + 1.0
+                if variant.key == "intraday_5_tp12_t15"
+                else current_return
+            )
+            improvement_rows.append({
+                "phase_id": CONFIG.phase_id,
+                "source_order_date": f"2026-01-{trade_number % 28 + 1:02d}",
+                "entry_date": f"2026-02-{trade_number % 28 + 1:02d}",
+                "code": f"{1000 + trade_number}",
+                "variant": variant.key,
+                "variant_label": variant.label,
+                "status": "CLOSED",
+                "gross_return_pct": candidate_return + 0.30,
+                "net_return_pct": candidate_return,
+            })
+    improvement_shadow = pd.DataFrame(improvement_rows).reindex(
+        columns=claude_shadow.SHADOW_COLUMNS
+    ).fillna("")
+    improvement_candidates = daily_review.evaluate_improvements(
+        improvement_shadow, date(2026, 10, 5),
+    )
+    improved = improvement_candidates[
+        improvement_candidates["variant"].eq("intraday_5_tp12_t15")
+    ].iloc[0]
+    assert improved["closed"] == 40
+    assert improved["paired_with_current"] == 40
+    assert improved["decision"] == "REVIEW_READY", improved["reason"]
+    assert float(improved["bootstrap_95_low_pct"]) > 0
+
+    monitor_orders = pd.DataFrame([{
+        **{column: "" for column in ORDER_COLUMNS},
+        **order_metadata(), "decision_date": "2026-10-04", "execution_date": "2026-10-05",
+        "side": "BUY", "code": "9999", "status": "DECLARED",
+    }]).reindex(columns=ORDER_COLUMNS).fillna("")
+    monitor_journal_rows = []
+    for number in range(4):
+        monitor_journal_rows.append({
+            **{column: "" for column in JOURNAL_COLUMNS},
+            "phase_id": CONFIG.phase_id, "entry_date": "2026-10-01", "status": "OPEN",
+            "code": str(2000 + number), "entry_price": "100", "mark_price": "100",
+            "shares": "100", "position_value": "10000", "last_mark_date": "2026-10-05",
+        })
+    monitor_journal_rows.append({
+        **{column: "" for column in JOURNAL_COLUMNS},
+        "phase_id": CONFIG.phase_id, "entry_date": "2026-09-28", "status": "CLOSED",
+        "code": "3000", "entry_price": "100", "shares": "100", "position_value": "10000",
+        "exit_date": "2026-10-02", "exit_price": "89", "exit_value": "8900",
+        "realized_pnl": "-1100", "exit_return_pct": "-11", "exit_type": "STOP_LOSS",
+    })
+    monitor_snapshot, _, monitor_alerts = daily_review.build_review(
+        monitor_orders,
+        pd.DataFrame(monitor_journal_rows).reindex(columns=JOURNAL_COLUMNS).fillna(""),
+        improvement_shadow,
+        as_of=date(2026, 10, 5),
+    )
+    alert_codes = {code for _, code, _ in monitor_alerts}
+    assert monitor_snapshot["health"] == "CRITICAL"
+    assert {"OVERDUE_DECLARED", "POSITION_LIMIT", "STOP_BELOW_MINUS_10"} <= alert_codes
+
     project_root = Path(__file__).resolve().parent
     declare_workflow = (
         project_root / ".github" / "workflows" / "claude_300man_declare.yml"
     ).read_text(encoding="utf-8")
     fill_workflow = (
         project_root / ".github" / "workflows" / "claude_300man_fill.yml"
+    ).read_text(encoding="utf-8")
+    daily_workflow = (
+        project_root / ".github" / "workflows" / "claude_300man_daily_monitor.yml"
     ).read_text(encoding="utf-8")
     assert 'cron: "45 9 * * 1-5"' in declare_workflow
     assert "daily_discipline_run.py --include-rejected --max-candidates 0" in declare_workflow
@@ -4267,6 +4335,13 @@ def _test_dual_300man_phase2_controls() -> None:
     assert "data/claude_300man_shadow.csv" in declare_workflow
     assert "claude_300man_shadow.py" in fill_workflow
     assert "data/claude_300man_shadow.csv" in fill_workflow
+    assert "claude_300man_daily_review.py" in declare_workflow
+    assert "claude_300man_daily_review.py" in fill_workflow
+    assert 'cron: "30 12 * * 1-5"' in daily_workflow
+    assert "self_test_groups.py --group critical" in daily_workflow
+    assert "--fail-on-critical" in daily_workflow
+    assert "data/claude_300man_daily_monitor.csv" in daily_workflow
+    assert "group: dual-ai-300man-ledger-write" in daily_workflow
     assert "group: dual-ai-300man-ledger-write" in declare_workflow
     assert "group: dual-ai-300man-ledger-write" in fill_workflow
 

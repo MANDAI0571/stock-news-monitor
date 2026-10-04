@@ -1,0 +1,144 @@
+name: Claude 300man Daily Monitor
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_date:
+        description: "監視対象日 YYYY-MM-DD（空欄はJST当日）"
+        required: false
+        type: string
+  schedule:
+    # 毎平日21:30 JST（12:30 UTC）。引け後宣告の後に最終確認する。
+    - cron: "30 12 * * 1-5"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: dual-ai-300man-ledger-write
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - run: pip install -r requirements.txt
+
+      - name: Resolve safe monitoring date
+        id: guard
+        env:
+          INPUT_TARGET_DATE: ${{ github.event.inputs.target_date || '' }}
+        run: |
+          python3 - <<'PY'
+          import os
+          from datetime import date, datetime, timedelta
+          from zoneinfo import ZoneInfo
+
+          from jpx_calendar import is_jpx_business_day
+
+          now = datetime.now(ZoneInfo("Asia/Tokyo"))
+          requested = os.environ.get("INPUT_TARGET_DATE", "").strip()
+
+          def previous_business_day(day: date) -> date:
+              cursor = day - timedelta(days=1)
+              for _ in range(30):
+                  if is_jpx_business_day(cursor):
+                      return cursor
+                  cursor -= timedelta(days=1)
+              raise RuntimeError("previous JPX business day not found")
+
+          if requested:
+              try:
+                  target = date.fromisoformat(requested)
+              except ValueError:
+                  target = now.date()
+                  run = False
+                  reason = "invalid_target_date"
+              else:
+                  run = is_jpx_business_day(target) and (
+                      target < now.date() or (target == now.date() and now.hour >= 16)
+                  )
+                  reason = "manual_review" if run else "unsafe_or_closed_manual_date"
+          elif now.hour < 8:
+              target = previous_business_day(now.date())
+              run = True
+              reason = "delayed_schedule_recovery"
+          else:
+              target = now.date()
+              run = is_jpx_business_day(target) and now.hour >= 16
+              reason = "jpx_business_day" if run else "jpx_closed_or_too_early"
+
+          print(f"claude_daily_monitor_guard run={run} target={target} reason={reason} now={now:%F_%H%M}")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"run={'true' if run else 'false'}\n")
+              output.write(f"date={target:%F}\n")
+              output.write(f"reason={reason}\n")
+          PY
+
+      - name: Skip closed days safely
+        if: steps.guard.outputs.run != 'true'
+        run: echo "claude_daily_monitor=skip reason=${{ steps.guard.outputs.reason }}"
+
+      - name: Run critical controls and refresh metrics
+        if: steps.guard.outputs.run == 'true'
+        run: |
+          python3 self_test_groups.py --group critical
+          python3 dual_300man_metrics.py --date "${{ steps.guard.outputs.date }}"
+          python3 dual_300man_compare.py
+          python3 claude_300man_shadow.py --date "${{ steps.guard.outputs.date }}"
+          python3 claude_300man_daily_review.py --date "${{ steps.guard.outputs.date }}"
+
+      - name: Commit daily evidence
+        if: steps.guard.outputs.run == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            data/claude_300man_journal.csv docs/claude_300man_ledger.md \
+            data/codex_300man_journal.csv docs/codex_300man_ledger.md \
+            docs/dual_300man_comparison.md docs/dual_300man_metrics.md \
+            data/claude_300man_shadow.csv docs/claude_300man_shadow.md \
+            data/claude_300man_daily_monitor.csv \
+            data/claude_300man_improvement_candidates.csv \
+            docs/claude_300man_daily_monitor.md
+          if git diff --cached --quiet; then
+            echo "claude_daily_monitor=no_change"
+            exit 0
+          fi
+          git commit -m "chore: update Claude daily monitor ${{ steps.guard.outputs.date }} [skip ci]"
+          git pull --rebase origin "${GITHUB_REF_NAME}"
+          git push origin HEAD:"${GITHUB_REF_NAME}"
+
+      - name: Upload monitoring evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: claude-300man-daily-monitor
+          path: |
+            data/claude_300man_daily_monitor.csv
+            data/claude_300man_improvement_candidates.csv
+            docs/claude_300man_daily_monitor.md
+            data/claude_300man_shadow.csv
+            docs/claude_300man_shadow.md
+          if-no-files-found: warn
+
+      - name: Fail visibly on critical findings
+        if: steps.guard.outputs.run == 'true'
+        run: python3 claude_300man_daily_review.py --date "${{ steps.guard.outputs.date }}" --fail-on-critical
+
+      - name: Notify failure by mail
+        if: failure()
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+        run: python3 notify_workflow_failure.py
