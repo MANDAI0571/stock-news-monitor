@@ -188,6 +188,12 @@ python paper_portfolio_discipline.py
 第2期の検証レポートは `docs/dual_300man_metrics.md` に出力します。損切り判定時と
 翌朝約定時を分け、MFE/MAE、決済後5・10営業日、利益捕捉率、投入比率、決済理由を記録します。
 
+無料の出口比較は `docs/claude_300man_shadow.md` に出力します。現行出口、日足安値での
+-5%到達、+6%起動/高値終値から-3%のトレーリング、および両者の組み合わせを、
+同じ実約定エントリーと往復0.30%コストで比較します。正本の注文・資金は変更せず、
+各方式20決済以上になるまで本番ルールへ反映しません。
+既存41件での無料先行比較は `docs/claude_shadow_exit_research_2026-10-05.md` に記録します。
+
 Claude口座の注文宣告と約定は別workflowです。
 
 - `.github/workflows/claude_300man_declare.yml`: 毎営業日18:45 JST。当日の全市場スクリーニング後、損切り・利確・タイムアウト・新規買いを翌営業日分として宣告

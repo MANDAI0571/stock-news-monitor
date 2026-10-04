@@ -4117,6 +4117,8 @@ def _test_dual_300man_phase2_controls() -> None:
     import dual_300man_fill as fill
     import dual_300man_metrics as metrics
     import claude_300man_declare as claude_declare
+    import claude_300man_shadow as claude_shadow
+    from claude_shadow_exits import EXIT_VARIANTS, simulate_exit
     from dual_300man_config import CONFIG, JOURNAL_COLUMNS, ORDER_COLUMNS, order_metadata
 
     assert CONFIG.restart_date.isoformat() == "2026-09-28"
@@ -4173,7 +4175,73 @@ def _test_dual_300man_phase2_controls() -> None:
             {"code": "2222", "data_date": "2026-10-02", "current_price": "200"},
         ]).to_csv(fixed, index=False, encoding="utf-8-sig")
         recovered = claude_declare.load_screening(screening_dir, date(2026, 10, 2))
-        assert recovered["code"].tolist() == ["2222"]
+    assert recovered["code"].tolist() == ["2222"]
+
+    variants = {variant.key: variant for variant in EXIT_VARIANTS}
+    loss_history = pd.DataFrame(
+        {
+            "Open": [100, 99, 96, 90],
+            "High": [101, 101, 97, 92],
+            "Low": [99, 94, 93, 89],
+            "Close": [100, 96, 94, 91],
+        },
+        index=pd.to_datetime(["2026-10-05", "2026-10-06", "2026-10-07", "2026-10-08"]),
+    )
+    close_loss = simulate_exit(
+        loss_history, entry_date=date(2026, 10, 5), entry_price=100,
+        variant=variants["current_close_5_tp12_t15"],
+    )
+    intraday_loss = simulate_exit(
+        loss_history, entry_date=date(2026, 10, 5), entry_price=100,
+        variant=variants["intraday_5_tp12_t15"],
+    )
+    assert close_loss["exit_date"] == "2026-10-08"
+    assert close_loss["gross_return_pct"] == -10.0
+    assert intraday_loss["exit_date"] == "2026-10-06"
+    assert intraday_loss["exit_price"] == 95.0
+    assert intraday_loss["net_return_pct"] == -5.3
+
+    trail_history = pd.DataFrame(
+        {
+            "Open": [100, 101, 108, 109, 105],
+            "High": [101, 108, 111, 110, 107],
+            "Low": [99, 100, 107, 105, 104],
+            "Close": [100, 107, 110, 106, 105],
+        },
+        index=pd.to_datetime(["2026-10-05", "2026-10-06", "2026-10-07", "2026-10-08", "2026-10-09"]),
+    )
+    trailed = simulate_exit(
+        trail_history, entry_date=date(2026, 10, 5), entry_price=100,
+        variant=variants["close_trail_6_3_t15"],
+    )
+    assert trailed["activation_date"] == "2026-10-06"
+    assert trailed["exit_type"] == "TRAILING_STOP"
+    assert trailed["exit_date"] == "2026-10-09"
+    assert trailed["net_return_pct"] == 4.7
+
+    shadow_source = pd.DataFrame([{
+        **{column: "" for column in JOURNAL_COLUMNS},
+        "phase_id": CONFIG.phase_id, "strategy_version": CONFIG.strategy_version,
+        "rule_hash": CONFIG.rule_hash, "entry_date": "2026-10-05", "status": "OPEN",
+        "code": "1111", "ticker": "1111.T", "name": "テスト", "sector": "情報・通信業",
+        "entry_price": "100", "shares": "100", "source_order_date": "2026-10-02",
+    }]).reindex(columns=JOURNAL_COLUMNS).fillna("")
+    shadow_rows = claude_shadow.build_shadow(
+        shadow_source, as_of=date(2026, 10, 9), fetcher=lambda _ticker: trail_history,
+    )
+    assert len(shadow_rows) == len(EXIT_VARIANTS)
+    assert shadow_rows["variant"].nunique() == len(EXIT_VARIANTS)
+    preserved = shadow_rows.copy()
+    preserved["status"] = "CLOSED"
+    preserved["exit_type"] = "PRESERVED_TEST"
+    preserved_rows = claude_shadow.build_shadow(
+        shadow_source,
+        as_of=date(2027, 10, 9),
+        existing=preserved,
+        fetcher=lambda _ticker: (_ for _ in ()).throw(AssertionError("closed rows must not refetch")),
+    )
+    assert len(preserved_rows) == len(EXIT_VARIANTS)
+    assert preserved_rows["exit_type"].eq("PRESERVED_TEST").all()
 
     project_root = Path(__file__).resolve().parent
     declare_workflow = (
@@ -4195,6 +4263,10 @@ def _test_dual_300man_phase2_controls() -> None:
     assert "screening date mismatch" in declare_workflow
     assert "Verify execution window is still open" in declare_workflow
     assert "execution window already opened" in declare_workflow
+    assert "claude_300man_shadow.py" in declare_workflow
+    assert "data/claude_300man_shadow.csv" in declare_workflow
+    assert "claude_300man_shadow.py" in fill_workflow
+    assert "data/claude_300man_shadow.csv" in fill_workflow
     assert "group: dual-ai-300man-ledger-write" in declare_workflow
     assert "group: dual-ai-300man-ledger-write" in fill_workflow
 

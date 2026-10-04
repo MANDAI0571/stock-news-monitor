@@ -7,6 +7,7 @@ from typing import Optional
 import pandas as pd
 
 from buy3_combo_research import Rule, filter_rule
+from claude_shadow_exits import EXIT_VARIANTS, simulate_exit as simulate_shadow_exit
 
 
 def parse_rule_id(rule_id: str) -> Optional[Rule]:
@@ -53,6 +54,7 @@ def simulate_trade(
     take_profit_pct: float,
     timeout_days: int,
     slippage_roundtrip_pct: float,
+    exit_variant_key: str = "current_close_5_tp12_t15",
 ) -> dict[str, object] | None:
     entry_date = pd.Timestamp(str(row["entry_date"])).normalize()
     if entry_date not in history.index:
@@ -62,47 +64,43 @@ def simulate_trade(
     if entry_open <= 0:
         return None
 
-    exit_type = ""
-    decision_pos = -1
-    decision_return = 0.0
-    for position in range(entry_pos, min(len(history), entry_pos + timeout_days + 1)):
-        held_days = position - entry_pos
-        close_price = float(history["Close"].iloc[position])
-        decision_return = (close_price / entry_open - 1) * 100
-        if decision_return <= stop_loss_pct:
-            exit_type = "STOP_LOSS"
-        elif decision_return >= take_profit_pct:
-            exit_type = "TAKE_PROFIT"
-        elif held_days >= timeout_days:
-            exit_type = "TIMEOUT"
-        if exit_type:
-            decision_pos = position
-            break
-    if decision_pos < 0 or decision_pos + 1 >= len(history):
+    variants = {variant.key: variant for variant in EXIT_VARIANTS}
+    if exit_variant_key not in variants:
+        raise ValueError(f"unknown exit variant: {exit_variant_key}")
+    simulated = simulate_shadow_exit(
+        history,
+        entry_date=entry_date.date(),
+        entry_price=entry_open,
+        variant=variants[exit_variant_key],
+        stop_loss_pct=stop_loss_pct,
+        take_profit_pct=take_profit_pct,
+        timeout_days=timeout_days,
+        roundtrip_cost_pct=slippage_roundtrip_pct,
+    )
+    if simulated.get("status") != "CLOSED":
         return None
-
-    exit_pos = decision_pos + 1
-    exit_open = float(history["Open"].iloc[exit_pos])
-    gross_return = (exit_open / entry_open - 1) * 100
-    net_return = gross_return - slippage_roundtrip_pct
+    decision_stamp = pd.Timestamp(str(simulated["exit_signal_date"])).normalize()
+    decision_pos = int(history.index.get_loc(decision_stamp))
+    exit_stamp = pd.Timestamp(str(simulated["exit_date"])).normalize()
+    exit_pos = int(history.index.get_loc(exit_stamp))
+    exit_open = float(simulated["exit_price"])
     decision_close = float(history["Close"].iloc[decision_pos])
+    decision_return = (decision_close / entry_open - 1) * 100
     fill_gap = (exit_open / decision_close - 1) * 100
-    path = history.iloc[entry_pos : decision_pos + 1]
-    mfe = (float(path["High"].max()) / entry_open - 1) * 100
-    mae = (float(path["Low"].min()) / entry_open - 1) * 100
     return {
         **row.to_dict(),
-        "exit_type_sim": exit_type,
+        "exit_variant": exit_variant_key,
+        "exit_type_sim": simulated["exit_type"],
         "decision_date_sim": history.index[decision_pos].date().isoformat(),
         "exit_date_sim": history.index[exit_pos].date().isoformat(),
-        "held_business_days_sim": decision_pos - entry_pos,
+        "held_business_days_sim": simulated["holding_business_days"],
         "decision_return_pct_sim": round(decision_return, 4),
         "exit_open_sim": round(exit_open, 4),
         "fill_gap_pct_sim": round(fill_gap, 4),
-        "gross_return_pct_sim": round(gross_return, 4),
-        "net_return_pct_sim": round(net_return, 4),
-        "mfe_pct_sim": round(mfe, 4),
-        "mae_pct_sim": round(mae, 4),
+        "gross_return_pct_sim": simulated["gross_return_pct"],
+        "net_return_pct_sim": simulated["net_return_pct"],
+        "mfe_pct_sim": simulated["mfe_pct"],
+        "mae_pct_sim": simulated["mae_pct"],
     }
 
 
@@ -116,6 +114,7 @@ def simulate_portfolio(
     slippage_roundtrip_pct: float,
     max_positions: int,
     cooldown_days: int,
+    exit_variant_key: str = "current_close_5_tp12_t15",
 ) -> tuple[pd.DataFrame, str]:
     all_dates = sorted(candidates["asof_date"].astype(str).unique())
     date_position = {date: position for position, date in enumerate(all_dates)}
@@ -160,6 +159,7 @@ def simulate_portfolio(
                 take_profit_pct,
                 timeout_days,
                 slippage_roundtrip_pct,
+                exit_variant_key,
             )
             if trade is None:
                 continue
@@ -179,7 +179,7 @@ def metrics(trades: pd.DataFrame) -> dict[str, object]:
     returns = pd.to_numeric(trades["net_return_pct_sim"], errors="coerce").dropna()
     gains = returns[returns > 0].sum()
     losses = returns[returns < 0].sum()
-    stops = trades[trades["exit_type_sim"].eq("STOP_LOSS")]
+    stops = trades[trades["exit_type_sim"].astype(str).str.startswith("STOP_LOSS")]
     return {
         "count": int(len(trades)),
         "unique_symbols": int(trades["code"].astype(str).nunique()),
@@ -194,18 +194,27 @@ def metrics(trades: pd.DataFrame) -> dict[str, object]:
         "stop_minus_5_to_7_count": int(pd.to_numeric(stops["gross_return_pct_sim"], errors="coerce").between(-7, -5).sum()),
         "stop_below_minus_10_count": int((pd.to_numeric(stops["gross_return_pct_sim"], errors="coerce") < -10).sum()),
         "take_profit_count": int(trades["exit_type_sim"].eq("TAKE_PROFIT").sum()),
+        "trailing_stop_count": int(trades["exit_type_sim"].eq("TRAILING_STOP").sum()),
         "timeout_count": int(trades["exit_type_sim"].eq("TIMEOUT").sum()),
     }
 
 
-def write_report(output: Path, rule_id: str, source: Path, cutoff: str, summary: dict[str, object]) -> None:
+def write_report(
+    output: Path,
+    rule_id: str,
+    source: Path,
+    cutoff: str,
+    exit_variant: str,
+    summary: dict[str, object],
+) -> None:
     lines = [
         "# Phase 2 exit-rule simulation",
         "",
         f"- rule: `{rule_id}`",
         f"- source: {source}",
+        f"- exit variant: `{exit_variant}`",
         f"- unbiased entry cutoff: {cutoff}",
-        "- execution: next-open entry; close-based -5% stop / +12% take profit / 15-business-day timeout; next-open exit",
+        "- execution: next-open entry; fixed free-daily-OHLC shadow variant; close signals exit next open",
         "- constraints: max 3 open positions, no duplicate open code, 5-business-day re-entry cooldown",
         "- cost assumption: round-trip 0.30% deducted",
         "",
@@ -230,6 +239,11 @@ def main() -> int:
     parser.add_argument("--slippage-roundtrip-pct", type=float, default=0.30)
     parser.add_argument("--max-positions", type=int, default=3)
     parser.add_argument("--cooldown-days", type=int, default=5)
+    parser.add_argument(
+        "--exit-variant",
+        choices=[variant.key for variant in EXIT_VARIANTS],
+        default="current_close_5_tp12_t15",
+    )
     args = parser.parse_args()
 
     detail = pd.read_csv(args.detail, dtype={"code": str, "ticker": str})
@@ -267,12 +281,16 @@ def main() -> int:
         slippage_roundtrip_pct=args.slippage_roundtrip_pct,
         max_positions=args.max_positions,
         cooldown_days=args.cooldown_days,
+        exit_variant_key=args.exit_variant,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     trades.to_csv(args.output, index=False, encoding="utf-8-sig")
     summary = metrics(trades)
-    write_report(args.output, args.rule_id, args.detail, cutoff, summary)
-    print(f"buy3_exit_research count={summary.get('count', 0)} cutoff={cutoff} output={args.output}")
+    write_report(args.output, args.rule_id, args.detail, cutoff, args.exit_variant, summary)
+    print(
+        f"buy3_exit_research variant={args.exit_variant} count={summary.get('count', 0)} "
+        f"cutoff={cutoff} output={args.output}"
+    )
     return 0
 
 
