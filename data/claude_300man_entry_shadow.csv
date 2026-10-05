@@ -1,0 +1,1 @@
+﻿phase_id,strategy_version,rule_hash,variant,variant_label,decision_date,execution_date,code,ticker,name,sector,candidate_strategy,score,screen_tags,decision_price,status,entry_date,entry_price,entry_gap_pct,exit_type,exit_signal_date,exit_date,exit_price,gross_return_pct,net_return_pct,holding_business_days,mfe_pct,mae_pct,last_observed_date,roundtrip_cost_pct,updated_at_jst

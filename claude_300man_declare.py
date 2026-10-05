@@ -406,7 +406,12 @@ def _cancel_incompatible_pending(orders: pd.DataFrame, today: date) -> bool:
     return changed
 
 
-def declare(output_dir: Path, today: date | None = None) -> int:
+def declare(
+    output_dir: Path,
+    today: date | None = None,
+    *,
+    allow_new_buys: bool = True,
+) -> int:
     """翌営業日ぶんの注文を宣告する。宣告した件数を返す。"""
     today = today or datetime.now(JST).date()
     execution_date = next_business_day(today)
@@ -498,7 +503,9 @@ def declare(output_dir: Path, today: date | None = None) -> int:
     free_slots = min(slots_by_regime, MAX_POSITIONS - used_slots)
     cash = _cash_balance(journal) - reserved
     bought = 0
-    if unpriced_pending:
+    if not allow_new_buys:
+        print("claude_300man_declare=no_new reason=reconciliation_block")
+    elif unpriced_pending:
         print("claude_300man_declare=no_new reason=pending_order_price_unknown")
     elif free_slots <= 0:
         print(
@@ -624,7 +631,12 @@ def push_orders() -> bool:
     return True
 
 
-def declare_production(output_dir: Path, today: date | None = None) -> int:
+def declare_production(
+    output_dir: Path,
+    today: date | None = None,
+    *,
+    allow_new_buys: bool = True,
+) -> int:
     """本番の outputs/ のときだけ発注する（セルフテストの一時ディレクトリでは動かない）。"""
     try:
         if output_dir.resolve() != DEFAULT_OUTPUT_DIR.resolve():
@@ -634,7 +646,7 @@ def declare_production(output_dir: Path, today: date | None = None) -> int:
         if not clean:
             print(f"claude_300man_declare=skipped reason=uncommitted_strategy_changes details={details}")
             return 0
-        count = declare(output_dir, today)
+        count = declare(output_dir, today, allow_new_buys=allow_new_buys)
         if count:
             push_orders()
         return count
@@ -647,9 +659,14 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR))
     parser.add_argument("--date", default=None)
+    parser.add_argument(
+        "--block-new-buys",
+        action="store_true",
+        help="台帳照合異常時も出口宣告を続け、新規BUYだけを停止する",
+    )
     args = parser.parse_args()
     today = date.fromisoformat(args.date) if args.date else None
-    declare(Path(args.output_dir), today)
+    declare(Path(args.output_dir), today, allow_new_buys=not args.block_new_buys)
 
 
 if __name__ == "__main__":

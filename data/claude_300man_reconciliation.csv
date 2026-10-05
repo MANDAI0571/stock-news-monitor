@@ -1,0 +1,12 @@
+﻿as_of,severity,check,status,subject,details
+2026-10-05,INFO,schema_orders,PASS,orders,7 rows
+2026-10-05,INFO,schema_journal,PASS,journal,5 rows
+2026-10-05,INFO,duplicate_orders,PASS,orders,none
+2026-10-05,INFO,duplicate_journal_entries,PASS,journal,none
+2026-10-05,INFO,filled_buys_to_journal,PASS,all,5 keys matched
+2026-10-05,INFO,filled_sells_to_journal,PASS,all,2 keys matched
+2026-10-05,INFO,open_share_balance,PASS,all,3 keys matched
+2026-10-05,INFO,journal_arithmetic,PASS,journal,5 rows matched
+2026-10-05,INFO,cash_balance,PASS,paper_cash,cash_jpy=1498500
+2026-10-05,INFO,open_position_limits,PASS,portfolio,open=3 max=3
+2026-10-05,INFO,pending_rule_compatibility,PASS,pending_orders,count=0

@@ -167,9 +167,32 @@ jobs:
               )
           PY
 
+      - name: Reconcile Claude paper ledgers before declaration
+        if: steps.guard.outputs.run == 'true'
+        id: reconcile
+        run: |
+          python3 claude_300man_reconcile.py \
+            --date "${{ steps.guard.outputs.date }}" \
+            --github-output "$GITHUB_OUTPUT"
+
       - name: Declare Claude orders for next JPX business day
         if: steps.guard.outputs.run == 'true'
-        run: python3 claude_300man_declare.py --date "${{ steps.guard.outputs.date }}"
+        run: |
+          if [ "${{ steps.reconcile.outputs.allow_new_buys }}" = "true" ]; then
+            python3 claude_300man_declare.py --date "${{ steps.guard.outputs.date }}"
+          else
+            echo "::error::Ledger reconciliation failed; blocking only new BUY declarations"
+            python3 claude_300man_declare.py \
+              --date "${{ steps.guard.outputs.date }}" \
+              --block-new-buys
+          fi
+
+      - name: Update free Claude entry shadow
+        if: steps.guard.outputs.run == 'true'
+        run: |
+          python3 claude_300man_entry_shadow.py \
+            --date "${{ steps.guard.outputs.date }}" \
+            --screening outputs/screening_result.csv
 
       - name: Update free Claude shadow exits
         if: steps.guard.outputs.run == 'true'
@@ -177,7 +200,9 @@ jobs:
 
       - name: Update Claude daily monitoring report
         if: steps.guard.outputs.run == 'true'
-        run: python3 claude_300man_daily_review.py --date "${{ steps.guard.outputs.date }}"
+        run: |
+          python3 claude_300man_reconcile.py --date "${{ steps.guard.outputs.date }}"
+          python3 claude_300man_daily_review.py --date "${{ steps.guard.outputs.date }}"
 
       - name: Show declaration summary
         if: always()
@@ -192,7 +217,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data/claude_300man_orders.csv data/claude_300man_shadow.csv docs/claude_300man_shadow.md data/claude_300man_daily_monitor.csv data/claude_300man_improvement_candidates.csv docs/claude_300man_daily_monitor.md
+          git add data/claude_300man_orders.csv data/claude_300man_shadow.csv docs/claude_300man_shadow.md data/claude_300man_entry_shadow.csv docs/claude_300man_entry_shadow.md data/claude_300man_reconciliation.csv docs/claude_300man_reconciliation.md data/claude_300man_daily_monitor.csv data/claude_300man_improvement_candidates.csv docs/claude_300man_daily_monitor.md
           if git diff --cached --quiet; then
             echo "claude_300man_declare=no_order_change"
             exit 0
@@ -210,10 +235,18 @@ jobs:
             data/claude_300man_orders.csv
             data/claude_300man_shadow.csv
             docs/claude_300man_shadow.md
+            data/claude_300man_entry_shadow.csv
+            docs/claude_300man_entry_shadow.md
+            data/claude_300man_reconciliation.csv
+            docs/claude_300man_reconciliation.md
             outputs/screening_result.csv
             outputs/screening_result_*.csv
             outputs/s_rank_candidates_*.csv
           if-no-files-found: warn
+
+      - name: Fail visibly on reconciliation findings
+        if: steps.guard.outputs.run == 'true'
+        run: python3 claude_300man_reconcile.py --date "${{ steps.guard.outputs.date }}" --fail-on-critical
 
       - name: Notify failure by mail
         if: failure()

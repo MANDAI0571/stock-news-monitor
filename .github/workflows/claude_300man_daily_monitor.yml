@@ -95,6 +95,7 @@ jobs:
           python3 dual_300man_metrics.py --date "${{ steps.guard.outputs.date }}"
           python3 dual_300man_compare.py
           python3 claude_300man_shadow.py --date "${{ steps.guard.outputs.date }}"
+          python3 claude_300man_reconcile.py --date "${{ steps.guard.outputs.date }}"
           python3 claude_300man_daily_review.py --date "${{ steps.guard.outputs.date }}"
 
       - name: Commit daily evidence
@@ -107,6 +108,8 @@ jobs:
             data/codex_300man_journal.csv docs/codex_300man_ledger.md \
             docs/dual_300man_comparison.md docs/dual_300man_metrics.md \
             data/claude_300man_shadow.csv docs/claude_300man_shadow.md \
+            data/claude_300man_reconciliation.csv \
+            docs/claude_300man_reconciliation.md \
             data/claude_300man_daily_monitor.csv \
             data/claude_300man_improvement_candidates.csv \
             docs/claude_300man_daily_monitor.md
@@ -129,11 +132,15 @@ jobs:
             docs/claude_300man_daily_monitor.md
             data/claude_300man_shadow.csv
             docs/claude_300man_shadow.md
+            data/claude_300man_reconciliation.csv
+            docs/claude_300man_reconciliation.md
           if-no-files-found: warn
 
       - name: Fail visibly on critical findings
         if: steps.guard.outputs.run == 'true'
-        run: python3 claude_300man_daily_review.py --date "${{ steps.guard.outputs.date }}" --fail-on-critical
+        run: |
+          python3 claude_300man_reconcile.py --date "${{ steps.guard.outputs.date }}" --fail-on-critical
+          python3 claude_300man_daily_review.py --date "${{ steps.guard.outputs.date }}" --fail-on-critical
 
       - name: Notify failure by mail
         if: failure()
