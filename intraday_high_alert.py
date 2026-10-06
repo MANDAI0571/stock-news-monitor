@@ -47,7 +47,6 @@ from pathlib import Path
 import pandas as pd
 
 import nikkei_compare
-from chart_links import JP_COMPARE_LABEL, compare_chart_url
 from scanner.highs import classify_high_profile
 from scanner.indicators import calculate_indicators
 from scanner.prices import (

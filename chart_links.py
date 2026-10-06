@@ -14,6 +14,17 @@ compare= に何を入れるかは推測せず、実際にブラウザで開い�
 ローソク足や移動平均の指定（scl= styl= evnts= ovrIndctr=）は落とす。
 だから比較用のURLには最初から付けない。
 
+【2026-10-06 追記】このURLはPCでしか機能しない。実機相当の画面で確かめた。
+  PC   …compare=998407.O のまま開き、「8392.T／日経平均」の2本が重なる。
+  スマホ リダイレクトでパラメータごと捨てられる。
+         要求 /quote/8392.T/chart?frm=dly&trm=6m&compare=998407.O
+         着地 /quote/8392.T/chart?trm=6m&styl=cndl&ovrIndctr=sma%2Cmma
+         日経平均の線は出ず、移動平均だけが表示される。米株側も同じ（NVDAで確認）。
+  そのためラベルに「PCで開くと重なります」と入れる。
+  スマホで読むザラ場アラートのメールはリンクをやめ、nikkei_compare.py が
+  計算した数字を載せている。note記事は数字（📐の行）を併記しているので
+  リンクは残す。
+
 ※ここから分かるのは「指数に対して相対的に高い位置か安い位置か」だけで、
   PER・PBR のような意味での割安・割高ではない。文言にも必ず「日経平均に対して」を付ける。
 """
@@ -22,11 +33,11 @@ from __future__ import annotations
 
 # 日経平均。依頼にない指数は足さない。
 JP_COMPARE_CODES = "998407.O"
-JP_COMPARE_LABEL = "日経平均と比較"
+JP_COMPARE_LABEL = "日経平均と比較（PCで開くと重なります）"
 
 # S&P500（^GSPC）。URLでは「^」が %5E になる。
 US_COMPARE_CODES = "%5EGSPC"
-US_COMPARE_LABEL = "S&P500と比較"
+US_COMPARE_LABEL = "S&P500と比較（PCで開くと重なります）"
 
 
 def _clean_code(code: object) -> str:
