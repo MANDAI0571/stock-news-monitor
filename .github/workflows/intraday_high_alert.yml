@@ -42,6 +42,14 @@ on:
     # 先行の回が生きていれば concurrency で待たされ、直後に場外判定で即終了する。
     # 【2026-08-08 追加】00時台UTC（＝JST09時台）のcronがGitHub側で丸ごと落ちる事故が続いたため、
     # 前日23時台UTC（＝JST 08:41 / 08:53）にも起動し、ジョブ内で09:00 JSTまで待ってから巡回に入る。
+    # 【2026-10-06 追加】00時台UTC（JST09時台）も23時台UTC（JST08時台）も
+    # 今朝(10/06)は1回も発火しなかった。このリポジトリは同じ時間帯に多数の
+    # 定期実行が集中しており、GitHub側で間引かれていると見られる。
+    # そこで混雑の少ない時間にも起動を置き、発火した回が09:00 JSTまで待つ。
+    # 実行時間の上限は6時間なので、最も早い起動は JST 06:10 までにする
+    # （06:10起動 → 11:30終了で5時間20分）。
+    - cron: "10 21 * * 0-4"
+    - cron: "10 22 * * 0-4"
     - cron: "41 23 * * 0-4"
     - cron: "53 23 * * 0-4"
     - cron: "7 0 * * 1-5"
@@ -60,7 +68,9 @@ jobs:
   intraday-high-alert:
     runs-on: ubuntu-latest
     # 前場・後場を通しで見張るため長めに取る（実績値: 前場約2時間57分、後場約3時間2分）。
-    timeout-minutes: 240
+    # 06:10 JST に起動して09:00まで待ち、11:30まで巡回すると5時間20分かかる。
+    # 240分（4時間）だと10:10に打ち切られ、早い起動を足した意味がなくなる。
+    timeout-minutes: 350
     # 前日EODのスクリーニング結果アーティファクトを読むため read 権限が要る。
     permissions:
       contents: read
@@ -156,8 +166,10 @@ jobs:
           exec > >(tee -a "$log_file") 2>&1
           start=$(date +%s)
           scan=0
-          # 開場前（JST 08:20〜08:59）に起動した回は、09:00 JST まで待ってから巡回に入る。朝のcron欠落対策。
-          pre=$((10#$(TZ=Asia/Tokyo date +%H%M))); if [ "$pre" -ge 820 ] && [ "$pre" -lt 900 ]; then echo "[PREOPEN] jst=$pre -> wait until 09:00 JST"; while :; do cur=$((10#$(TZ=Asia/Tokyo date +%H%M))); if [ "$cur" -ge 900 ]; then break; fi; sleep 30; done; echo "[PREOPEN] market open jst=$(TZ=Asia/Tokyo date '+%H:%M:%S')"; fi
+          # 開場前（JST 06:00〜08:59）に起動した回は、09:00 JST まで待ってから巡回に入る。
+          # 朝のcron欠落対策。待っているあいだ concurrency で後続は待たされ、
+          # 開場後に起きた回は場外判定で即終了するので二重に走らない。
+          pre=$((10#$(TZ=Asia/Tokyo date +%H%M))); if [ "$pre" -ge 600 ] && [ "$pre" -lt 900 ]; then echo "[PREOPEN] jst=$pre -> wait until 09:00 JST"; while :; do cur=$((10#$(TZ=Asia/Tokyo date +%H%M))); if [ "$cur" -ge 900 ]; then break; fi; sleep 30; done; echo "[PREOPEN] market open jst=$(TZ=Asia/Tokyo date '+%H:%M:%S')"; fi
           while true; do
             hm0=$(TZ=Asia/Tokyo date +%H%M); n0=$((10#$hm0)); if { [ "$n0" -ge 900 ] && [ "$n0" -lt 1130 ]; } || { [ "$n0" -ge 1230 ] && [ "$n0" -lt 1530 ]; }; then :; elif [ "$scan" -eq 0 ] && [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then echo "[GUARD] outside market hours jst=$hm0 but manual run -> single scan"; else echo "[GUARD] outside market hours jst=$hm0 -> exit without scanning (scans=$scan)"; break; fi
             scan=$((scan+1))
