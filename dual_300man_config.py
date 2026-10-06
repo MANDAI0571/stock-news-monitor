@@ -60,6 +60,7 @@ class StrategyConfig:
     circuit_reduce_pct: float
     circuit_stop_pct: float
     pending_expiry_business_days: int
+    strategy_rules: Mapping[str, object]
     rule_hash: str
 
 
@@ -73,6 +74,7 @@ def _canonical_payload(raw: dict) -> bytes:
         "accounts": raw.get("accounts"),
         "execution": raw.get("execution"),
         "shared_risk_rules": raw.get("shared_risk_rules"),
+        "strategy_rules": raw.get("strategy_rules"),
     }
     return json.dumps(tracked, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
@@ -100,6 +102,7 @@ def load_strategy_config(path: Path = CONFIG_PATH) -> StrategyConfig:
         circuit_reduce_pct=float(rules["drawdown_reduce_pct"]),
         circuit_stop_pct=float(rules["drawdown_stop_pct"]),
         pending_expiry_business_days=int(rules.get("pending_expiry_business_days", 3)),
+        strategy_rules=raw.get("strategy_rules", {}),
         rule_hash=hashlib.sha256(_canonical_payload(raw)).hexdigest()[:12],
     )
     if config.stop_loss_pct >= 0 or config.take_profit_pct <= 0:

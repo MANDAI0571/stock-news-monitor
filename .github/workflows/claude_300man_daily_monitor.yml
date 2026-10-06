@@ -1,16 +1,17 @@
-name: Dual AI 300man Open Fill
+name: Claude 300man Daily Monitor
 
 on:
   workflow_dispatch:
     inputs:
       target_date:
-        description: "約定対象日 YYYY-MM-DD（空欄はJST当日）"
+        description: "監視対象日 YYYY-MM-DD（空欄はJST当日）"
         required: false
         type: string
   schedule:
-    - cron: "40 0 * * 1-5"
-    # GitHub cronの取りこぼし対策。処理は冪等で、同じ注文は二重約定しない。
-    - cron: "15 1 * * 1-5"
+    # 毎平日21:30 JST（12:30 UTC）。引け後宣告の後に最終確認する。
+    - cron: "30 12 * * 1-5"
+    # GitHub cronの取りこぼし対策（22:15 JST）。同日再実行は同じ日次行を更新する。
+    - cron: "15 13 * * 1-5"
 
 permissions:
   contents: write
@@ -20,17 +21,21 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  fill:
+  monitor:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
+
       - run: pip install -r requirements.txt
 
-      - name: Resolve safe fill date
+      - name: Resolve safe monitoring date
         id: guard
         env:
           INPUT_TARGET_DATE: ${{ github.event.inputs.target_date || '' }}
@@ -44,7 +49,6 @@ jobs:
 
           now = datetime.now(ZoneInfo("Asia/Tokyo"))
           requested = os.environ.get("INPUT_TARGET_DATE", "").strip()
-          scheduled = os.environ.get("GITHUB_EVENT_NAME") == "schedule"
 
           def previous_business_day(day: date) -> date:
               cursor = day - timedelta(days=1)
@@ -62,68 +66,84 @@ jobs:
                   run = False
                   reason = "invalid_target_date"
               else:
-                  market_opened = target < now.date() or (
-                      target == now.date() and (now.hour, now.minute) >= (9, 0)
+                  run = is_jpx_business_day(target) and (
+                      target < now.date() or (target == now.date() and now.hour >= 16)
                   )
-                  run = is_jpx_business_day(target) and market_opened
-                  reason = "manual_recovery" if run else "unsafe_manual_fill"
-          elif scheduled and now.hour < 8:
-              # cronが深夜まで遅延した場合は、古い当日扱いにせず前営業日を補完する。
+                  reason = "manual_review" if run else "unsafe_or_closed_manual_date"
+          elif now.hour < 8:
               target = previous_business_day(now.date())
               run = True
-              reason = "scheduled_delayed_recovery"
+              reason = "delayed_schedule_recovery"
           else:
               target = now.date()
-              opened = (now.hour, now.minute) >= (9, 0)
-              run = is_jpx_business_day(target) and opened
-              if run:
-                  reason = "jpx_business_day"
-              elif not is_jpx_business_day(target):
-                  reason = "jpx_closed"
-              else:
-                  reason = "scheduled_before_open" if scheduled else "unsafe_manual_fill"
+              run = is_jpx_business_day(target) and now.hour >= 16
+              reason = "jpx_business_day" if run else "jpx_closed_or_too_early"
 
-          print(f"claude_300man_fill_guard run={run} target={target} reason={reason} now={now:%F_%H%M}")
+          print(f"claude_daily_monitor_guard run={run} target={target} reason={reason} now={now:%F_%H%M}")
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
               output.write(f"run={'true' if run else 'false'}\n")
               output.write(f"date={target:%F}\n")
               output.write(f"reason={reason}\n")
           PY
 
-      - name: Fail when fill request is unsafe
-        if: steps.guard.outputs.run != 'true' && steps.guard.outputs.reason != 'jpx_closed'
-        run: |
-          echo "::error::Claude/Codex fill skipped: ${{ steps.guard.outputs.reason }}"
-          exit 1
-
       - name: Skip closed days safely
-        if: steps.guard.outputs.run != 'true' && steps.guard.outputs.reason == 'jpx_closed'
-        run: echo "dual_300man_fill=skip reason=jpx_closed"
+        if: steps.guard.outputs.run != 'true'
+        run: echo "claude_daily_monitor=skip reason=${{ steps.guard.outputs.reason }}"
 
-      - name: Record Claude and Codex opening fills
+      - name: Run critical controls and refresh metrics
         if: steps.guard.outputs.run == 'true'
         run: |
-          python3 claude_300man_fill.py --date "${{ steps.guard.outputs.date }}"
-          python3 codex_300man_fill.py --date "${{ steps.guard.outputs.date }}"
+          python3 self_test_groups.py --group critical
           python3 dual_300man_metrics.py --date "${{ steps.guard.outputs.date }}"
           python3 dual_300man_compare.py
           python3 claude_300man_shadow.py --date "${{ steps.guard.outputs.date }}"
-          python3 claude_300man_entry_shadow.py --date "${{ steps.guard.outputs.date }}"
           python3 claude_300man_reconcile.py --date "${{ steps.guard.outputs.date }}"
           python3 claude_300man_daily_review.py --date "${{ steps.guard.outputs.date }}"
-      - name: Commit both independent ledgers
+
+      - name: Commit daily evidence
         if: steps.guard.outputs.run == 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data/claude_300man_orders.csv data/claude_300man_journal.csv docs/claude_300man_ledger.md data/codex_300man_orders.csv data/codex_300man_journal.csv docs/codex_300man_ledger.md docs/dual_300man_comparison.md docs/dual_300man_metrics.md data/claude_300man_shadow.csv docs/claude_300man_shadow.md data/claude_300man_entry_shadow.csv docs/claude_300man_entry_shadow.md data/claude_300man_reconciliation.csv docs/claude_300man_reconciliation.md data/claude_300man_daily_monitor.csv data/claude_300man_improvement_candidates.csv docs/claude_300man_daily_monitor.md
-          git diff --cached --quiet && exit 0
-          git commit -m "Update dual AI 300man journals [skip ci]"
+          git add \
+            data/claude_300man_journal.csv docs/claude_300man_ledger.md \
+            data/codex_300man_journal.csv docs/codex_300man_ledger.md \
+            docs/dual_300man_comparison.md docs/dual_300man_metrics.md \
+            data/claude_300man_shadow.csv docs/claude_300man_shadow.md \
+            data/claude_300man_reconciliation.csv \
+            docs/claude_300man_reconciliation.md \
+            data/claude_300man_daily_monitor.csv \
+            data/claude_300man_improvement_candidates.csv \
+            docs/claude_300man_daily_monitor.md
+          if git diff --cached --quiet; then
+            echo "claude_daily_monitor=no_change"
+            exit 0
+          fi
+          git commit -m "chore: update Claude daily monitor ${{ steps.guard.outputs.date }} [skip ci]"
           git pull --rebase origin "${GITHUB_REF_NAME}"
           git push origin HEAD:"${GITHUB_REF_NAME}"
-      - name: Fail visibly on reconciliation findings
+
+      - name: Upload monitoring evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: claude-300man-daily-monitor
+          path: |
+            data/claude_300man_daily_monitor.csv
+            data/claude_300man_improvement_candidates.csv
+            docs/claude_300man_daily_monitor.md
+            data/claude_300man_shadow.csv
+            docs/claude_300man_shadow.md
+            data/claude_300man_reconciliation.csv
+            docs/claude_300man_reconciliation.md
+          if-no-files-found: warn
+
+      - name: Fail visibly on critical findings
         if: steps.guard.outputs.run == 'true'
-        run: python3 claude_300man_reconcile.py --date "${{ steps.guard.outputs.date }}" --fail-on-critical
+        run: |
+          python3 claude_300man_reconcile.py --date "${{ steps.guard.outputs.date }}" --fail-on-critical
+          python3 claude_300man_daily_review.py --date "${{ steps.guard.outputs.date }}" --fail-on-critical
+
       - name: Notify failure by mail
         if: failure()
         env:

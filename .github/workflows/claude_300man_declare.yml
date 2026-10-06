@@ -2,9 +2,16 @@ name: Claude 300man Close Declare
 
 on:
   workflow_dispatch:
+    inputs:
+      target_date:
+        description: "補完する判定日 (YYYY-MM-DD)。空欄は当日引け後のみ"
+        required: false
+        type: string
   schedule:
     # 毎平日18:45 JST（09:45 UTC）。当日終値の確定後に翌営業日の注文を宣告する。
     - cron: "45 9 * * 1-5"
+    # GitHub cronの取りこぼし対策（20:05 JST）。宣告は同一日・同一銘柄で冪等。
+    - cron: "5 11 * * 1-5"
 
 permissions:
   contents: write
@@ -44,34 +51,68 @@ jobs:
 
       - name: Check JPX business day and close window
         id: guard
+        env:
+          INPUT_TARGET_DATE: ${{ github.event.inputs.target_date || '' }}
         run: |
           python3 - <<'PY'
           import os
-          from datetime import datetime, timedelta
+          from datetime import date, datetime, timedelta
           from zoneinfo import ZoneInfo
 
           from jpx_calendar import is_jpx_business_day
 
           now = datetime.now(ZoneInfo("Asia/Tokyo"))
-          in_window = 16 <= now.hour < 23
           scheduled = os.environ.get("GITHUB_EVENT_NAME") == "schedule"
-          if not in_window:
-              intended = now.date() if now.hour >= 16 else (now - timedelta(days=1)).date()
+          requested = os.environ.get("INPUT_TARGET_DATE", "").strip()
+
+          def next_business_day(day: date) -> date:
+              cursor = day + timedelta(days=1)
+              for _ in range(30):
+                  if is_jpx_business_day(cursor):
+                      return cursor
+                  cursor += timedelta(days=1)
+              raise RuntimeError(f"next business day not found after {day}")
+
+          if requested:
+              try:
+                  target = date.fromisoformat(requested)
+              except ValueError:
+                  target = now.date()
+                  run = False
+                  reason = "invalid_target_date"
+              else:
+                  execution = next_business_day(target) if is_jpx_business_day(target) else target
+                  market_closed = now.date() > target or (now.date() == target and now.hour >= 16)
+                  before_execution = now.date() < execution or (now.date() == execution and now.hour < 9)
+                  run = is_jpx_business_day(target) and market_closed and before_execution
+                  reason = "manual_recovery" if run else "unsafe_manual_recovery"
+          elif scheduled and now.hour < 8:
+              # 18:45 JSTのcronがGitHub都合で深夜に遅延した場合だけ、前日分を補完する。
+              target = (now - timedelta(days=1)).date()
+              run = is_jpx_business_day(target)
+              reason = "scheduled_delayed_recovery" if run else "jpx_closed"
+          elif 16 <= now.hour and (scheduled or now.hour < 23):
+              target = now.date()
+              run = is_jpx_business_day(target)
+              reason = "jpx_business_day" if run else "jpx_closed"
+          else:
+              target = now.date()
               run = False
+              intended = (now - timedelta(days=1)).date() if now.hour < 16 else now.date()
               if scheduled and is_jpx_business_day(intended):
                   reason = f"declaration_lost_{intended:%Y%m%d}_ran_{now:%H%M}_JST"
               elif scheduled:
                   reason = "jpx_closed"
               else:
                   reason = f"outside_close_window_{now:%H%M}_JST"
-          else:
-              run = is_jpx_business_day(now.date())
-              reason = "jpx_business_day" if run else "jpx_closed"
-          print(f"claude_300man_declare_guard run={run} reason={reason} date={now:%F}")
+          print(
+              f"claude_300man_declare_guard run={run} reason={reason} "
+              f"target={target} now={now:%F_%H%M}"
+          )
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
               output.write(f"run={'true' if run else 'false'}\n")
               output.write(f"reason={reason}\n")
-              output.write(f"date={now:%F}\n")
+              output.write(f"date={target:%F}\n")
           PY
 
       - name: Fail when a declaration window was missed
@@ -88,18 +129,82 @@ jobs:
         if: steps.guard.outputs.run == 'true'
         run: python3 daily_discipline_run.py --include-rejected --max-candidates 0
 
-      - name: Refuse a declaration after the target date moved
+      - name: Verify fresh screening target date
         if: steps.guard.outputs.run == 'true'
         run: |
-          now=$(TZ=Asia/Tokyo date +%F)
-          if [ "$now" != "${{ steps.guard.outputs.date }}" ]; then
-            echo "::error::claude_300man_declare_date_moved target=${{ steps.guard.outputs.date }} now=$now"
-            exit 1
-          fi
+          python3 - <<'PY'
+          import pandas as pd
+
+          target = "${{ steps.guard.outputs.date }}"
+          screening = pd.read_csv("outputs/screening_result.csv", dtype=str).fillna("")
+          dates = sorted({value[:10] for value in screening.get("data_date", []) if value})
+          print(f"claude_300man_screening_dates target={target} dates={dates}")
+          if not dates or dates[-1] != target:
+              raise SystemExit(f"screening date mismatch: target={target} dates={dates}")
+          PY
+
+      - name: Verify execution window is still open
+        if: steps.guard.outputs.run == 'true'
+        run: |
+          python3 - <<'PY'
+          from datetime import date, datetime, time, timedelta
+          from zoneinfo import ZoneInfo
+
+          from jpx_calendar import is_jpx_business_day
+
+          target = date.fromisoformat("${{ steps.guard.outputs.date }}")
+          execution = target + timedelta(days=1)
+          for _ in range(30):
+              if is_jpx_business_day(execution):
+                  break
+              execution += timedelta(days=1)
+          else:
+              raise SystemExit(f"execution day not found after {target}")
+          now = datetime.now(ZoneInfo("Asia/Tokyo"))
+          deadline = datetime.combine(execution, time(9, 0), ZoneInfo("Asia/Tokyo"))
+          print(f"claude_300man_execution_window now={now.isoformat()} deadline={deadline.isoformat()}")
+          if now >= deadline:
+              raise SystemExit(
+                  f"execution window already opened: target={target} execution={execution}"
+              )
+          PY
+
+      - name: Reconcile Claude paper ledgers before declaration
+        if: steps.guard.outputs.run == 'true'
+        id: reconcile
+        run: |
+          python3 claude_300man_reconcile.py \
+            --date "${{ steps.guard.outputs.date }}" \
+            --github-output "$GITHUB_OUTPUT"
 
       - name: Declare Claude orders for next JPX business day
         if: steps.guard.outputs.run == 'true'
-        run: python3 claude_300man_declare.py --date "${{ steps.guard.outputs.date }}"
+        run: |
+          if [ "${{ steps.reconcile.outputs.allow_new_buys }}" = "true" ]; then
+            python3 claude_300man_declare.py --date "${{ steps.guard.outputs.date }}"
+          else
+            echo "::error::Ledger reconciliation failed; blocking only new BUY declarations"
+            python3 claude_300man_declare.py \
+              --date "${{ steps.guard.outputs.date }}" \
+              --block-new-buys
+          fi
+
+      - name: Update free Claude entry shadow
+        if: steps.guard.outputs.run == 'true'
+        run: |
+          python3 claude_300man_entry_shadow.py \
+            --date "${{ steps.guard.outputs.date }}" \
+            --screening outputs/screening_result.csv
+
+      - name: Update free Claude shadow exits
+        if: steps.guard.outputs.run == 'true'
+        run: python3 claude_300man_shadow.py --date "${{ steps.guard.outputs.date }}"
+
+      - name: Update Claude daily monitoring report
+        if: steps.guard.outputs.run == 'true'
+        run: |
+          python3 claude_300man_reconcile.py --date "${{ steps.guard.outputs.date }}"
+          python3 claude_300man_daily_review.py --date "${{ steps.guard.outputs.date }}"
 
       - name: Show declaration summary
         if: always()
@@ -114,12 +219,12 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data/claude_300man_orders.csv
+          git add data/claude_300man_orders.csv data/claude_300man_shadow.csv docs/claude_300man_shadow.md data/claude_300man_entry_shadow.csv docs/claude_300man_entry_shadow.md data/claude_300man_reconciliation.csv docs/claude_300man_reconciliation.md data/claude_300man_daily_monitor.csv data/claude_300man_improvement_candidates.csv docs/claude_300man_daily_monitor.md
           if git diff --cached --quiet; then
             echo "claude_300man_declare=no_order_change"
             exit 0
           fi
-          git commit -m "chore: declare Claude 300man orders ${{ steps.guard.outputs.date }} [skip ci]"
+          git commit -m "chore: update Claude declaration and shadow ${{ steps.guard.outputs.date }} [skip ci]"
           git pull --rebase origin "${GITHUB_REF_NAME}"
           git push origin HEAD:"${GITHUB_REF_NAME}"
 
@@ -130,10 +235,20 @@ jobs:
           name: claude-300man-close-declare
           path: |
             data/claude_300man_orders.csv
+            data/claude_300man_shadow.csv
+            docs/claude_300man_shadow.md
+            data/claude_300man_entry_shadow.csv
+            docs/claude_300man_entry_shadow.md
+            data/claude_300man_reconciliation.csv
+            docs/claude_300man_reconciliation.md
             outputs/screening_result.csv
             outputs/screening_result_*.csv
             outputs/s_rank_candidates_*.csv
           if-no-files-found: warn
+
+      - name: Fail visibly on reconciliation findings
+        if: steps.guard.outputs.run == 'true'
+        run: python3 claude_300man_reconcile.py --date "${{ steps.guard.outputs.date }}" --fail-on-critical
 
       - name: Notify failure by mail
         if: failure()

@@ -155,7 +155,7 @@ Sランクはスコア合計だけではなく、以下のゲートをすべて�
 2026-09-28から、CodexとClaudeを各300万円の独立したペーパー口座で比較運用します。
 
 - Codex: 増収増益を確認できる長期上昇トレンド中の押し目
-- Claude: 出来高を伴うSランク上昇トレンド
+- Claude: 検証済みAランク押し目を優先し、空き枠を出来高を伴うSランク上昇トレンドで補完
 - 共通: 1枠60万円、最大3銘柄、損切-5%、利確+12%、15営業日、寄り付きギャップ±3%超は見送り
 - 正本: `data/codex_300man_*.csv` / `data/claude_300man_*.csv`
 - 比較: `docs/dual_300man_comparison.md`
@@ -177,8 +177,10 @@ python paper_portfolio_discipline.py
 
 - 最大3銘柄
 - 1枠60万円
-- Sランクのみ
-- Sランク不足は現金保有
+- Claudeの優先枠: Aランク、`25MA_PULLBACK`+`52W_PULLBACK`、スコア80以上、出来高比1.1倍以上、52週高値距離7%以内
+- Claudeの補完枠: 従来の厳格Sランク（スコア105以上、売買代金10億円以上、出来高比1.15倍以上）
+- 同一銘柄の再エントリーは5営業日クールダウン
+- 条件不足は現金保有
 - 損切5%
 - 利確12%
 - 15営業日タイムアウト
@@ -186,12 +188,43 @@ python paper_portfolio_discipline.py
 第2期の検証レポートは `docs/dual_300man_metrics.md` に出力します。損切り判定時と
 翌朝約定時を分け、MFE/MAE、決済後5・10営業日、利益捕捉率、投入比率、決済理由を記録します。
 
+無料の出口比較は `docs/claude_300man_shadow.md` に出力します。現行出口、日足安値での
+-5%到達、+6%起動/高値終値から-3%のトレーリング、および両者の組み合わせを、
+同じ実約定エントリーと往復0.30%コストで比較します。正本の注文・資金は変更せず、
+各方式40決済以上になるまで本番ルールへ反映しません。
+既存41件での無料先行比較は `docs/claude_shadow_exit_research_2026-10-05.md` に記録します。
+
+無料の入口比較は `docs/claude_300man_entry_shadow.md` に出力します。当日の同じ
+スクリーニングを使い、現行混合、押し目のみ、厳格順張りのみ、押し目2+順張り1を
+翌営業日寄付から前向きに並走させます。ニュースや実口座の保有枠を再現しない
+価格/候補比較で、40決済以上になるまで正本へ反映しません。
+
+`docs/claude_300man_reconciliation.md` は注文・約定・保有株数・現金・ルール版を
+完全照合します。CRITICAL時も既存保有の出口宣告は続け、新規BUYだけを停止します。
+台帳を自動修正することはありません。
+
+毎日の健全性と改善判定は `docs/claude_300man_daily_monitor.md` に出力します。
+`.github/workflows/claude_300man_daily_monitor.yml` が毎平日21:30 JSTに、期限超過注文、
+保有上限、ルール不整合、損切り滑り、タイムアウト偏重、連続損失を検査します。
+改善候補は同一入口40組、往復1.00%コスト負荷、PF、最悪損失、-10%超、
+ブートストラップ95%信頼区間を通過した場合だけ人のレビュー対象にします。
+条件を通過しても正本ルールは自動変更しません。
+
+同じClaude workflowが同じ原因で2回連続失敗し、再現可能なコード不具合だった場合は、
+`.github/claude_300man_auto_repair_policy.md` に従って隔離ブランチで回帰テストと最小修正を
+作成できます。`data/`と過去記録は変更禁止で、修正はPRまで、自動マージはしません。
+
 Claude口座の注文宣告と約定は別workflowです。
 
-- `.github/workflows/claude_300man_declare.yml`: 毎営業日18:45 JST。当日の全市場スクリーニング後、損切り・利確・タイムアウト・新規買いを翌営業日分として宣告
-- `.github/workflows/claude_300man_fill.yml`: 毎営業日9:40 JST。Claude/Codex両口座の宣告済み注文を寄付で約定記録
+- `.github/workflows/claude_300man_declare.yml`: 毎営業日18:45 JST（20:05に予備実行）。当日の全市場スクリーニング後、損切り・利確・タイムアウト・新規買いを翌営業日分として宣告
+- `.github/workflows/claude_300man_fill.yml`: 毎営業日9:40 JST（10:15に予備実行）。Claude/Codex両口座の宣告済み注文を寄付で約定記録
+- `.github/workflows/claude_300man_daily_monitor.yml`: 毎営業日21:30 JST（22:15に予備実行）。台帳照合、損切り滑り、出口構成、改善候補を記録
 - 両workflowは`dual-ai-300man-ledger-write` concurrencyグループを共有し、注文台帳の同時更新を防止
-- 手動declareも16:00〜23:00 JSTのJPX営業日だけ実行し、引け前の古い終値による宣告を防止
+- メール／note workflowは注文宣告や運用台帳の更新を行わない。メール生成の再実行・dry-runが売買処理を起動することはない
+- 寄付workflowはJPX営業日と09:00 JST経過を検査し、未来日・寄付前・不正な手動補完を拒否する
+- 通常の手動declareは16:00〜23:00 JSTのJPX営業日だけ実行し、引け前の古い終値による宣告を防止
+- GitHub側のcronが翌日08:00 JSTより前まで遅延した場合は、価格データの日付を検証して前営業日分を自動補完
+- `workflow_dispatch`の`target_date`を指定すると、次の営業日09:00 JSTより前まで安全に未宣告日を補完できる
 
 ```bash
 python3 dual_300man_metrics.py
@@ -202,6 +235,10 @@ python3 dual_300man_metrics.py
 ```bash
 python daily_discipline_run.py --limit 20
 ```
+
+スクリーニング条件の発見用/別銘柄検証と、実際の-5%/+12%/15営業日出口の再現には
+`buy3_validation.py`、`buy3_combo_research.py`、`buy3_exit_research.py`を使用します。
+往復0.30%の滑り、最大3枠、同一セクター回避を含めた結果で本番候補を判断します。
 
 売買記録と集計:
 

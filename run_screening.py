@@ -199,6 +199,8 @@ def run_screening(
 
         try:
             history = fetch_price_history(stock.ticker)
+            if history is not None and not history.empty:
+                row_base["data_date"] = pd.Timestamp(history.index[-1]).date().isoformat()
             indicators = calculate_indicators(history)
             high_info = classify_high_profile(history)
             if indicators is None:

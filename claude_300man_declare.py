@@ -5,7 +5,7 @@
 2026-07-21の1件（良品計画）以外は1件も約定していなかった。
 
 ルール（data/dual_300man_start.json が正本）:
-  - 新規は厳格ゲートを通ったSランク。地合いNORMAL=最大3銘柄 / CAUTION=1銘柄 / RISK・STOP=新規なし
+  - 新規は検証済みAランク押し目を優先し、空き枠を厳格Sランクで補完
   - 1枠60万円・100株単位・現金の範囲内
   - 保有は最大3銘柄。すでに持っている銘柄は買い増ししない
   - 手仕舞い: 損切 -5% / 利確 +12% / 15営業日タイムアウト
@@ -52,10 +52,14 @@ MAX_POSITIONS = CONFIG.max_positions
 STOP_LOSS_PCT = CONFIG.stop_loss_pct
 TAKE_PROFIT_PCT = CONFIG.take_profit_pct
 TIMEOUT_DAYS = CONFIG.timeout_days
-MIN_SCORE = 105.0
-MIN_TURNOVER = 1_000_000_000.0
-MIN_VOLUME_RATIO = 1.15
-MAX_MA25_GAP_PCT = 8.0
+CLAUDE_RULES = CONFIG.strategy_rules["claude"]
+STRICT_RULE = CLAUDE_RULES["strict_momentum"]
+PULLBACK_RULE = CLAUDE_RULES["pullback_combo_v1"]
+MIN_SCORE = float(STRICT_RULE["score_min"])
+MIN_TURNOVER = float(STRICT_RULE["turnover_20d_min"])
+MIN_VOLUME_RATIO = float(STRICT_RULE["volume_ratio_5d_20d_min"])
+MAX_MA25_GAP_PCT = float(STRICT_RULE["ma25_gap_pct_max"])
+REENTRY_COOLDOWN_DAYS = int(CLAUDE_RULES["reentry_cooldown_business_days"])
 CIRCUIT_REDUCE_PCT = CONFIG.circuit_reduce_pct
 CIRCUIT_STOP_PCT = CONFIG.circuit_stop_pct
 
@@ -102,6 +106,20 @@ def business_days_between(start: date, end: date) -> int:
     return count
 
 
+def _recent_entry_codes(journal: pd.DataFrame, today: date, cooldown_days: int) -> set[str]:
+    recent: set[str] = set()
+    for _, row in journal.iterrows():
+        code = str(row.get("code", "")).strip()
+        try:
+            entry_date = date.fromisoformat(str(row.get("entry_date", "")).strip())
+        except ValueError:
+            continue
+        elapsed = business_days_between(entry_date, today)
+        if code and 0 <= elapsed <= cooldown_days:
+            recent.add(code)
+    return recent
+
+
 def load_regime() -> str:
     """地合いを読む。
 
@@ -132,6 +150,22 @@ def _file_day(path: Path) -> date | None:
         return None
 
 
+def _screening_data_days(screening: pd.DataFrame) -> set[date]:
+    """各銘柄に記録した実価格日の集合を返す。壊れた値は鮮度不明として無視する。"""
+    if screening.empty or "data_date" not in screening.columns:
+        return set()
+    parsed: set[date] = set()
+    for value in screening["data_date"].astype(str):
+        text = value.strip()
+        if not text or text.lower() in {"nan", "none", "nat"}:
+            continue
+        try:
+            parsed.add(date.fromisoformat(text[:10]))
+        except ValueError:
+            continue
+    return parsed
+
+
 def load_screening(output_dir: Path, today: date | None = None) -> pd.DataFrame:
     """当日のスクリーニング結果だけを使う。
 
@@ -149,15 +183,27 @@ def load_screening(output_dir: Path, today: date | None = None) -> pd.DataFrame:
             print("claude_300man_declare=no_screening_file")
             return pd.DataFrame()
         path = found[-1]
-    day = _file_day(path)
-    if day != today:
-        print(f"claude_300man_declare=screening_stale file={path.name} day={day} today={today}")
-        return pd.DataFrame()
     try:
-        return pd.read_csv(path, dtype=str).fillna("")
+        screening = pd.read_csv(path, dtype=str).fillna("")
     except Exception as error:  # noqa: BLE001
         print(f"claude_300man_declare=screening_unreadable err={error}")
         return pd.DataFrame()
+    data_days = _screening_data_days(screening)
+    file_day = _file_day(path)
+    day = max(data_days) if data_days else file_day
+    if day != today:
+        print(
+            f"claude_300man_declare=screening_stale file={path.name} "
+            f"data_days={sorted(data_days)} file_day={file_day} today={today}"
+        )
+        return pd.DataFrame()
+    if data_days and "data_date" in screening.columns:
+        # 売買停止・一時欠損で古い最終バーしかない銘柄は、全体を止めず候補から除外する。
+        target = today.isoformat()
+        screening = screening[
+            screening["data_date"].astype(str).str.slice(0, 10) == target
+        ].copy()
+    return screening
 
 
 def _price_map(screening: pd.DataFrame) -> dict[str, float]:
@@ -210,8 +256,17 @@ def _truthy(value: object) -> bool:
     return str(value or "").strip().lower() in {"1", "1.0", "true", "yes", "y"}
 
 
+def _has_screen_tags(value: object, required: list[str]) -> bool:
+    tags = {
+        tag.strip().upper()
+        for tag in str(value or "").replace("、", ",").replace("|", ",").replace(";", ",").split(",")
+        if tag.strip()
+    }
+    return set(required).issubset(tags)
+
+
 def _claude_candidates(screening: pd.DataFrame) -> pd.DataFrame:
-    """出来高を伴う上昇トレンドだけを残すClaude用の厳格ゲート。"""
+    """検証済み押し目を優先し、従来の厳格Sランクを補完候補にする。"""
     if screening.empty:
         return screening
     ranked = screening.copy()
@@ -220,6 +275,7 @@ def _claude_candidates(screening: pd.DataFrame) -> pd.DataFrame:
         ("score", "_score"),
         ("turnover_20d", "_turnover"),
         ("volume_ratio_5d_20d", "_volume_ratio"),
+        ("dist_52w_high_pct", "_dist_52w_high"),
         ("ma25_gap_pct", "_ma25_gap"),
         ("ma75_gap_pct", "_ma75_gap"),
         ("lot_value_100", "_lot_value"),
@@ -227,7 +283,7 @@ def _claude_candidates(screening: pd.DataFrame) -> pd.DataFrame:
         ranked[target] = pd.to_numeric(ranked.get(source), errors="coerce")
     earnings_ok = ranked.get("earnings_status", "").astype(str).eq("確認済")
     earnings_block = ranked.get("exclude_for_earnings", False).map(_truthy)
-    ranked = ranked[
+    strict = (
         ranked["_rank"].eq("S")
         & ranked["_score"].ge(MIN_SCORE)
         & ranked["_turnover"].ge(MIN_TURNOVER)
@@ -237,8 +293,53 @@ def _claude_candidates(screening: pd.DataFrame) -> pd.DataFrame:
         & ranked["_lot_value"].le(SLOT_YEN)
         & earnings_ok
         & ~earnings_block
-    ]
-    return ranked.sort_values(["_score", "_volume_ratio"], ascending=[False, False])
+    )
+    required_tags = [str(tag).upper() for tag in PULLBACK_RULE["required_screen_tags"]]
+    tag_values = ranked["screen_tags"] if "screen_tags" in ranked.columns else pd.Series("", index=ranked.index)
+    tag_match = tag_values.map(lambda value: _has_screen_tags(value, required_tags))
+    pullback = (
+        ranked["_rank"].eq(str(PULLBACK_RULE["rank"]).upper())
+        & ranked["_score"].ge(float(PULLBACK_RULE["score_min"]))
+        & ranked["_turnover"].ge(float(PULLBACK_RULE["turnover_20d_min"]))
+        & ranked["_volume_ratio"].ge(float(PULLBACK_RULE["volume_ratio_5d_20d_min"]))
+        & ranked["_dist_52w_high"].between(
+            float(PULLBACK_RULE["dist_52w_high_pct_min"]),
+            float(PULLBACK_RULE["dist_52w_high_pct_max"]),
+        )
+        & ranked["_ma25_gap"].between(
+            float(PULLBACK_RULE["ma25_gap_pct_min"]),
+            float(PULLBACK_RULE["ma25_gap_pct_max"]),
+        )
+        & ranked["_ma75_gap"].gt(0)
+        & ranked["_lot_value"].le(SLOT_YEN)
+        & tag_match
+        & earnings_ok
+        & ~earnings_block
+    )
+    ranked = ranked[strict | pullback].copy()
+    ranked["_candidate_priority"] = 1
+    ranked["_candidate_strategy"] = "claude_momentum"
+    ranked.loc[pullback.loc[ranked.index], "_candidate_priority"] = 0
+    ranked.loc[pullback.loc[ranked.index], "_candidate_strategy"] = "claude_pullback_combo_v1"
+    return ranked.sort_values(
+        ["_candidate_priority", "_score", "_volume_ratio"],
+        ascending=[True, False, False],
+    )
+
+
+def _candidate_reason(row: pd.Series) -> str:
+    strategy = str(row.get("_candidate_strategy", "claude_momentum"))
+    if strategy == "claude_pullback_combo_v1":
+        return (
+            f"検証済み押し目Aランク・スコア{row.get('score')}"
+            f"｜25MA押し目+52週押し目・高値距離{_float(row, 'dist_52w_high_pct') or 0:.2f}%"
+            f"・出来高比{_float(row, 'volume_ratio_5d_20d') or 0:.2f}倍・悪材料ゲート通過"
+        )
+    return (
+        f"改善後Claude順張り Sランク・スコア{row.get('score')}"
+        f"｜売買代金10億円以上・出来高比{_float(row, 'volume_ratio_5d_20d') or 0:.2f}倍"
+        f"・25日線乖離{_float(row, 'ma25_gap_pct') or 0:+.2f}%・悪材料ゲート通過"
+    )
 
 
 def _open_positions(journal: pd.DataFrame) -> pd.DataFrame:
@@ -305,7 +406,12 @@ def _cancel_incompatible_pending(orders: pd.DataFrame, today: date) -> bool:
     return changed
 
 
-def declare(output_dir: Path, today: date | None = None) -> int:
+def declare(
+    output_dir: Path,
+    today: date | None = None,
+    *,
+    allow_new_buys: bool = True,
+) -> int:
     """翌営業日ぶんの注文を宣告する。宣告した件数を返す。"""
     today = today or datetime.now(JST).date()
     execution_date = next_business_day(today)
@@ -321,6 +427,7 @@ def declare(output_dir: Path, today: date | None = None) -> int:
     open_rows = _open_positions(journal)
     prices = _ensure_position_prices(_price_map(screening), open_rows, today)
     held_codes = set(open_rows["code"].astype(str)) if not open_rows.empty else set()
+    recent_entry_codes = _recent_entry_codes(journal, today, REENTRY_COOLDOWN_DAYS)
 
     # --- 手仕舞い（損切 / 利確 / タイムアウト） -------------------------------
     selling: set[str] = set()
@@ -396,7 +503,9 @@ def declare(output_dir: Path, today: date | None = None) -> int:
     free_slots = min(slots_by_regime, MAX_POSITIONS - used_slots)
     cash = _cash_balance(journal) - reserved
     bought = 0
-    if unpriced_pending:
+    if not allow_new_buys:
+        print("claude_300man_declare=no_new reason=reconciliation_block")
+    elif unpriced_pending:
         print("claude_300man_declare=no_new reason=pending_order_price_unknown")
     elif free_slots <= 0:
         print(
@@ -414,7 +523,7 @@ def declare(output_dir: Path, today: date | None = None) -> int:
             if bought >= free_slots:
                 break
             code = str(row.get("code", "")).strip()
-            if not code or code in held_codes or code in pending_codes:
+            if not code or code in held_codes or code in pending_codes or code in recent_entry_codes:
                 continue
             sector = str(row.get("sector", "")).strip()
             if sector and sector in used_sectors:
@@ -433,6 +542,7 @@ def declare(output_dir: Path, today: date | None = None) -> int:
             cost = price * shares
             if cost * 1.05 > cash:
                 continue
+            candidate_strategy = str(row.get("_candidate_strategy", "claude_momentum"))
             declared_now.append({
                 **order_metadata(),
                 "decision_date": today.isoformat(),
@@ -444,16 +554,11 @@ def declare(output_dir: Path, today: date | None = None) -> int:
                 "sector": sector,
                 "shares": str(shares),
                 "decision_price": f"{price:.2f}",
-                "strategy": "claude_momentum",
+                "strategy": candidate_strategy,
                 "exit_type": "",
                 "decision_return_pct": "",
                 "holding_business_days": "",
-                # fix39(2026-09-03): 当てはまった条件も残す。あとから記事で説明できるようにするため。
-                "reason": (
-                    f"改善後Claude順張り Sランク・スコア{row.get('score')}"
-                    f"｜売買代金10億円以上・出来高比{_float(row, 'volume_ratio_5d_20d') or 0:.2f}倍"
-                    f"・25日線乖離{_float(row, 'ma25_gap_pct') or 0:+.2f}%・悪材料ゲート通過"
-                ),
+                "reason": _candidate_reason(row),
                 "status": "DECLARED",
             })
             pending_codes.add(code)
@@ -461,7 +566,10 @@ def declare(output_dir: Path, today: date | None = None) -> int:
                 used_sectors.add(sector)
             cash -= cost
             bought += 1
-            print(f"claude_300man_declare=buy code={code} shares={shares} price={price}")
+            print(
+                f"claude_300man_declare=buy code={code} shares={shares} price={price} "
+                f"strategy={candidate_strategy}"
+            )
 
     if not declared_now:
         if orders_changed:
@@ -523,7 +631,12 @@ def push_orders() -> bool:
     return True
 
 
-def declare_production(output_dir: Path, today: date | None = None) -> int:
+def declare_production(
+    output_dir: Path,
+    today: date | None = None,
+    *,
+    allow_new_buys: bool = True,
+) -> int:
     """本番の outputs/ のときだけ発注する（セルフテストの一時ディレクトリでは動かない）。"""
     try:
         if output_dir.resolve() != DEFAULT_OUTPUT_DIR.resolve():
@@ -533,7 +646,7 @@ def declare_production(output_dir: Path, today: date | None = None) -> int:
         if not clean:
             print(f"claude_300man_declare=skipped reason=uncommitted_strategy_changes details={details}")
             return 0
-        count = declare(output_dir, today)
+        count = declare(output_dir, today, allow_new_buys=allow_new_buys)
         if count:
             push_orders()
         return count
@@ -546,9 +659,14 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR))
     parser.add_argument("--date", default=None)
+    parser.add_argument(
+        "--block-new-buys",
+        action="store_true",
+        help="台帳照合異常時も出口宣告を続け、新規BUYだけを停止する",
+    )
     args = parser.parse_args()
     today = date.fromisoformat(args.date) if args.date else None
-    declare(Path(args.output_dir), today)
+    declare(Path(args.output_dir), today, allow_new_buys=not args.block_new_buys)
 
 
 if __name__ == "__main__":

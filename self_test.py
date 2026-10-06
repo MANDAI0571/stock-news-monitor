@@ -2214,7 +2214,15 @@ def _test_cloud_digest_mail() -> None:
     from datetime import datetime
     from zoneinfo import ZoneInfo
 
+    import cloud_mail_digest as cloud_digest
     from cloud_mail_digest import build_digest, collect_attachments
+
+    # メール作成・dry-runは注文宣告を持たない。専用workflowだけが台帳の書き手。
+    import inspect
+
+    main_source = inspect.getsource(cloud_digest.main)
+    assert "order_declaration_disabled" in main_source
+    assert "declare_production" not in Path(cloud_digest.__file__).read_text(encoding="utf-8")
 
     with tempfile.TemporaryDirectory() as tmp:
         out = Path(tmp)
@@ -2262,6 +2270,8 @@ def _test_cloud_digest_mail() -> None:
     assert "Build or send cloud digest mail" in note_workflow
     assert "cloud_mail_digest.py --output-dir outputs" in note_workflow
     assert "cloud_mail_digest.py --output-dir outputs --dry-run" in note_workflow
+    assert "--declare-orders" not in note_workflow
+    assert "dual_300man_metrics.py" not in note_workflow
     assert "outputs/screening_pullback_*.csv" in note_workflow
     assert "send_mail:" in daily_workflow
     assert "SEND_GMAIL" in daily_workflow
@@ -2276,6 +2286,7 @@ def _test_cloud_digest_mail() -> None:
     assert "note_draft_cloud.yml" in resend_workflow
     assert "cloud_mail_digest.py --output-dir outputs" in resend_workflow
     assert "cloud_mail_digest.py --output-dir outputs --dry-run" in resend_workflow
+    assert "--declare-orders" not in resend_workflow
     print("self-test: cloud_digest_mail(25MAメール・手動再送) OK")
 
 
@@ -3387,6 +3398,7 @@ def _test_note_copy_mails() -> None:
 
     source = inspect.getsource(parse_args)
     assert "--no-copy-mails" in source
+    assert "--declare-orders" not in source
 
     # 分けても文字は欠けない
     long_text = "\n".join(f"| {7000 + i} | 銘柄{i} | {1000 + i} |" for i in range(4000))
@@ -4136,6 +4148,12 @@ def _test_dual_300man_phase2_controls() -> None:
     import dual_300man_fill as fill
     import dual_300man_metrics as metrics
     import claude_300man_declare as claude_declare
+    import claude_300man_daily_review as daily_review
+    import claude_300man_entry_shadow as entry_shadow
+    import claude_300man_reconcile as reconcile
+    import claude_300man_repair_guard as repair_guard
+    import claude_300man_shadow as claude_shadow
+    from claude_shadow_exits import EXIT_VARIANTS, simulate_exit
     from dual_300man_config import CONFIG, JOURNAL_COLUMNS, ORDER_COLUMNS, order_metadata
 
     assert CONFIG.restart_date.isoformat() == "2026-09-28"
@@ -4143,10 +4161,243 @@ def _test_dual_300man_phase2_controls() -> None:
     assert CONFIG.stop_loss_pct == -5
     assert CONFIG.take_profit_pct == 12
     assert CONFIG.timeout_days == 15
+    assert CONFIG.strategy_version == "2.1.0"
+    assert CONFIG.strategy_rules["claude"]["reentry_cooldown_business_days"] == 5
     assert len(CONFIG.rule_hash) == 12
     assert claude_declare._exit_reason(100, 94.9, 1)[0] == "STOP_LOSS"
     assert claude_declare._exit_reason(100, 112.0, 1)[0] == "TAKE_PROFIT"
     assert claude_declare._exit_reason(100, 105.0, 15)[0] == "TIMEOUT"
+
+    screening = pd.DataFrame([
+        {
+            "code": "1111", "rank": "S", "score": "110", "turnover_20d": "2000000000",
+            "volume_ratio_5d_20d": "1.2", "dist_52w_high_pct": "2", "ma25_gap_pct": "4",
+            "ma75_gap_pct": "5", "lot_value_100": "500000", "earnings_status": "確認済",
+            "exclude_for_earnings": "false", "screen_tags": "52W_MOMENTUM",
+            "ticker": "1111.T", "name": "順張り", "sector": "情報・通信業",
+            "current_price": "100", "data_date": "2026-10-02",
+        },
+        {
+            "code": "2222", "rank": "A", "score": "85", "turnover_20d": "500000000",
+            "volume_ratio_5d_20d": "1.2", "dist_52w_high_pct": "6", "ma25_gap_pct": "2",
+            "ma75_gap_pct": "4", "lot_value_100": "400000", "earnings_status": "確認済",
+            "exclude_for_earnings": "false", "screen_tags": "52W_PULLBACK,25MA_PULLBACK",
+            "ticker": "2222.T", "name": "押し目", "sector": "機械",
+            "current_price": "100", "data_date": "2026-10-02",
+        },
+        {
+            "code": "3333", "rank": "A", "score": "85", "turnover_20d": "500000000",
+            "volume_ratio_5d_20d": "1.2", "dist_52w_high_pct": "8", "ma25_gap_pct": "2",
+            "ma75_gap_pct": "4", "lot_value_100": "400000", "earnings_status": "確認済",
+            "exclude_for_earnings": "false", "screen_tags": "52W_PULLBACK,25MA_PULLBACK",
+            "ticker": "3333.T", "name": "範囲外", "sector": "卸売業",
+            "current_price": "100", "data_date": "2026-10-02",
+        },
+    ])
+    candidates = claude_declare._claude_candidates(screening)
+    assert candidates["code"].tolist() == ["2222", "1111"], candidates[["code", "_candidate_strategy"]]
+    assert candidates.iloc[0]["_candidate_strategy"] == "claude_pullback_combo_v1"
+    assert "検証済み押し目Aランク" in claude_declare._candidate_reason(candidates.iloc[0])
+    entry_selections = entry_shadow.select_candidates(screening)
+    assert entry_selections["current_combined_v1"]["code"].tolist() == ["2222", "1111"]
+    assert entry_selections["pullback_only_v1"]["code"].tolist() == ["2222"]
+    assert entry_selections["momentum_only_v1"]["code"].tolist() == ["1111"]
+    assert entry_selections["balanced_2p_1m_v1"]["code"].tolist() == ["2222", "1111"]
+
+    entry_cohort = entry_shadow.add_cohort(
+        pd.DataFrame(columns=entry_shadow.ENTRY_COLUMNS),
+        screening,
+        as_of=date(2026, 10, 2),
+    )
+    assert len(entry_cohort) == 6
+    entry_history = pd.DataFrame(
+        {
+            "Open": [100.0, 102.0], "High": [103.0, 104.0],
+            "Low": [99.0, 100.0], "Close": [102.0, 103.0],
+        },
+        index=pd.to_datetime(["2026-10-05", "2026-10-06"]),
+    )
+    updated_entries = entry_shadow.update_rows(
+        entry_cohort,
+        as_of=date(2026, 10, 6),
+        fetcher=lambda _ticker, period="18mo": entry_history,
+    )
+    assert updated_entries["entry_date"].eq("2026-10-05").all()
+    assert updated_entries["status"].eq("OPEN").all()
+    recent = pd.DataFrame([
+        {"code": "1111", "entry_date": "2026-09-28"},
+        {"code": "9999", "entry_date": "2026-09-18"},
+    ])
+    assert claude_declare._recent_entry_codes(recent, date(2026, 10, 5), 5) == {"1111"}
+    with tempfile.TemporaryDirectory() as screening_tmp:
+        screening_dir = Path(screening_tmp)
+        fixed = screening_dir / "screening_result.csv"
+        pd.DataFrame([
+            {"code": "1111", "data_date": "2026-10-02", "current_price": "100"},
+            {"code": "2222", "data_date": "2026-10-02", "current_price": "200"},
+        ]).to_csv(fixed, index=False, encoding="utf-8-sig")
+        assert len(claude_declare.load_screening(screening_dir, date(2026, 10, 2))) == 2
+        pd.DataFrame([
+            {"code": "1111", "data_date": "2026-10-01", "current_price": "100"},
+            {"code": "2222", "data_date": "2026-10-02", "current_price": "200"},
+        ]).to_csv(fixed, index=False, encoding="utf-8-sig")
+        recovered = claude_declare.load_screening(screening_dir, date(2026, 10, 2))
+    assert recovered["code"].tolist() == ["2222"]
+
+    reconcile_order = pd.DataFrame([{
+        **{column: "" for column in ORDER_COLUMNS},
+        **order_metadata(), "decision_date": "2026-10-02", "execution_date": "2026-10-05",
+        "side": "BUY", "code": "1111", "shares": "100", "status": "FILLED",
+        "fill_date": "2026-10-05", "fill_price": "100",
+    }]).reindex(columns=ORDER_COLUMNS).fillna("")
+    reconcile_journal = pd.DataFrame([{
+        **{column: "" for column in JOURNAL_COLUMNS},
+        "phase_id": CONFIG.phase_id, "strategy_version": CONFIG.strategy_version,
+        "rule_hash": CONFIG.rule_hash, "source_order_date": "2026-10-02",
+        "entry_date": "2026-10-05", "status": "OPEN", "code": "1111",
+        "entry_price": "100", "shares": "100", "position_value": "10000",
+    }]).reindex(columns=JOURNAL_COLUMNS).fillna("")
+    reconciled = reconcile.reconcile(reconcile_order, reconcile_journal, as_of=date(2026, 10, 5))
+    assert not ((reconciled["severity"] == "CRITICAL") & (reconciled["status"] == "FAIL")).any()
+    broken_journal = reconcile_journal.copy()
+    broken_journal.at[0, "shares"] = "200"
+    broken = reconcile.reconcile(reconcile_order, broken_journal, as_of=date(2026, 10, 5))
+    assert ((broken["severity"] == "CRITICAL") & (broken["status"] == "FAIL")).any()
+    guard_errors, guard_review = repair_guard.validate(["claude_300man_declare.py", "self_test.py"])
+    assert not guard_errors
+    assert guard_review
+    immutable_errors, _ = repair_guard.validate(["data/claude_300man_orders.csv"])
+    assert immutable_errors
+
+    variants = {variant.key: variant for variant in EXIT_VARIANTS}
+    loss_history = pd.DataFrame(
+        {
+            "Open": [100, 99, 96, 90],
+            "High": [101, 101, 97, 92],
+            "Low": [99, 94, 93, 89],
+            "Close": [100, 96, 94, 91],
+        },
+        index=pd.to_datetime(["2026-10-05", "2026-10-06", "2026-10-07", "2026-10-08"]),
+    )
+    close_loss = simulate_exit(
+        loss_history, entry_date=date(2026, 10, 5), entry_price=100,
+        variant=variants["current_close_5_tp12_t15"],
+    )
+    intraday_loss = simulate_exit(
+        loss_history, entry_date=date(2026, 10, 5), entry_price=100,
+        variant=variants["intraday_5_tp12_t15"],
+    )
+    assert close_loss["exit_date"] == "2026-10-08"
+    assert close_loss["gross_return_pct"] == -10.0
+    assert intraday_loss["exit_date"] == "2026-10-06"
+    assert intraday_loss["exit_price"] == 95.0
+    assert intraday_loss["net_return_pct"] == -5.3
+
+    trail_history = pd.DataFrame(
+        {
+            "Open": [100, 101, 108, 109, 105],
+            "High": [101, 108, 111, 110, 107],
+            "Low": [99, 100, 107, 105, 104],
+            "Close": [100, 107, 110, 106, 105],
+        },
+        index=pd.to_datetime(["2026-10-05", "2026-10-06", "2026-10-07", "2026-10-08", "2026-10-09"]),
+    )
+    trailed = simulate_exit(
+        trail_history, entry_date=date(2026, 10, 5), entry_price=100,
+        variant=variants["close_trail_6_3_t15"],
+    )
+    assert trailed["activation_date"] == "2026-10-06"
+    assert trailed["exit_type"] == "TRAILING_STOP"
+    assert trailed["exit_date"] == "2026-10-09"
+    assert trailed["net_return_pct"] == 4.7
+
+    shadow_source = pd.DataFrame([{
+        **{column: "" for column in JOURNAL_COLUMNS},
+        "phase_id": CONFIG.phase_id, "strategy_version": CONFIG.strategy_version,
+        "rule_hash": CONFIG.rule_hash, "entry_date": "2026-10-05", "status": "OPEN",
+        "code": "1111", "ticker": "1111.T", "name": "テスト", "sector": "情報・通信業",
+        "entry_price": "100", "shares": "100", "source_order_date": "2026-10-02",
+    }]).reindex(columns=JOURNAL_COLUMNS).fillna("")
+    shadow_rows = claude_shadow.build_shadow(
+        shadow_source, as_of=date(2026, 10, 9), fetcher=lambda _ticker: trail_history,
+    )
+    assert len(shadow_rows) == len(EXIT_VARIANTS)
+    assert shadow_rows["variant"].nunique() == len(EXIT_VARIANTS)
+    preserved = shadow_rows.copy()
+    preserved["status"] = "CLOSED"
+    preserved["exit_type"] = "PRESERVED_TEST"
+    preserved_rows = claude_shadow.build_shadow(
+        shadow_source,
+        as_of=date(2027, 10, 9),
+        existing=preserved,
+        fetcher=lambda _ticker: (_ for _ in ()).throw(AssertionError("closed rows must not refetch")),
+    )
+    assert len(preserved_rows) == len(EXIT_VARIANTS)
+    assert preserved_rows["exit_type"].eq("PRESERVED_TEST").all()
+
+    improvement_rows = []
+    for trade_number in range(40):
+        current_return = 4.0 if trade_number % 2 == 0 else -2.0
+        for variant in EXIT_VARIANTS:
+            candidate_return = (
+                current_return + 1.0
+                if variant.key == "intraday_5_tp12_t15"
+                else current_return
+            )
+            improvement_rows.append({
+                "phase_id": CONFIG.phase_id,
+                "source_order_date": f"2026-01-{trade_number % 28 + 1:02d}",
+                "entry_date": f"2026-02-{trade_number % 28 + 1:02d}",
+                "code": f"{1000 + trade_number}",
+                "variant": variant.key,
+                "variant_label": variant.label,
+                "status": "CLOSED",
+                "gross_return_pct": candidate_return + 0.30,
+                "net_return_pct": candidate_return,
+            })
+    improvement_shadow = pd.DataFrame(improvement_rows).reindex(
+        columns=claude_shadow.SHADOW_COLUMNS
+    ).fillna("")
+    improvement_candidates = daily_review.evaluate_improvements(
+        improvement_shadow, date(2026, 10, 5),
+    )
+    improved = improvement_candidates[
+        improvement_candidates["variant"].eq("intraday_5_tp12_t15")
+    ].iloc[0]
+    assert improved["closed"] == 40
+    assert improved["paired_with_current"] == 40
+    assert improved["decision"] == "REVIEW_READY", improved["reason"]
+    assert float(improved["bootstrap_95_low_pct"]) > 0
+
+    monitor_orders = pd.DataFrame([{
+        **{column: "" for column in ORDER_COLUMNS},
+        **order_metadata(), "decision_date": "2026-10-04", "execution_date": "2026-10-05",
+        "side": "BUY", "code": "9999", "status": "DECLARED",
+    }]).reindex(columns=ORDER_COLUMNS).fillna("")
+    monitor_journal_rows = []
+    for number in range(4):
+        monitor_journal_rows.append({
+            **{column: "" for column in JOURNAL_COLUMNS},
+            "phase_id": CONFIG.phase_id, "entry_date": "2026-10-01", "status": "OPEN",
+            "code": str(2000 + number), "entry_price": "100", "mark_price": "100",
+            "shares": "100", "position_value": "10000", "last_mark_date": "2026-10-05",
+        })
+    monitor_journal_rows.append({
+        **{column: "" for column in JOURNAL_COLUMNS},
+        "phase_id": CONFIG.phase_id, "entry_date": "2026-09-28", "status": "CLOSED",
+        "code": "3000", "entry_price": "100", "shares": "100", "position_value": "10000",
+        "exit_date": "2026-10-02", "exit_price": "89", "exit_value": "8900",
+        "realized_pnl": "-1100", "exit_return_pct": "-11", "exit_type": "STOP_LOSS",
+    })
+    monitor_snapshot, _, monitor_alerts = daily_review.build_review(
+        monitor_orders,
+        pd.DataFrame(monitor_journal_rows).reindex(columns=JOURNAL_COLUMNS).fillna(""),
+        improvement_shadow,
+        as_of=date(2026, 10, 5),
+    )
+    alert_codes = {code for _, code, _ in monitor_alerts}
+    assert monitor_snapshot["health"] == "CRITICAL"
+    assert {"OVERDUE_DECLARED", "POSITION_LIMIT", "STOP_BELOW_MINUS_10"} <= alert_codes
 
     project_root = Path(__file__).resolve().parent
     declare_workflow = (
@@ -4155,16 +4406,56 @@ def _test_dual_300man_phase2_controls() -> None:
     fill_workflow = (
         project_root / ".github" / "workflows" / "claude_300man_fill.yml"
     ).read_text(encoding="utf-8")
+    daily_workflow = (
+        project_root / ".github" / "workflows" / "claude_300man_daily_monitor.yml"
+    ).read_text(encoding="utf-8")
     assert 'cron: "45 9 * * 1-5"' in declare_workflow
+    assert 'cron: "5 11 * * 1-5"' in declare_workflow
     assert "daily_discipline_run.py --include-rejected --max-candidates 0" in declare_workflow
     assert 'claude_300man_declare.py --date "${{ steps.guard.outputs.date }}"' in declare_workflow
     assert "git add data/claude_300man_orders.csv" in declare_workflow
     assert "permissions:\n  contents: write" in declare_workflow
     assert "notify_workflow_failure.py" in declare_workflow
     assert "declaration_lost_" in declare_workflow
-    assert "claude_300man_declare_date_moved" in declare_workflow
+    assert "target_date:" in declare_workflow
+    assert "scheduled_delayed_recovery" in declare_workflow
+    assert "Verify fresh screening target date" in declare_workflow
+    assert "screening date mismatch" in declare_workflow
+    assert "Verify execution window is still open" in declare_workflow
+    assert "execution window already opened" in declare_workflow
+    assert "claude_300man_shadow.py" in declare_workflow
+    assert "data/claude_300man_shadow.csv" in declare_workflow
+    assert "claude_300man_entry_shadow.py" in declare_workflow
+    assert "data/claude_300man_entry_shadow.csv" in declare_workflow
+    assert "claude_300man_reconcile.py" in declare_workflow
+    assert "--block-new-buys" in declare_workflow
+    assert "allow_new_buys" in declare_workflow
+    assert "data/claude_300man_reconciliation.csv" in declare_workflow
+    assert "claude_300man_shadow.py" in fill_workflow
+    assert "data/claude_300man_shadow.csv" in fill_workflow
+    assert "claude_300man_entry_shadow.py" in fill_workflow
+    assert "data/claude_300man_entry_shadow.csv" in fill_workflow
+    assert "claude_300man_reconcile.py" in fill_workflow
+    assert 'cron: "40 0 * * 1-5"' in fill_workflow
+    assert 'cron: "15 1 * * 1-5"' in fill_workflow
+    assert "Resolve safe fill date" in fill_workflow
+    assert "scheduled_delayed_recovery" in fill_workflow
+    assert "unsafe_manual_fill" in fill_workflow
+    assert 'steps.guard.outputs.run == \'true\'' in fill_workflow
+    assert "claude_300man_daily_review.py" in declare_workflow
+    assert "claude_300man_daily_review.py" in fill_workflow
+    assert 'cron: "30 12 * * 1-5"' in daily_workflow
+    assert 'cron: "15 13 * * 1-5"' in daily_workflow
+    assert "self_test_groups.py --group critical" in daily_workflow
+    assert "--fail-on-critical" in daily_workflow
+    assert "data/claude_300man_daily_monitor.csv" in daily_workflow
+    assert "claude_300man_reconcile.py" in daily_workflow
+    assert "group: dual-ai-300man-ledger-write" in daily_workflow
     assert "group: dual-ai-300man-ledger-write" in declare_workflow
     assert "group: dual-ai-300man-ledger-write" in fill_workflow
+    repair_policy = (project_root / ".github" / "claude_300man_auto_repair_policy.md").read_text(encoding="utf-8")
+    assert "自動マージ" in repair_policy
+    assert "claude_300man_repair_guard.py" in repair_policy
 
     # Codex側の宣告ジョブも同じ条件で守る。2026-10-02まで存在せず、Codex運用は
     # 買った銘柄が売られないまま固定されていた（損切・利確・期限・新規建てが全部停止）。
@@ -4276,6 +4567,26 @@ def _test_dual_300man_phase2_controls() -> None:
             assert "20決済未満" in report
             assert "判定翌朝の平均ギャップ" in report
             assert "トレーリング: 0回" in report
+
+            # 遅延workflowが古い日足しか取得できても、すでにある新しい評価日と
+            # MFE/MAE・含み損益を後退させない。
+            protected = updated.copy()
+            protected.at[0, "last_mark_date"] = "2026-10-13"
+            protected.at[0, "mark_price"] = "109.00"
+            protected.at[0, "unrealized_pnl"] = "800"
+            protected.at[0, "unrealized_return_pct"] = "7.92"
+            protected.at[0, "peak_price"] = "123.45"
+            protected.to_csv(journal_path, index=False, encoding="utf-8-sig")
+            preserved, stale_stats = metrics.update_account(
+                "claude", fetcher=lambda _ticker: history.iloc[:5],
+                as_of=date(2026, 10, 13),
+            )
+            assert stale_stats["updated"] == 0, stale_stats
+            assert stale_stats["stale_ignored"] == 1, stale_stats
+            assert preserved.iloc[0]["last_mark_date"] == "2026-10-13"
+            assert preserved.iloc[0]["mark_price"] == "109.00"
+            assert preserved.iloc[0]["unrealized_pnl"] == "800"
+            assert preserved.iloc[0]["peak_price"] == "123.45"
     finally:
         fill.account_paths = saved_fill_paths
         fill.fetch_open_price_yfinance = saved_fetch
