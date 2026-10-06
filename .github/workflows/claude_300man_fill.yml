@@ -9,6 +9,8 @@ on:
         type: string
   schedule:
     - cron: "40 0 * * 1-5"
+    # GitHub cronの取りこぼし対策。処理は冪等で、同じ注文は二重約定しない。
+    - cron: "15 1 * * 1-5"
 
 permissions:
   contents: write
@@ -27,22 +29,90 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install -r requirements.txt
-      - name: Record Claude and Codex opening fills
+
+      - name: Resolve safe fill date
+        id: guard
+        env:
+          INPUT_TARGET_DATE: ${{ github.event.inputs.target_date || '' }}
         run: |
-          target_date="${{ github.event.inputs.target_date }}"
-          date_args=()
-          if [ -n "$target_date" ]; then
-            date_args=(--date "$target_date")
-          fi
-          python3 claude_300man_fill.py "${date_args[@]}"
-          python3 codex_300man_fill.py "${date_args[@]}"
-          python3 dual_300man_metrics.py "${date_args[@]}"
+          python3 - <<'PY'
+          import os
+          from datetime import date, datetime, timedelta
+          from zoneinfo import ZoneInfo
+
+          from jpx_calendar import is_jpx_business_day
+
+          now = datetime.now(ZoneInfo("Asia/Tokyo"))
+          requested = os.environ.get("INPUT_TARGET_DATE", "").strip()
+          scheduled = os.environ.get("GITHUB_EVENT_NAME") == "schedule"
+
+          def previous_business_day(day: date) -> date:
+              cursor = day - timedelta(days=1)
+              for _ in range(30):
+                  if is_jpx_business_day(cursor):
+                      return cursor
+                  cursor -= timedelta(days=1)
+              raise RuntimeError("previous JPX business day not found")
+
+          if requested:
+              try:
+                  target = date.fromisoformat(requested)
+              except ValueError:
+                  target = now.date()
+                  run = False
+                  reason = "invalid_target_date"
+              else:
+                  market_opened = target < now.date() or (
+                      target == now.date() and (now.hour, now.minute) >= (9, 0)
+                  )
+                  run = is_jpx_business_day(target) and market_opened
+                  reason = "manual_recovery" if run else "unsafe_manual_fill"
+          elif scheduled and now.hour < 8:
+              # cronが深夜まで遅延した場合は、古い当日扱いにせず前営業日を補完する。
+              target = previous_business_day(now.date())
+              run = True
+              reason = "scheduled_delayed_recovery"
+          else:
+              target = now.date()
+              opened = (now.hour, now.minute) >= (9, 0)
+              run = is_jpx_business_day(target) and opened
+              if run:
+                  reason = "jpx_business_day"
+              elif not is_jpx_business_day(target):
+                  reason = "jpx_closed"
+              else:
+                  reason = "scheduled_before_open" if scheduled else "unsafe_manual_fill"
+
+          print(f"claude_300man_fill_guard run={run} target={target} reason={reason} now={now:%F_%H%M}")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"run={'true' if run else 'false'}\n")
+              output.write(f"date={target:%F}\n")
+              output.write(f"reason={reason}\n")
+          PY
+
+      - name: Fail when fill request is unsafe
+        if: steps.guard.outputs.run != 'true' && steps.guard.outputs.reason != 'jpx_closed'
+        run: |
+          echo "::error::Claude/Codex fill skipped: ${{ steps.guard.outputs.reason }}"
+          exit 1
+
+      - name: Skip closed days safely
+        if: steps.guard.outputs.run != 'true' && steps.guard.outputs.reason == 'jpx_closed'
+        run: echo "dual_300man_fill=skip reason=jpx_closed"
+
+      - name: Record Claude and Codex opening fills
+        if: steps.guard.outputs.run == 'true'
+        run: |
+          python3 claude_300man_fill.py --date "${{ steps.guard.outputs.date }}"
+          python3 codex_300man_fill.py --date "${{ steps.guard.outputs.date }}"
+          python3 dual_300man_metrics.py --date "${{ steps.guard.outputs.date }}"
           python3 dual_300man_compare.py
-          python3 claude_300man_shadow.py "${date_args[@]}"
-          python3 claude_300man_entry_shadow.py "${date_args[@]}"
-          python3 claude_300man_reconcile.py "${date_args[@]}"
-          python3 claude_300man_daily_review.py "${date_args[@]}"
+          python3 claude_300man_shadow.py --date "${{ steps.guard.outputs.date }}"
+          python3 claude_300man_entry_shadow.py --date "${{ steps.guard.outputs.date }}"
+          python3 claude_300man_reconcile.py --date "${{ steps.guard.outputs.date }}"
+          python3 claude_300man_daily_review.py --date "${{ steps.guard.outputs.date }}"
       - name: Commit both independent ledgers
+        if: steps.guard.outputs.run == 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -52,13 +122,8 @@ jobs:
           git pull --rebase origin "${GITHUB_REF_NAME}"
           git push origin HEAD:"${GITHUB_REF_NAME}"
       - name: Fail visibly on reconciliation findings
-        run: |
-          target_date="${{ github.event.inputs.target_date }}"
-          if [ -n "$target_date" ]; then
-            python3 claude_300man_reconcile.py --date "$target_date" --fail-on-critical
-          else
-            python3 claude_300man_reconcile.py --fail-on-critical
-          fi
+        if: steps.guard.outputs.run == 'true'
+        run: python3 claude_300man_reconcile.py --date "${{ steps.guard.outputs.date }}" --fail-on-critical
       - name: Notify failure by mail
         if: failure()
         env:

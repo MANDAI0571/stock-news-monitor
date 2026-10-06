@@ -2195,7 +2195,15 @@ def _test_cloud_digest_mail() -> None:
     from datetime import datetime
     from zoneinfo import ZoneInfo
 
+    import cloud_mail_digest as cloud_digest
     from cloud_mail_digest import build_digest, collect_attachments
+
+    # メール作成・dry-runは注文宣告を持たない。専用workflowだけが台帳の書き手。
+    import inspect
+
+    main_source = inspect.getsource(cloud_digest.main)
+    assert "order_declaration_disabled" in main_source
+    assert "declare_production" not in Path(cloud_digest.__file__).read_text(encoding="utf-8")
 
     with tempfile.TemporaryDirectory() as tmp:
         out = Path(tmp)
@@ -2243,6 +2251,8 @@ def _test_cloud_digest_mail() -> None:
     assert "Build or send cloud digest mail" in note_workflow
     assert "cloud_mail_digest.py --output-dir outputs" in note_workflow
     assert "cloud_mail_digest.py --output-dir outputs --dry-run" in note_workflow
+    assert "--declare-orders" not in note_workflow
+    assert "dual_300man_metrics.py" not in note_workflow
     assert "outputs/screening_pullback_*.csv" in note_workflow
     assert "send_mail:" in daily_workflow
     assert "SEND_GMAIL" in daily_workflow
@@ -2257,6 +2267,7 @@ def _test_cloud_digest_mail() -> None:
     assert "note_draft_cloud.yml" in resend_workflow
     assert "cloud_mail_digest.py --output-dir outputs" in resend_workflow
     assert "cloud_mail_digest.py --output-dir outputs --dry-run" in resend_workflow
+    assert "--declare-orders" not in resend_workflow
     print("self-test: cloud_digest_mail(25MAメール・手動再送) OK")
 
 
@@ -3368,6 +3379,7 @@ def _test_note_copy_mails() -> None:
 
     source = inspect.getsource(parse_args)
     assert "--no-copy-mails" in source
+    assert "--declare-orders" not in source
 
     # 分けても文字は欠けない
     long_text = "\n".join(f"| {7000 + i} | 銘柄{i} | {1000 + i} |" for i in range(4000))
@@ -4379,6 +4391,7 @@ def _test_dual_300man_phase2_controls() -> None:
         project_root / ".github" / "workflows" / "claude_300man_daily_monitor.yml"
     ).read_text(encoding="utf-8")
     assert 'cron: "45 9 * * 1-5"' in declare_workflow
+    assert 'cron: "5 11 * * 1-5"' in declare_workflow
     assert "daily_discipline_run.py --include-rejected --max-candidates 0" in declare_workflow
     assert 'claude_300man_declare.py --date "${{ steps.guard.outputs.date }}"' in declare_workflow
     assert "git add data/claude_300man_orders.csv" in declare_workflow
@@ -4404,9 +4417,16 @@ def _test_dual_300man_phase2_controls() -> None:
     assert "claude_300man_entry_shadow.py" in fill_workflow
     assert "data/claude_300man_entry_shadow.csv" in fill_workflow
     assert "claude_300man_reconcile.py" in fill_workflow
+    assert 'cron: "40 0 * * 1-5"' in fill_workflow
+    assert 'cron: "15 1 * * 1-5"' in fill_workflow
+    assert "Resolve safe fill date" in fill_workflow
+    assert "scheduled_delayed_recovery" in fill_workflow
+    assert "unsafe_manual_fill" in fill_workflow
+    assert 'steps.guard.outputs.run == \'true\'' in fill_workflow
     assert "claude_300man_daily_review.py" in declare_workflow
     assert "claude_300man_daily_review.py" in fill_workflow
     assert 'cron: "30 12 * * 1-5"' in daily_workflow
+    assert 'cron: "15 13 * * 1-5"' in daily_workflow
     assert "self_test_groups.py --group critical" in daily_workflow
     assert "--fail-on-critical" in daily_workflow
     assert "data/claude_300man_daily_monitor.csv" in daily_workflow

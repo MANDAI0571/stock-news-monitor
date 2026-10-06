@@ -10,6 +10,8 @@ on:
   schedule:
     # 毎平日18:45 JST（09:45 UTC）。当日終値の確定後に翌営業日の注文を宣告する。
     - cron: "45 9 * * 1-5"
+    # GitHub cronの取りこぼし対策（20:05 JST）。宣告は同一日・同一銘柄で冪等。
+    - cron: "5 11 * * 1-5"
 
 permissions:
   contents: write

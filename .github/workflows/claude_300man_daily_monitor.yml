@@ -10,6 +10,8 @@ on:
   schedule:
     # 毎平日21:30 JST（12:30 UTC）。引け後宣告の後に最終確認する。
     - cron: "30 12 * * 1-5"
+    # GitHub cronの取りこぼし対策（22:15 JST）。同日再実行は同じ日次行を更新する。
+    - cron: "15 13 * * 1-5"
 
 permissions:
   contents: write

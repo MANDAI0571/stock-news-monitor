@@ -11,8 +11,6 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from claude_300man_declare import declare_production as declare_claude_300man
-from codex_300man_declare import declare_production as declare_codex_300man
 from gmail_notify import DISCLAIMER, load_gmail_config, send_gmail
 from note_mail_html import (
     COPY_PAGE_URL,
@@ -596,10 +594,8 @@ def _chart_url(code: str) -> str:
 def main() -> None:
     args = parse_args()
     output_dir = Path(args.output_dir)
-    # 同じ当日データで両口座を宣告する。台帳と戦略は完全に分離する。
-    # 本番の outputs/ のときだけ動く。
-    declare_claude_300man(output_dir)
-    declare_codex_300man(output_dir)
+    # 注文宣告は専用workflowだけが行う。メールの再実行・dry-runは台帳を変更しない。
+    print("cloud_mail_digest=order_declaration_disabled")
     digest = build_digest(output_dir)
     write_digest_artifacts(output_dir, digest)
 
