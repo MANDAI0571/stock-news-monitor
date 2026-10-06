@@ -4401,6 +4401,8 @@ def _test_dual_300man_phase2_controls() -> None:
     assert "data/claude_300man_reconciliation.csv" in declare_workflow
     assert "claude_300man_shadow.py" in fill_workflow
     assert "data/claude_300man_shadow.csv" in fill_workflow
+    assert "claude_300man_entry_shadow.py" in fill_workflow
+    assert "data/claude_300man_entry_shadow.csv" in fill_workflow
     assert "claude_300man_reconcile.py" in fill_workflow
     assert "claude_300man_daily_review.py" in declare_workflow
     assert "claude_300man_daily_review.py" in fill_workflow
@@ -4526,6 +4528,26 @@ def _test_dual_300man_phase2_controls() -> None:
             assert "20決済未満" in report
             assert "判定翌朝の平均ギャップ" in report
             assert "トレーリング: 0回" in report
+
+            # 遅延workflowが古い日足しか取得できても、すでにある新しい評価日と
+            # MFE/MAE・含み損益を後退させない。
+            protected = updated.copy()
+            protected.at[0, "last_mark_date"] = "2026-10-13"
+            protected.at[0, "mark_price"] = "109.00"
+            protected.at[0, "unrealized_pnl"] = "800"
+            protected.at[0, "unrealized_return_pct"] = "7.92"
+            protected.at[0, "peak_price"] = "123.45"
+            protected.to_csv(journal_path, index=False, encoding="utf-8-sig")
+            preserved, stale_stats = metrics.update_account(
+                "claude", fetcher=lambda _ticker: history.iloc[:5],
+                as_of=date(2026, 10, 13),
+            )
+            assert stale_stats["updated"] == 0, stale_stats
+            assert stale_stats["stale_ignored"] == 1, stale_stats
+            assert preserved.iloc[0]["last_mark_date"] == "2026-10-13"
+            assert preserved.iloc[0]["mark_price"] == "109.00"
+            assert preserved.iloc[0]["unrealized_pnl"] == "800"
+            assert preserved.iloc[0]["peak_price"] == "123.45"
     finally:
         fill.account_paths = saved_fill_paths
         fill.fetch_open_price_yfinance = saved_fetch

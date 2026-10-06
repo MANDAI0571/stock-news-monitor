@@ -120,7 +120,12 @@ def update_account(
     orders_path, journal_path, _ = account_paths(account)
     orders = read_csv(orders_path, ORDER_COLUMNS)
     journal = read_csv(journal_path, JOURNAL_COLUMNS)
-    stats = {"rows": len(journal), "updated": 0, "price_unavailable": 0}
+    stats = {
+        "rows": len(journal),
+        "updated": 0,
+        "price_unavailable": 0,
+        "stale_ignored": 0,
+    }
     cache: dict[str, pd.DataFrame] = {}
     for idx, row in journal.iterrows():
         for key, value in _hydrate_metadata(row, orders).items():
@@ -162,6 +167,22 @@ def update_account(
         ]
         if observed.empty:
             stats["price_unavailable"] += 1
+            continue
+        # 遅延workflowや価格配信の一時欠損で、すでに記録済みの新しい価格日を
+        # 古い日足へ戻してはならない。価格日が後退する場合は、MFE/MAE・時価・
+        # 含み損益をまとめて現状維持する。
+        candidate_mark_day = observed.index[-1].date()
+        try:
+            existing_mark_day = date.fromisoformat(str(row.get("last_mark_date", "")))
+        except ValueError:
+            existing_mark_day = None
+        if existing_mark_day is not None and candidate_mark_day < existing_mark_day:
+            stats["stale_ignored"] += 1
+            print(
+                f"dual_300man_metrics=stale_ignored account={account} "
+                f"code={row.get('code', '')} existing={existing_mark_day} "
+                f"candidate={candidate_mark_day}"
+            )
             continue
         peak_stamp = observed["High"].idxmax()
         trough_stamp = observed["Low"].idxmin()
@@ -285,7 +306,10 @@ def build_report(accounts: dict[str, pd.DataFrame], stats: dict[str, dict[str, i
     lines.extend(["## データ品質", ""])
     for account in ("codex", "claude"):
         item = stats[account]
-        lines.append(f"- {account}: {item['updated']}/{item['rows']}行更新、価格未取得 {item['price_unavailable']}行")
+        lines.append(
+            f"- {account}: {item['updated']}/{item['rows']}行更新、"
+            f"価格未取得 {item['price_unavailable']}行、古い価格への後退抑止 {item.get('stale_ignored', 0)}行"
+        )
     lines.extend(["", "判定時損益率と翌朝実約定率を分離しているため、閾値・翌朝ギャップ・価格取得障害を切り分けられます。", ""])
     return "\n".join(lines)
 

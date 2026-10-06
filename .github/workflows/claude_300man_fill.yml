@@ -29,29 +29,36 @@ jobs:
       - run: pip install -r requirements.txt
       - name: Record Claude and Codex opening fills
         run: |
-          if [ -n "${{ github.event.inputs.target_date }}" ]; then
-            python3 claude_300man_fill.py --date "${{ github.event.inputs.target_date }}"
-            python3 codex_300man_fill.py --date "${{ github.event.inputs.target_date }}"
-          else
-            python3 claude_300man_fill.py
-            python3 codex_300man_fill.py
+          target_date="${{ github.event.inputs.target_date }}"
+          date_args=()
+          if [ -n "$target_date" ]; then
+            date_args=(--date "$target_date")
           fi
-          python3 dual_300man_metrics.py
+          python3 claude_300man_fill.py "${date_args[@]}"
+          python3 codex_300man_fill.py "${date_args[@]}"
+          python3 dual_300man_metrics.py "${date_args[@]}"
           python3 dual_300man_compare.py
-          python3 claude_300man_shadow.py
-          python3 claude_300man_reconcile.py
-          python3 claude_300man_daily_review.py
+          python3 claude_300man_shadow.py "${date_args[@]}"
+          python3 claude_300man_entry_shadow.py "${date_args[@]}"
+          python3 claude_300man_reconcile.py "${date_args[@]}"
+          python3 claude_300man_daily_review.py "${date_args[@]}"
       - name: Commit both independent ledgers
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data/claude_300man_orders.csv data/claude_300man_journal.csv docs/claude_300man_ledger.md data/codex_300man_orders.csv data/codex_300man_journal.csv docs/codex_300man_ledger.md docs/dual_300man_comparison.md docs/dual_300man_metrics.md data/claude_300man_shadow.csv docs/claude_300man_shadow.md data/claude_300man_reconciliation.csv docs/claude_300man_reconciliation.md data/claude_300man_daily_monitor.csv data/claude_300man_improvement_candidates.csv docs/claude_300man_daily_monitor.md
+          git add data/claude_300man_orders.csv data/claude_300man_journal.csv docs/claude_300man_ledger.md data/codex_300man_orders.csv data/codex_300man_journal.csv docs/codex_300man_ledger.md docs/dual_300man_comparison.md docs/dual_300man_metrics.md data/claude_300man_shadow.csv docs/claude_300man_shadow.md data/claude_300man_entry_shadow.csv docs/claude_300man_entry_shadow.md data/claude_300man_reconciliation.csv docs/claude_300man_reconciliation.md data/claude_300man_daily_monitor.csv data/claude_300man_improvement_candidates.csv docs/claude_300man_daily_monitor.md
           git diff --cached --quiet && exit 0
           git commit -m "Update dual AI 300man journals [skip ci]"
           git pull --rebase origin "${GITHUB_REF_NAME}"
           git push origin HEAD:"${GITHUB_REF_NAME}"
       - name: Fail visibly on reconciliation findings
-        run: python3 claude_300man_reconcile.py --fail-on-critical
+        run: |
+          target_date="${{ github.event.inputs.target_date }}"
+          if [ -n "$target_date" ]; then
+            python3 claude_300man_reconcile.py --date "$target_date" --fail-on-critical
+          else
+            python3 claude_300man_reconcile.py --fail-on-critical
+          fi
       - name: Notify failure by mail
         if: failure()
         env:
