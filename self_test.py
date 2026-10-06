@@ -250,14 +250,18 @@ def _test_relative_position() -> None:
 
 
 def _test_compare_chart_links() -> None:
-    """指数と重ねた比較チャートのリンク（2026-09-13 高重さんの指示）。
+    """指数との比較（2026-09-13 高重さんの指示）。
 
-    URLの形は推測ではなく、実際に Yahoo!ファイナンスを開いて確かめたもの。
-      ・日本株 compare=998407.O → 「銘柄／日経平均」の2本になる
-      ・米株   finance.yahoo.com は比較の指定を無視したので、比較URLだけ
-               Yahoo!ファイナンス（日本）の米国株ページ（compare=%5EGSPC）を使う
-    比較チャートは Yahoo 側が自動で線＋パフォーマンス表示にするため、
-    ローソク足・移動平均の指定は付けない。
+    【2026-10-06 変更】ザラ場アラートはリンクをやめ、数字で出す。
+    スマートフォンで開くと Yahoo!ファイナンスは compare= をパラメータごと
+    捨てることを、iPhone相当の画面で実際に開いて確認した。
+      要求 /quote/8392.T/chart?frm=dly&trm=6m&compare=998407.O
+      着地 /quote/8392.T/chart?trm=6m&styl=cndl&ovrIndctr=sma%2Cmma
+    米株側（compare=%5EGSPC）も同じく捨てられる（NVDAで確認）。
+    日経平均の線は出ず、移動平均だけが表示される。リンクでは実現できない。
+
+    URL生成そのものは note 記事側がまだ使っているので検査を残すが、
+    ザラ場アラートのメールでは「銘柄／日経平均／差」の数字を確かめる。
     """
     import dataclasses
 
@@ -304,14 +308,29 @@ def _test_compare_chart_links() -> None:
         build_alert("9434", "ソフトバンク", indicators, high_info), earnings_date="2026-11-05"
     )
     body_lines = _format_alert(alert)
-    compare_line = f"  📊 {JP_COMPARE_LABEL}:{compare_chart_url('9434')}"
-    assert compare_line in body_lines, body_lines
+    # チャート行のすぐ下に、日経平均との比較が来ること。
     chart_index = next(i for i, line in enumerate(body_lines) if "📈 チャート:" in line)
-    assert body_lines[chart_index + 1] == compare_line, body_lines
+    assert "日経平均との比較" in body_lines[chart_index + 1], body_lines
+    # 比較チャートのURLはスマホで機能しないので、メールに残っていないこと。
+    assert not any("compare=998407.O" in line for line in body_lines), body_lines
 
     html = build_html_body([alert])
-    assert 'class="chart cmp"' in html and JP_COMPARE_LABEL in html
-    assert "998407.O" in html and "998405.T" not in html
+    assert "日経平均との比較" in html
+    assert "compare=998407.O" not in html
+
+    # 数字が入る場合の形（日経平均の終値が取れた想定）。
+    import nikkei_compare
+
+    rel = [{"label": "3か月", "stock": 34.8, "index": 2.7, "diff": 32.1}]
+    text = "\n".join(nikkei_compare.text_lines(rel))
+    assert "+34.8%" in text and "+2.7%" in text and "+32.1ポイント" in text, text
+    block = nikkei_compare.html_block(rel)
+    assert "+34.8%" in block and "+32.1ポイント" in block
+    # 数字を出すときは「割安・割高ではない」と必ず断る。
+    assert "割安・割高を意味するものではありません" in block
+    # 取れなかった日は、黙って消さずにそう書く。
+    assert "取れませんでした" in "\n".join(nikkei_compare.text_lines([]))
+    assert "取れませんでした" in nikkei_compare.html_block([])
 
     # 2) 米株の記事: 52週新高値と押し目の両方に入ること
     us_highs = pd.DataFrame([

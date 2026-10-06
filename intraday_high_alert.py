@@ -39,13 +39,14 @@ import json
 import os
 from html import escape
 import re
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, field, asdict
 from functools import lru_cache
 from urllib.parse import quote
 from pathlib import Path
 
 import pandas as pd
 
+import nikkei_compare
 from chart_links import JP_COMPARE_LABEL, compare_chart_url
 from scanner.highs import classify_high_profile
 from scanner.indicators import calculate_indicators
@@ -190,6 +191,10 @@ class Alert:
     #   今日はじめて超えたものだけをメールに出す。継続ぶんはCSVには残す。
     is_fresh_break: bool = True     # 今日はじめて超えたか（52週側は常にTrue）
     break_since: str = ""           # いつ超えたか（YYYY-MM-DD）
+    # fix(2026-10-06): 日経平均との比較。比較チャートのURLはスマホで
+    #   パラメータごと捨てられ、日経平均の線が出ないことを実機相当で確認した。
+    #   リンクをやめ、こちらで計算した数字を載せる。
+    nikkei_rel: list = field(default_factory=list)
 
     def dedup_key(self) -> str:
         return f"{self.code}|{self.alert_type}"
@@ -366,6 +371,7 @@ def build_alert(
     name: str,
     indicators: dict[str, float],
     high_info: dict[str, object],
+    history=None,
 ) -> Alert | None:
     """銘柄の指標と高値プロファイルから Alert を組み立てる。対象外/流動性不足は None。"""
     high_type = str(high_info.get("high_type", ""))
@@ -423,6 +429,13 @@ def build_alert(
     else:
         is_fresh_break = bool(high_info.get("swing_break_is_new", True))
 
+    # 日経平均との比較。取れなければ空のまま（メールには「取れませんでした」と出す）。
+    try:
+        nikkei_rel = nikkei_compare.relative(history) if history is not None else []
+    except Exception as error:                        # noqa: BLE001
+        print(f"nikkei_compare=failed code={code} err={error}", flush=True)
+        nikkei_rel = []
+
     return Alert(
         code=code,
         name=name,
@@ -442,6 +455,7 @@ def build_alert(
         bar_date=bar_date,
         is_fresh_break=is_fresh_break,
         break_since=break_since,
+        nikkei_rel=nikkei_rel,
     )
 
 
@@ -612,9 +626,9 @@ def _format_alert(alert: Alert) -> list[str]:
     ]
     # fix61(2026-09-11): 高重さんの指示「チャートをワンクリックで出せるように」。
     lines.append(f"  📈 チャート:{chart_url(alert.code)}")
-    # fix62(2026-09-13): 高重さんの指示「日経平均と同じ画面で重ねて見たい」。
-    #   このURLは実際に開いて「日経平均」が選択済みになることを確認した。
-    lines.append(f"  📊 {JP_COMPARE_LABEL}:{compare_chart_url(alert.code)}")
+    # fix(2026-10-06): 比較チャートのURLはスマホで compare= ごと捨てられ、
+    #   日経平均の線が出ない（実機相当の画面で確認）。リンクをやめて数字を出す。
+    lines.extend(nikkei_compare.text_lines(alert.nikkei_rel))
     url = openwork_search_url(alert.name)
     if url:
         lines.append(f"  👥 OpenWork:{url}")
@@ -737,7 +751,8 @@ def scan(
             # fix45(2026-09-04): 最後のバーの高値と日付を添える。
             #   データが前日のままなら bar_date が前日になり、メールで気づける。
             high_info = dict(high_info) | _last_bar_facts(history) | _prior_high_facts(history)
-            alert = build_alert(stock.code, stock.name, indicators, high_info)
+            alert = build_alert(stock.code, stock.name, indicators, high_info,
+                                history=history)
             if alert is None:
                 continue
             # 通知対象外は補足情報（決算予定日・OpenWork）を取りに行かずここで捨てる。
@@ -803,11 +818,8 @@ def _alert_html_card(alert: Alert) -> str:
         f'<a class="chart" href="{escape(chart_url(alert.code))}">'
         "📈 6ヶ月チャートを見る</a>"
     )
-    # fix62(2026-09-13): 日経平均と重ねたチャートも1タップで開けるようにする。
-    rows.append(
-        f'<a class="chart cmp" href="{escape(compare_chart_url(alert.code))}">'
-        f"📊 {JP_COMPARE_LABEL}</a>"
-    )
+    # fix(2026-10-06): 比較チャートのURLはスマホで無視されるので、数字で出す。
+    rows.append(nikkei_compare.html_block(alert.nikkei_rel))
     url = openwork_search_url(alert.name)
     if url:
         rows.append(f'👥 <a href="{escape(url)}">OpenWorkで社員クチコミを見る</a>')
