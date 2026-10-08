@@ -4235,6 +4235,12 @@ def _test_dual_300man_phase2_controls() -> None:
     ])
     assert claude_declare._retained_sectors(sector_positions, {"1111"}) == {"情報・通信業"}
     assert claude_declare._retained_sectors(sector_positions, set()) == {"銀行業", "情報・通信業"}
+    pending_sells = pd.DataFrame([
+        {"side": "SELL", "code": "1111", "status": "DECLARED"},
+        {"side": "BUY", "code": "3333", "status": "DECLARED"},
+        {"side": "SELL", "code": "9999", "status": "DECLARED"},
+    ])
+    assert claude_declare._pending_sell_codes(pending_sells, {"1111", "2222"}) == {"1111"}
     with tempfile.TemporaryDirectory() as screening_tmp:
         screening_dir = Path(screening_tmp)
         fixed = screening_dir / "screening_result.csv"

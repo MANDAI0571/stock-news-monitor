@@ -383,6 +383,14 @@ def _declared(orders: pd.DataFrame) -> pd.DataFrame:
     return orders[orders["status"].astype(str).str.upper().eq("DECLARED")]
 
 
+def _pending_sell_codes(pending: pd.DataFrame, held_codes: set[str]) -> set[str]:
+    """再実行でも、すでに翌寄付売却予定の保有枠を解放済みとして扱う。"""
+    if pending.empty:
+        return set()
+    sells = pending[pending["side"].astype(str).str.upper().eq("SELL")]
+    return set(sells.get("code", pd.Series(dtype=str)).astype(str)) & held_codes
+
+
 def _exit_reason(entry_price: float, price: float | None, held_days: int) -> tuple[str, str] | None:
     if price is not None and entry_price > 0:
         change = (price - entry_price) / entry_price * 100
@@ -441,7 +449,9 @@ def declare(
     recent_entry_codes = _recent_entry_codes(journal, today, REENTRY_COOLDOWN_DAYS)
 
     # --- 手仕舞い（損切 / 利確 / タイムアウト） -------------------------------
-    selling: set[str] = set()
+    # 冪等な再実行では既存SELLを作り直さないが、その枠は翌寄付で空く。
+    # ここへ含めないと、初回宣告後の再実行で代替BUYだけが永久に止まる。
+    selling = _pending_sell_codes(pending, held_codes)
     for _, row in open_rows.iterrows():
         code = str(row.get("code", "")).strip()
         if not code or code in pending_codes:
