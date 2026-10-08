@@ -18,6 +18,10 @@ name: Intraday High Alert
 # GitHub Actions の cron は UTC。JST = UTC + 9h なので 9時間引く。
 #   09:07 JST → 00:07 UTC  /  12:37 JST → 03:37 UTC
 # JSTの平日(月〜金)は、対応するUTC時刻でも同じ曜日(月〜金=1-5)になる。土日は実行しない。
+#
+# 【2026-10-09 追加】cron は数時間遅れて届くため、主な起動経路を中継（intraday_relay.yml）
+# に移した。この巡回が終わると handoff ジョブが中継を起こし、中継が次の立会の直前
+# （08:50 / 12:25）に repository_dispatch で巡回を起こす。下の cron は鎖が切れたときの保険。
 
 on:
   repository_dispatch:
@@ -170,6 +174,9 @@ jobs:
           # 朝のcron欠落対策。待っているあいだ concurrency で後続は待たされ、
           # 開場後に起きた回は場外判定で即終了するので二重に走らない。
           pre=$((10#$(TZ=Asia/Tokyo date +%H%M))); if [ "$pre" -ge 600 ] && [ "$pre" -lt 900 ]; then echo "[PREOPEN] jst=$pre -> wait until 09:00 JST"; while :; do cur=$((10#$(TZ=Asia/Tokyo date +%H%M))); if [ "$cur" -ge 900 ]; then break; fi; sleep 30; done; echo "[PREOPEN] market open jst=$(TZ=Asia/Tokyo date '+%H:%M:%S')"; fi
+          # 【2026-10-09 追加】昼休み（11:30〜12:29）に起きた回は、後場の開始 12:30 まで待つ。
+          # 中継（intraday_relay.yml）が 12:25 に起こすため。手動実行は待たない。
+          if [ "$pre" -ge 1130 ] && [ "$pre" -lt 1230 ] && [ "$GITHUB_EVENT_NAME" != "workflow_dispatch" ]; then echo "[LUNCH] jst=$pre -> wait until 12:30 JST"; while :; do cur=$((10#$(TZ=Asia/Tokyo date +%H%M))); if [ "$cur" -ge 1230 ]; then break; fi; sleep 30; done; echo "[LUNCH] afternoon open jst=$(TZ=Asia/Tokyo date '+%H:%M:%S')"; fi
           while true; do
             hm0=$(TZ=Asia/Tokyo date +%H%M); n0=$((10#$hm0)); if { [ "$n0" -ge 900 ] && [ "$n0" -lt 1130 ]; } || { [ "$n0" -ge 1230 ] && [ "$n0" -lt 1530 ]; }; then :; elif [ "$scan" -eq 0 ] && [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then echo "[GUARD] outside market hours jst=$hm0 but manual run -> single scan"; else echo "[GUARD] outside market hours jst=$hm0 -> exit without scanning (scans=$scan)"; break; fi
             scan=$((scan+1))
@@ -223,6 +230,39 @@ jobs:
             outputs/intraday_session_*.log
             outputs/intraday_daily_summary.json
           if-no-files-found: ignore
+      - name: Notify failure by mail
+        if: failure()
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+        run: python3 notify_workflow_failure.py
+
+  # 【2026-10-09 追加】巡回が終わったら（成功でも失敗でも）中継を起こし、次の立会の
+  # 直前に巡回が起きるようにする。cron は数時間遅れて届くため（intraday_relay.yml）。
+  # dispatch には contents: write が要るので、巡回本体ではなくこのジョブにだけ付ける。
+  handoff:
+    needs: intraday-high-alert
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Wake the relay for the next session
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          curl -fsSL -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/dispatches" \
+            -d '{"event_type":"intraday_relay"}'
+          echo "dispatched intraday_relay"
+      # 中継を起こせないと、次の立会は遅れて届く cron 頼みに戻る。黙らずに知らせる。
+      - name: Checkout (for the failure mail)
+        if: failure()
+        uses: actions/checkout@v4
       - name: Notify failure by mail
         if: failure()
         env:

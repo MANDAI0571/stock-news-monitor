@@ -155,6 +155,7 @@ def main() -> None:
     _test_intraday_mail_is_capped()
     _test_intraday_mail_time_is_jst()
     _test_intraday_morning_schedule_redundancy()
+    _test_intraday_relay_contract()
     _test_intraday_openwork_link_only()
     _test_note_split_for_mobile()
     _test_note_split_passes_quality_gate()
@@ -2108,7 +2109,8 @@ def _test_intraday_cloud_workflow_contract() -> None:
     assert 'cron: "52 3 * * 1-5"' in workflow
     assert 'cron: "7 4 * * 1-5"' in workflow
     assert "concurrency:" in workflow and "cancel-in-progress: false" in workflow
-    assert "timeout-minutes: 240" in workflow
+    # 2026-10-06: 06:10 起動→09:00まで待ち→11:30まで巡回（5時間20分）に合わせて350分。
+    assert "timeout-minutes: 350" in workflow
     assert 'IH_ALERT_SCOPE: "break"' in workflow
     assert 'INTRADAY_USE_WATCHLIST: "0"' in workflow
     assert 'IH_MIN_TURNOVER: "50000000"' in workflow
@@ -3143,12 +3145,69 @@ def _test_intraday_morning_schedule_redundancy() -> None:
     for cron in ('cron: "41 23 * * 0-4"', 'cron: "53 23 * * 0-4"'):
         assert cron in text, f"開場前cronが無い: {cron}"
     assert "[PREOPEN]" in text, "開場待ちの処理が無い"
-    assert 'if [ "$pre" -ge 820 ] && [ "$pre" -lt 900 ]' in text, "開場待ちの条件が無い"
+    # 2026-10-06 に窓を 08:20〜 から 06:00〜 に広げた（06:10 / 07:10 の起動を足したため）。
+    assert 'if [ "$pre" -ge 600 ] && [ "$pre" -lt 900 ]' in text, "開場待ちの条件が無い"
     assert 'if [ "$cur" -ge 900 ]; then break; fi' in text, "開場待ちの解除条件が無い"
     # 既存の朝3本も残っていること（保険は足すだけで、置き換えではない）。
     for cron in ('cron: "7 0 * * 1-5"', 'cron: "22 0 * * 1-5"', 'cron: "37 0 * * 1-5"'):
         assert cron in text, f"既存の朝cronが消えている: {cron}"
     print("self-test: ザラ場の朝cron欠落対策（開場前起動＋開場待ち） OK")
+
+
+def _test_intraday_relay_contract() -> None:
+    """cron に頼らない起動経路（中継）が消えておらず、時刻の計算が正しいこと。
+
+    2026-10-09 追加。このリポジトリの cron は数時間遅れて届き、10/07 は前場の巡回が
+    11:40 まで1本も来なかった。巡回の終わりに中継を起こし、中継が次の立会の直前に
+    巡回を起こす。
+    """
+    import datetime as dt
+    from pathlib import Path
+
+    import intraday_relay as R
+
+    relay = Path(".github/workflows/intraday_relay.yml").read_text(encoding="utf-8")
+    assert "types: [intraday_relay]" in relay
+    assert "cancel-in-progress: true" in relay, "中継が2本並ぶと鎖が増える"
+    assert "timeout-minutes: 355" in relay
+    assert "python3 intraday_relay.py" in relay
+    assert '"event_type\\":\\"${EVENT}\\"' in relay
+    main = Path(".github/workflows/intraday_high_alert.yml").read_text(encoding="utf-8")
+    assert "types: [intraday_tick]" in main
+    assert "handoff:" in main and "if: always()" in main
+    assert '{"event_type":"intraday_relay"}' in main
+    assert '[ "$pre" -ge 1130 ] && [ "$pre" -lt 1230 ]' in main, "昼休みの待ちが無い"
+    assert R.MAX_WAIT_MIN * 60 + 600 <= 355 * 60, "待ちがジョブの上限を超える"
+
+    J = R.JST
+
+    def plan(*ymdhm, holidays=()):
+        now = dt.datetime(*ymdhm, tzinfo=J)
+        return R.plan(now, lambda d: R.is_business_day(d) and d not in holidays)
+
+    # 金曜の引け後 → 中継を継いで、月曜 08:50 を狙う
+    wait, event, target = plan(2026, 10, 9, 15, 31)
+    assert (event, target.strftime("%a %H:%M")) == ("intraday_relay", "Mon 08:50"), (event, target)
+    # 祝日の月曜は飛ばす
+    wait, event, target = plan(2026, 10, 9, 15, 31, holidays={dt.date(2026, 10, 12)})
+    assert target.date() == dt.date(2026, 10, 13), target
+    # 朝 08:50 の5時間40分以内なら、巡回を起こす
+    wait, event, target = plan(2026, 10, 13, 3, 15)
+    assert event == "intraday_tick" and target.strftime("%H:%M") == "08:50"
+    assert abs(wait - 335 * 60) < 1
+    # 前場の終わり → 12:25 に後場の巡回を起こす
+    wait, event, target = plan(2026, 10, 13, 11, 31)
+    assert event == "intraday_tick" and target.strftime("%H:%M") == "12:25", target
+    # 時刻を少し過ぎて起き直しても、その立会を飛ばさない（すぐ起こす）
+    wait, event, target = plan(2026, 10, 13, 8, 52)
+    assert event == "intraday_tick" and wait == 0 and target.strftime("%H:%M") == "08:50"
+    # ただし猶予は短い（すぐ失敗する巡回を起こし直し続けないため）
+    wait, event, target = plan(2026, 10, 13, 8, 54)
+    assert target.strftime("%H:%M") == "12:25", target
+    # 年末年始は休み
+    wait, event, target = plan(2026, 12, 30, 15, 31)
+    assert target.date() == dt.date(2027, 1, 4), target
+    print("self-test: ザラ場の中継（cronに頼らない起動） OK")
 
 
 def _test_intraday_openwork_link_only() -> None:

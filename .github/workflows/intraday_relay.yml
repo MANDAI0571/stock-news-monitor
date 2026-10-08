@@ -1,0 +1,66 @@
+name: Intraday Relay
+
+# ザラ場アラート（Intraday High Alert）を cron に頼らずに起こすための中継。
+# 【2026-10-09 追加】
+#
+# このリポジトリの定期実行（schedule）は数時間遅れて届く（Actions の履歴で実測）。
+#   09:02〜10:02 JST の見張り役5本 → 9/24 以降、毎日 13:32〜15:59 に到着
+#   06:10 / 07:10 JST の起動を足した後も、10/07 の前場は 11:40 まで巡回が来なかった
+# repository_dispatch は数秒で届くので、巡回が終わるたびにこの中継を起こし、
+# 中継が次の立会の直前まで待ってから巡回を起こす。
+#   15:30 巡回終了 → 中継（最大5時間40分待ち）→ 中継 → … → 08:50 に巡回を起こす
+#   11:30 前場の巡回終了 → 中継 → 12:25 に巡回を起こす（巡回は12:30まで待つ）
+# 鎖が切れても、cron や見張り役で起きた巡回が終わるときに、また鎖が始まる。
+# 待ち時間の計算は intraday_relay.py（self_test で確かめている）。
+
+on:
+  repository_dispatch:
+    types: [intraday_relay]
+  # このファイルを入れた push で、最初の鎖を始める。
+  push:
+    paths:
+      - ".github/workflows/intraday_relay.yml"
+  workflow_dispatch:
+
+# 鎖は常に1本だけにする。新しい中継が来たら、待っている古い方は取り消す。
+concurrency:
+  group: intraday-relay
+  cancel-in-progress: true
+
+jobs:
+  relay:
+    runs-on: ubuntu-latest
+    # 待ちは最大340分（intraday_relay.py の MAX_WAIT_MIN）。GitHub の上限は360分。
+    timeout-minutes: 355
+    # repository_dispatch を送るのに contents: write が要る（見張り役と同じ）。
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Wait for the next session
+        id: wait
+        run: |
+          python -m pip install jpholiday >/dev/null 2>&1 || true
+          python3 intraday_relay.py
+
+      - name: Dispatch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ steps.wait.outputs.event }}
+        run: |
+          curl -fsSL -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/dispatches" \
+            -d "{\"event_type\":\"${EVENT}\"}"
+          echo "dispatched ${EVENT}"
+
+      - name: Notify failure by mail
+        if: failure()
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+        run: python3 notify_workflow_failure.py
