@@ -348,6 +348,17 @@ def _open_positions(journal: pd.DataFrame) -> pd.DataFrame:
     return journal[journal["status"].astype(str).str.upper().eq("OPEN")]
 
 
+def _retained_sectors(open_rows: pd.DataFrame, selling: set[str]) -> set[str]:
+    """翌寄付の売却後にも残る保有だけを同一セクター制約へ数える。"""
+    if open_rows.empty:
+        return set()
+    codes = open_rows.get("code", pd.Series("", index=open_rows.index)).astype(str)
+    sectors = open_rows.loc[~codes.isin(selling)].get(
+        "sector", pd.Series("", index=open_rows.index)
+    )
+    return {str(value).strip() for value in sectors if str(value).strip()}
+
+
 def _ensure_position_prices(
     prices: dict[str, float], open_rows: pd.DataFrame, today: date
 ) -> dict[str, float]:
@@ -516,9 +527,15 @@ def declare(
         print("claude_300man_declare=no_screening")
     else:
         ranked = _claude_candidates(screening)
-        used_sectors = set(open_rows.get("sector", pd.Series(dtype=str)).astype(str))
+        # 翌寄付で売る銘柄の業種は、新規BUYと同時保有にならないため解放する。
+        # これを残すと、出口と同時の同業種入替だけが不必要に止まる。
+        used_sectors = _retained_sectors(open_rows, selling)
         if not pending_buy.empty:
-            used_sectors.update(pending_buy.get("sector", pd.Series(dtype=str)).astype(str))
+            used_sectors.update(
+                str(value).strip()
+                for value in pending_buy.get("sector", pd.Series(dtype=str))
+                if str(value).strip()
+            )
         for _, row in ranked.iterrows():
             if bought >= free_slots:
                 break

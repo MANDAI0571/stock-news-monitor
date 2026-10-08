@@ -4229,6 +4229,12 @@ def _test_dual_300man_phase2_controls() -> None:
         {"code": "9999", "entry_date": "2026-09-18"},
     ])
     assert claude_declare._recent_entry_codes(recent, date(2026, 10, 5), 5) == {"1111"}
+    sector_positions = pd.DataFrame([
+        {"code": "1111", "sector": "銀行業"},
+        {"code": "2222", "sector": "情報・通信業"},
+    ])
+    assert claude_declare._retained_sectors(sector_positions, {"1111"}) == {"情報・通信業"}
+    assert claude_declare._retained_sectors(sector_positions, set()) == {"銀行業", "情報・通信業"}
     with tempfile.TemporaryDirectory() as screening_tmp:
         screening_dir = Path(screening_tmp)
         fixed = screening_dir / "screening_result.csv"
