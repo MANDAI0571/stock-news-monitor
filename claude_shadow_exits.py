@@ -15,6 +15,7 @@ class ExitVariant:
     intraday_stop: bool = False
     trailing_activation_pct: float | None = None
     trailing_drawdown_pct: float | None = None
+    timeout_business_days: int | None = None
 
     @property
     def trailing(self) -> bool:
@@ -24,6 +25,11 @@ class ExitVariant:
 # 比較開始後に都合よく条件を増やさない。変更時はkeyを変えて別実験にする。
 EXIT_VARIANTS = (
     ExitVariant("current_close_5_tp12_t15", "現行: 終値-5% / +12% / 15日"),
+    ExitVariant(
+        "active_close_5_tp12_t10",
+        "積極回転: 終値-5% / +12% / 10日",
+        timeout_business_days=10,
+    ),
     ExitVariant("intraday_5_tp12_t15", "日中損切り: 安値-5% / +12% / 15日", intraday_stop=True),
     ExitVariant(
         "close_trail_6_3_t15",

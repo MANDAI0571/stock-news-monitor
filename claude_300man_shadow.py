@@ -98,7 +98,7 @@ def build_shadow(
                 variant=variant,
                 stop_loss_pct=CONFIG.stop_loss_pct,
                 take_profit_pct=CONFIG.take_profit_pct,
-                timeout_days=CONFIG.timeout_days,
+                timeout_days=variant.timeout_business_days or CONFIG.timeout_days,
                 roundtrip_cost_pct=0.30,
                 as_of=as_of,
             )

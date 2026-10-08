@@ -4270,6 +4270,7 @@ def _test_dual_300man_phase2_controls() -> None:
     assert immutable_errors
 
     variants = {variant.key: variant for variant in EXIT_VARIANTS}
+    assert variants["active_close_5_tp12_t10"].timeout_business_days == 10
     loss_history = pd.DataFrame(
         {
             "Open": [100, 99, 96, 90],
@@ -4323,6 +4324,19 @@ def _test_dual_300man_phase2_controls() -> None:
     )
     assert len(shadow_rows) == len(EXIT_VARIANTS)
     assert shadow_rows["variant"].nunique() == len(EXIT_VARIANTS)
+    flat_dates = pd.bdate_range("2026-10-05", periods=12)
+    flat_history = pd.DataFrame(
+        {"Open": 100.0, "High": 101.0, "Low": 99.0, "Close": 100.0},
+        index=flat_dates,
+    )
+    timeout_rows = claude_shadow.build_shadow(
+        shadow_source,
+        as_of=flat_dates[-1].date(),
+        fetcher=lambda _ticker: flat_history,
+    ).set_index("variant")
+    assert timeout_rows.at["active_close_5_tp12_t10", "exit_type"] == "TIMEOUT"
+    assert timeout_rows.at["active_close_5_tp12_t10", "status"] == "CLOSED"
+    assert timeout_rows.at["current_close_5_tp12_t15", "status"] == "OPEN"
     preserved = shadow_rows.copy()
     preserved["status"] = "CLOSED"
     preserved["exit_type"] = "PRESERVED_TEST"
