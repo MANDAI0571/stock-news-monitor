@@ -1,5 +1,5 @@
 ﻿review_date,variant,variant_label,closed,paired_with_current,avg_net_0_30_pct,avg_net_0_60_pct,avg_net_1_00_pct,profit_factor_0_30,worst_net_0_30_pct,below_minus_10_count,avg_edge_vs_current_pct,bootstrap_95_low_pct,bootstrap_95_high_pct,decision,reason
-2026-10-07,current_close_5_tp12_t15,現行: 終値-5% / +12% / 15日,0,0,,,,,,0,,,,BASELINE,現行ルール。比較基準として固定
-2026-10-07,intraday_5_tp12_t15,日中損切り: 安値-5% / +12% / 15日,0,0,,,,,,0,,,,COLLECTING,決済40件未満 / 同一入口比較40組未満
-2026-10-07,close_trail_6_3_t15,終値追随: +6%起動 / 高値終値から-3% / 15日,0,0,,,,,,0,,,,COLLECTING,決済40件未満 / 同一入口比較40組未満
-2026-10-07,intraday_trail_6_3_t15,日中損切り+終値追随: -5% / +6%-3% / 15日,0,0,,,,,,0,,,,COLLECTING,決済40件未満 / 同一入口比較40組未満
+2026-10-08,current_close_5_tp12_t15,現行: 終値-5% / +12% / 15日,0,0,,,,,,0,,,,BASELINE,現行ルール。比較基準として固定
+2026-10-08,intraday_5_tp12_t15,日中損切り: 安値-5% / +12% / 15日,0,0,,,,,,0,,,,COLLECTING,決済40件未満 / 同一入口比較40組未満
+2026-10-08,close_trail_6_3_t15,終値追随: +6%起動 / 高値終値から-3% / 15日,0,0,,,,,,0,,,,COLLECTING,決済40件未満 / 同一入口比較40組未満
+2026-10-08,intraday_trail_6_3_t15,日中損切り+終値追随: -5% / +6%-3% / 15日,0,0,,,,,,0,,,,COLLECTING,決済40件未満 / 同一入口比較40組未満
