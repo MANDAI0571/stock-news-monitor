@@ -1,0 +1,84 @@
+name: Alert Grade Track
+
+# ザラ場アラートの「過去の成績ランク」を、実際のアラートのその後で確かめ続ける。
+# 【2026-10-12 追加】中身は alert_grade_track.py。
+#
+# 巡回の成果物（intraday-high-alerts、90日残る）から直近14日ぶんの CSV を取り出し、
+# その日はじめて出たアラートを data/alert_grade_record.csv に足して、決着した場面の
+# 損益を埋める。等級ごとの集計 data/alert_grade_forward.json はアラートメールの末尾が読む。
+#
+# cron が数時間遅れても、取りこぼした日があっても、次の回が14日さかのぼって拾うので困らない。
+# 取得・集計・push の失敗では止めない（研究用で、巡回や売買には影響しない。次の回が
+# 14日さかのぼって拾い直す）。失敗メールはリポジトリの決まりどおり付けるが、出るのは
+# 準備（checkout など）で落ちたときだけ。集計が古くなるとアラートメールの末尾に
+# 「N日更新されていません」と出るので、止まったことには気づける。
+
+on:
+  schedule:
+    - cron: "20 8 * * 1-5"   # 17:20 JST
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/alert_grade_track.yml"
+
+concurrency:
+  group: alert-grade-track
+  cancel-in-progress: false
+
+jobs:
+  track:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        continue-on-error: true
+        run: |
+          python -m pip install --upgrade pip >/dev/null 2>&1 || true
+          pip install "pandas>=2.2,<3.0" "numpy>=1.26,<3" "requests>=2.31,<3" "yfinance>=0.2.40,<2"
+
+      - name: Collect and settle
+        id: track
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 alert_grade_track.py --download outputs/grade_track --days 14 --collect outputs/grade_track --settle
+
+      - name: Persist record
+        if: steps.track.outcome == 'success'
+        continue-on-error: true
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/alert_grade_record.csv data/alert_grade_forward.json
+          if git diff --cached --quiet; then
+            echo "alert_grade_track: 変更なし（コミットせず）"
+            exit 0
+          fi
+          git commit -m "chore: update alert grade track [skip ci]"
+          for i in 1 2 3; do
+            if git pull --rebase origin "${GITHUB_REF_NAME}" && git push origin HEAD:"${GITHUB_REF_NAME}"; then
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "alert_grade_track: push失敗（次の回でまとめて反映される）"
+          exit 1
+
+      - name: Notify failure by mail
+        if: failure()
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+        run: python3 notify_workflow_failure.py

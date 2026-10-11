@@ -17,11 +17,16 @@
 限界: 条件は全期間を見て選んだので、別の期間で確かめた数字ではない。最初に試した
 多くの条件で作ったランクは、2025-26年に順位が逆転した。ザラ場の途中の値段で判定する
 （検証は大引けの値）。プライム以外の市場は検証していない。
+そのため、実際にメールに出たアラートのその後を alert_grade_track.py が毎営業日に集計し、
+メールの末尾に等級ごとの実際の成績として出す（forward_lines）。
 """
 
 from __future__ import annotations
 
+import datetime as dt
+import json
 import statistics as st
+from pathlib import Path
 
 # 期間ごとの損益比（alert_rank_research / rank2 の実測。2026-10-12）
 PERIODS = ("2022-23", "2024", "2025", "2026")
@@ -112,4 +117,46 @@ def footer_lines() -> list[str]:
         "多くの条件で作ったランクは、2025〜26年に順位が逆転しました。ザラ場の途中の値段で判定"
         "しています（検証は大引けの値）。プライム以外の市場は検証していません。",
     ]
+    return lines + forward_lines()
+
+
+# 実際のアラートのその後（alert_grade_track.py が毎営業日の夕方に書く）。2026-10-12 追加。
+FORWARD_PATH = Path(__file__).resolve().parent / "data" / "alert_grade_forward.json"
+
+
+def forward_lines(path: Path | None = None, today: dt.date | None = None) -> list[str]:
+    """実際にメールに出たアラートを、上と同じ決まりで売買した場合の等級ごとの成績。
+    集計がまだ無ければ何も出さない。"""
+    try:
+        s = json.loads((path or FORWARD_PATH).read_text(encoding="utf-8"))
+        grades = s["grades"]
+    except Exception:
+        return []
+    if not s.get("recorded"):
+        return []
+    lines = [f"■ 実際のアラートでの成績（{s.get('since') or '-'}〜、{s.get('updated', '-')} 集計。"
+             f"上と同じ決まりで、手じまいまで終わった場面だけ）"]
+    done = sum(grades[g]["done"] for g in GRADES if g in grades)
+    if done == 0:
+        lines.append(f"まだ手じまいまで終わった場面がありません（記録 {s.get('recorded', 0)}件。"
+                     "決着には最長で約3週間かかります）。")
+    else:
+        for g in GRADES:
+            v = grades.get(g) or {}
+            if not v.get("done") and not v.get("pending"):
+                continue
+            pf = "-" if v.get("pf") is None else f"{v['pf']:.2f}"
+            win = "-" if v.get("win") is None else f"{v['win'] * 100:.0f}%"
+            lines.append(f"  {g}: 終わった {v.get('done', 0)}件 損益比 {pf} 勝率 {win}"
+                         f"（途中 {v.get('pending', 0)}件）")
+        if any(0 < (grades.get(g) or {}).get("done", 0) < 30 for g in GRADES):
+            lines.append("30件に満たない等級の数字は偶然の差が大きく、上の5年の数字と食い違っても"
+                         "不思議ではありません。")
+    try:
+        upd = dt.date.fromisoformat(str(s.get("updated", ""))[:10])
+        today = today or (dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=9)).date()
+        if (today - upd).days > 4:
+            lines.append(f"（この集計は {(today - upd).days}日更新されていません）")
+    except ValueError:
+        lines.append("（集計の日付が読めません）")
     return lines

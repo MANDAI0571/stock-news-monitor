@@ -157,6 +157,7 @@ def main() -> None:
     _test_intraday_morning_schedule_redundancy()
     _test_intraday_relay_contract()
     _test_intraday_alert_grade()
+    _test_alert_grade_track()
     _test_intraday_openwork_link_only()
     _test_note_split_for_mobile()
     _test_note_split_passes_quality_gate()
@@ -3259,6 +3260,91 @@ def _test_intraday_alert_grade() -> None:
     b = Alert(**{**a.__dict__, "grade": "", "grade_score": 0, "grade_reasons": []})
     assert "過去の成績ランクについて" not in build_body([b])
     print("self-test: ザラ場アラートの過去の成績ランク OK")
+
+
+def _test_alert_grade_track() -> None:
+    """ランクの実際の成績の記録と集計（alert_grade_track.py、2026-10-12 追加）。"""
+    import datetime as dt
+    import json
+    import tempfile
+
+    import alert_grade as G
+    import alert_grade_track as T
+    import alert_rank_research as R
+    from intraday_high_alert import Alert, build_body
+
+    # 損益の決まりは研究側の sim と同じ（データの端で決着しない場面は待つ）
+    op = [100, 101, 102, 103, 96, 95, 120, 118] + [110] * 20
+    cl = [100, 101, 102, 94, 95, 96, 119, 115] + [110] * 20
+    for t in range(0, 20):
+        got = T.sim_detail(op, cl, t)
+        if got is not None:
+            assert abs(got[0] - R.sim(op, cl, t)) < 1e-12, t
+    assert T.sim_detail(op, cl, 0)[1:] == (1, 4)       # 3本目の終値で -5% 以下 → 4本目の寄付
+    assert T.sim_detail(op, cl, len(cl) - 2) is None   # 翌日の足が無ければ決着しない
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        base = {"name": "x", "current_price": 1, "alert_type": "直近高値ブレイク",
+                "grade_score": 0, "is_new": True}
+        pd.DataFrame([{**base, "code": "1111", "grade": "S"},
+                      {**base, "code": "1111", "grade": "S", "alert_type": "52週高値更新"},
+                      {**base, "code": "2222", "grade": "C", "is_new": False},
+                      {**base, "code": "3333", "grade": ""}]).to_csv(
+            tmp / "intraday_high_alerts_20261013_093000.csv", index=False)
+        pd.DataFrame([{**base, "code": "1111", "grade": "C"},
+                      {**base, "code": "4444", "grade": "SS"}]).to_csv(
+            tmp / "intraday_high_alerts_20261013_101500.csv", index=False)
+        pd.DataFrame([{"code": "5555", "is_new": True}]).to_csv(   # 等級の列が無い古い CSV
+            tmp / "intraday_high_alerts_20261009_101500.csv", index=False)
+        new = T.collect(sorted(tmp.glob("*.csv")))
+        assert sorted(zip(new["code"], new["grade"])) == [("1111", "S"), ("4444", "SS")], new
+        rec = T.merge(T.load_record(tmp / "none.csv"), new)
+        assert len(T.merge(rec, new)) == 2                  # 同じ CSV を二度集めても増えない
+
+        days = pd.bdate_range("2026-10-13", periods=25)
+        bars = {"1111": pd.DataFrame({"Open": [100.0] * 25, "Close": [100.0, 100.0, 113.0] + [113.0] * 22},
+                                     index=days)}
+        rec = T.settle(rec, fetch=lambda codes, start: bars, today=dt.date(2026, 11, 20))
+        r1 = rec[rec.code == "1111"].iloc[0]
+        assert r1["status"] == "done" and r1["entry_date"] == "2026-10-14", r1
+        assert r1["exit_date"] == "2026-10-16" and abs(float(r1["ret_pct"]) + 0.2) < 1e-6, r1
+        assert rec[rec.code == "4444"].iloc[0]["status"] == ""   # 日足が無くても60日までは待つ
+        rec = T.settle(rec, fetch=lambda codes, start: {}, today=dt.date(2027, 1, 20))
+        assert rec[rec.code == "4444"].iloc[0]["status"] == "no_data"
+
+        s = T.summarize(rec, now=dt.datetime(2026, 11, 20, 17, 20))
+        assert s["grades"]["S"]["done"] == 1 and s["no_data"] == 1 and s["recorded"] == 2
+        fp = tmp / "fwd.json"
+        fp.write_text(json.dumps(s, ensure_ascii=False), encoding="utf-8")
+        lines = G.forward_lines(fp, today=dt.date(2026, 11, 21))
+        assert any("S: 終わった 1件" in x for x in lines), lines
+        assert any("30件に満たない" in x for x in lines), lines
+        assert "更新されていません" in G.forward_lines(fp, today=dt.date(2026, 11, 30))[-1]
+        fp.write_text(json.dumps({**s, "recorded": 0}), encoding="utf-8")
+        assert G.forward_lines(fp) == []                   # 記録が無いうちは何も出さない
+        assert G.forward_lines(tmp / "missing.json") == []
+
+        # メールの末尾に載る
+        fp.write_text(json.dumps(s, ensure_ascii=False), encoding="utf-8")
+        saved = G.FORWARD_PATH
+        G.FORWARD_PATH = fp
+        try:
+            a = Alert(code="1234", name="テスト", current_price=100.0, alert_type="直近高値ブレイク",
+                      high_type="SWING_HIGH_BREAK", line_label="直近高値", line_price=95.0,
+                      dist_pct=0.0, is_break=True, volume_ratio=1.2, turnover_20d=300_000_000,
+                      reason="r", grade="S", grade_score=1, grade_reasons=[])
+            assert "実際のアラートでの成績" in build_body([a])
+        finally:
+            G.FORWARD_PATH = saved
+
+    wf = Path(".github/workflows/alert_grade_track.yml").read_text(encoding="utf-8")
+    assert "actions: read" in wf and "contents: write" in wf
+    # 研究用。取得・集計・push の失敗では止めず、失敗メールは準備で落ちたときだけ
+    for step in ("Install dependencies", "Collect and settle", "Persist record"):
+        part = wf.split(f"name: {step}", 1)[1].split("- name:", 1)[0]
+        assert "continue-on-error: true" in part, step
+    print("self-test: ランクの実際の成績の記録と集計 OK")
 
 
 def _test_intraday_openwork_link_only() -> None:
