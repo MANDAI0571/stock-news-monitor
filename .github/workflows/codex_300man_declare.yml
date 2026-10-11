@@ -2,10 +2,11 @@ name: Codex 300man Close Declare
 
 on:
   workflow_dispatch:
-  schedule:
-    # 毎平日18:50 JST（09:50 UTC）。Codex側は18:45なので5分ずらしている。当日終値の確定後に翌営業日の注文を宣告する。
-    - cron: "50 9 * * 1-5"
-
+  # 【2026-10-11】cron をやめ、中継（intraday_relay.yml）が 18:50 JST に起こす。
+  # cron は7〜9時間遅れて深夜（01:17〜03:51 JST）に届き、9/27 以降6回とも
+  # 「宣告の時間外」として失敗し、毎朝失敗メールが出ていた（定期実行での宣告は一度も成功していない）。
+  repository_dispatch:
+    types: [codex_300man_declare]
 permissions:
   contents: write
 

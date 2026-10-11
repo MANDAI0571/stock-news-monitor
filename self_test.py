@@ -3172,6 +3172,7 @@ def _test_intraday_relay_contract() -> None:
     assert "timeout-minutes: 355" in relay
     assert "python3 intraday_relay.py" in relay
     assert '"event_type\\":\\"${EVENT}\\"' in relay
+    assert "client_payload" in relay and "RELAY_AFTER" in relay
     main = Path(".github/workflows/intraday_high_alert.yml").read_text(encoding="utf-8")
     assert "types: [intraday_tick]" in main
     assert "handoff:" in main and "if: always()" in main
@@ -3185,11 +3186,11 @@ def _test_intraday_relay_contract() -> None:
         now = dt.datetime(*ymdhm, tzinfo=J)
         return R.plan(now, lambda d: R.is_business_day(d) and d not in holidays)
 
-    # 金曜の引け後 → 中継を継いで、月曜 08:50 を狙う
-    wait, event, target = plan(2026, 10, 9, 15, 31)
+    # 金曜の夜（宣告の後）→ 中継を継いで、月曜 08:50 を狙う
+    wait, event, target = plan(2026, 10, 9, 22, 0)
     assert (event, target.strftime("%a %H:%M")) == ("intraday_relay", "Mon 08:50"), (event, target)
     # 祝日の月曜は飛ばす
-    wait, event, target = plan(2026, 10, 9, 15, 31, holidays={dt.date(2026, 10, 12)})
+    wait, event, target = plan(2026, 10, 9, 22, 0, holidays={dt.date(2026, 10, 12)})
     assert target.date() == dt.date(2026, 10, 13), target
     # 朝 08:50 の5時間40分以内なら、巡回を起こす
     wait, event, target = plan(2026, 10, 13, 3, 15)
@@ -3198,6 +3199,13 @@ def _test_intraday_relay_contract() -> None:
     # 前場の終わり → 12:25 に後場の巡回を起こす
     wait, event, target = plan(2026, 10, 13, 11, 31)
     assert event == "intraday_tick" and target.strftime("%H:%M") == "12:25", target
+    # 後場の後は 18:50 に Codex 300man の宣告を起こす
+    wait, event, target = plan(2026, 10, 13, 15, 31)
+    assert event == "codex_300man_declare" and target.strftime("%H:%M") == "18:50", (event, target)
+    # 宣告を起こした直後の起こし直しは、同じ時刻を飛ばして翌立会日の朝を狙う
+    now = dt.datetime(2026, 10, 13, 18, 50, 30, tzinfo=J)
+    _, ev2, t2 = R.plan(now, R.is_business_day, after=dt.datetime(2026, 10, 13, 18, 50, tzinfo=J))
+    assert t2.strftime("%m-%d %H:%M") == "10-14 08:50", t2
     # 時刻を少し過ぎて起き直しても、その立会を飛ばさない（すぐ起こす）
     wait, event, target = plan(2026, 10, 13, 8, 52)
     assert event == "intraday_tick" and wait == 0 and target.strftime("%H:%M") == "08:50"
@@ -3206,6 +3214,8 @@ def _test_intraday_relay_contract() -> None:
     assert target.strftime("%H:%M") == "12:25", target
     # 年末年始は休み
     wait, event, target = plan(2026, 12, 30, 15, 31)
+    assert (event, target.strftime("%m-%d %H:%M")) == ("codex_300man_declare", "12-30 18:50")
+    wait, event, target = plan(2026, 12, 30, 22, 0)
     assert target.date() == dt.date(2027, 1, 4), target
     print("self-test: ザラ場の中継（cronに頼らない起動） OK")
 
@@ -4484,59 +4494,24 @@ def _test_dual_300man_phase2_controls() -> None:
     assert monitor_snapshot["health"] == "CRITICAL"
     assert {"OVERDUE_DECLARED", "POSITION_LIMIT", "STOP_BELOW_MINUS_10"} <= alert_codes
 
+    # 【2026-10-11】Claude側の300万円運用は持ち主の指示で止めた。宣告と日次監視の
+    # ワークフローは削除し、約定のワークフローは Codex 側だけを記録する。
+    # 止めたものが知らないうちに戻らないことを確かめる。
     project_root = Path(__file__).resolve().parent
-    declare_workflow = (
-        project_root / ".github" / "workflows" / "claude_300man_declare.yml"
-    ).read_text(encoding="utf-8")
-    fill_workflow = (
-        project_root / ".github" / "workflows" / "claude_300man_fill.yml"
-    ).read_text(encoding="utf-8")
-    daily_workflow = (
-        project_root / ".github" / "workflows" / "claude_300man_daily_monitor.yml"
-    ).read_text(encoding="utf-8")
-    assert 'cron: "45 9 * * 1-5"' in declare_workflow
-    assert 'cron: "5 11 * * 1-5"' in declare_workflow
-    assert "daily_discipline_run.py --include-rejected --max-candidates 0" in declare_workflow
-    assert 'claude_300man_declare.py --date "${{ steps.guard.outputs.date }}"' in declare_workflow
-    assert "git add data/claude_300man_orders.csv" in declare_workflow
-    assert "permissions:\n  contents: write" in declare_workflow
-    assert "notify_workflow_failure.py" in declare_workflow
-    assert "declaration_lost_" in declare_workflow
-    assert "target_date:" in declare_workflow
-    assert "scheduled_delayed_recovery" in declare_workflow
-    assert "Verify fresh screening target date" in declare_workflow
-    assert "screening date mismatch" in declare_workflow
-    assert "Verify execution window is still open" in declare_workflow
-    assert "execution window already opened" in declare_workflow
-    assert "claude_300man_shadow.py" in declare_workflow
-    assert "data/claude_300man_shadow.csv" in declare_workflow
-    assert "claude_300man_entry_shadow.py" in declare_workflow
-    assert "data/claude_300man_entry_shadow.csv" in declare_workflow
-    assert "claude_300man_reconcile.py" in declare_workflow
-    assert "--block-new-buys" in declare_workflow
-    assert "allow_new_buys" in declare_workflow
-    assert "data/claude_300man_reconciliation.csv" in declare_workflow
-    assert "claude_300man_shadow.py" in fill_workflow
-    assert "data/claude_300man_shadow.csv" in fill_workflow
-    assert "claude_300man_entry_shadow.py" in fill_workflow
-    assert "data/claude_300man_entry_shadow.csv" in fill_workflow
-    assert "claude_300man_reconcile.py" in fill_workflow
+    workflows_dir = project_root / ".github" / "workflows"
+    assert not (workflows_dir / "claude_300man_declare.yml").exists()
+    assert not (workflows_dir / "claude_300man_daily_monitor.yml").exists()
+    fill_workflow = (workflows_dir / "claude_300man_fill.yml").read_text(encoding="utf-8")
+    assert "name: Codex 300man Open Fill" in fill_workflow
+    assert "codex_300man_fill.py" in fill_workflow
+    assert "python3 claude_300man_fill.py" not in fill_workflow
+    assert "data/claude_300man_orders.csv" not in fill_workflow
     assert 'cron: "40 0 * * 1-5"' in fill_workflow
     assert 'cron: "15 1 * * 1-5"' in fill_workflow
     assert "Resolve safe fill date" in fill_workflow
     assert "scheduled_delayed_recovery" in fill_workflow
     assert "unsafe_manual_fill" in fill_workflow
     assert 'steps.guard.outputs.run == \'true\'' in fill_workflow
-    assert "claude_300man_daily_review.py" in declare_workflow
-    assert "claude_300man_daily_review.py" in fill_workflow
-    assert 'cron: "30 12 * * 1-5"' in daily_workflow
-    assert 'cron: "15 13 * * 1-5"' in daily_workflow
-    assert "self_test_groups.py --group critical" in daily_workflow
-    assert "--fail-on-critical" in daily_workflow
-    assert "data/claude_300man_daily_monitor.csv" in daily_workflow
-    assert "claude_300man_reconcile.py" in daily_workflow
-    assert "group: dual-ai-300man-ledger-write" in daily_workflow
-    assert "group: dual-ai-300man-ledger-write" in declare_workflow
     assert "group: dual-ai-300man-ledger-write" in fill_workflow
     repair_policy = (project_root / ".github" / "claude_300man_auto_repair_policy.md").read_text(encoding="utf-8")
     assert "自動マージ" in repair_policy
@@ -4548,7 +4523,9 @@ def _test_dual_300man_phase2_controls() -> None:
     codex_declare_workflow = (
         project_root / ".github" / "workflows" / "codex_300man_declare.yml"
     ).read_text(encoding="utf-8")
-    assert 'cron: "50 9 * * 1-5"' in codex_declare_workflow
+    # cron は7〜9時間遅れて宣告の時間外に届き、毎日失敗していた。中継が 18:50 に起こす。
+    assert "types: [codex_300man_declare]" in codex_declare_workflow
+    assert "schedule:" not in codex_declare_workflow
     assert "daily_discipline_run.py --include-rejected --max-candidates 0" in codex_declare_workflow
     assert 'codex_300man_declare.py --date "${{ steps.guard.outputs.date }}"' in codex_declare_workflow
     assert "git add data/codex_300man_orders.csv" in codex_declare_workflow
