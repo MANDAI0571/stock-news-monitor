@@ -46,6 +46,7 @@ from pathlib import Path
 
 import pandas as pd
 
+import alert_grade
 import nikkei_compare
 from scanner.highs import classify_high_profile
 from scanner.indicators import calculate_indicators
@@ -194,6 +195,10 @@ class Alert:
     #   パラメータごと捨てられ、日経平均の線が出ないことを実機相当で確認した。
     #   リンクをやめ、こちらで計算した数字を載せる。
     nikkei_rel: list = field(default_factory=list)
+    # 2026-10-12: 過去の成績ランク（alert_grade.py）。売買をすすめるものではない。
+    grade: str = ""
+    grade_score: int = 0
+    grade_reasons: list = field(default_factory=list)
 
     def dedup_key(self) -> str:
         return f"{self.code}|{self.alert_type}"
@@ -575,6 +580,9 @@ def build_body(new_alerts: list[Alert], max_items: int | None = None) -> str:
             lines.extend(_format_alert(alert))
         lines.append("")
 
+    if any(a.grade for a in shown):
+        lines.extend(alert_grade.footer_lines())
+        lines.append("")
     lines.append(DISCLAIMER)
     return "\n".join(lines)
 
@@ -623,6 +631,9 @@ def _format_alert(alert: Alert) -> list[str]:
         f"  出来高比:{alert.volume_ratio:.2f}倍 / 売買代金:{alert.turnover_20d / 100_000_000:.1f}億円",
         f"  🗓 決算予定日:{alert.earnings_date}",
     ]
+    if alert.grade:
+        lines.append(f"  🏷 過去の成績ランク:{alert.grade}"
+                     f"（{'、'.join(alert.grade_reasons) or '加点・減点なし'}）")
     # fix61(2026-09-11): 高重さんの指示「チャートをワンクリックで出せるように」。
     lines.append(f"  📈 チャート:{chart_url(alert.code)}")
     # fix(2026-10-06): 比較チャートのURLはスマホで compare= ごと捨てられ、
@@ -734,11 +745,20 @@ def scan(
         print(f"intraday_prefetch={prefetch_stats}", flush=True)
     alerts: list[Alert] = []
     out_of_scope = 0
+    # 過去の成績ランク用: 全銘柄の20日騰落を業種ごとに集め、巡回の後で業種の勢いを出す。
+    ret20_by_sector: dict[str, list[float]] = {}
+    all_ret20: list[float] = []
+    grade_facts: dict[int, tuple[dict | None, str]] = {}
     for idx, stock in enumerate(universe.itertuples(index=False), start=1):
         if idx % 200 == 0:
             print(f"[{idx}/{total}] scanning...", flush=True)
         try:
             history = fetch_price_history(stock.ticker, period=period)
+            facts = alert_grade.facts_from_history(history)
+            sector = str(getattr(stock, "sector", "") or "-")
+            if facts and facts.get("ret20") is not None:
+                ret20_by_sector.setdefault(sector, []).append(facts["ret20"])
+                all_ret20.append(facts["ret20"])
             indicators = calculate_indicators(history)
             if indicators is None:
                 continue
@@ -760,9 +780,19 @@ def scan(
                 out_of_scope += 1
                 continue
             alerts.append(_apply_extra_fields(alert, stock.code))
+            grade_facts[id(alerts[-1])] = (facts, sector)
         except Exception as exc:  # 1銘柄の失敗で全体を止めない
             print(f"skip {stock.ticker}: {exc}", flush=True)
             continue
+    # 業種の勢いは全銘柄を見終わってから出す。取れなかったアラートは等級なし。
+    strength = alert_grade.sector_strength(ret20_by_sector, all_ret20)
+    for alert in alerts:
+        facts, sector = grade_facts.get(id(alert), (None, "-"))
+        try:
+            alert.grade, alert.grade_score, alert.grade_reasons = alert_grade.grade_of(
+                facts, strength.get(sector))
+        except Exception as exc:  # 等級が付けられなくてもアラートは出す
+            print(f"grade skip {alert.code}: {exc}", flush=True)
     print(
         f"intraday_scope_filter=scope:{scope} kept:{len(alerts)} excluded:{out_of_scope}",
         flush=True,
@@ -812,6 +842,9 @@ def _alert_html_card(alert: Alert) -> str:
         f"出来高比:{alert.volume_ratio:.2f}倍 / 売買代金:{alert.turnover_20d / 100_000_000:.1f}億円",
         f"🗓 決算予定日:{escape(alert.earnings_date)}",
     ]
+    if alert.grade:
+        rows.append(f"🏷 過去の成績ランク:<b>{escape(alert.grade)}</b>"
+                    f"（{escape('、'.join(alert.grade_reasons) or '加点・減点なし')}）")
     # fix61(2026-09-11): チャートを1タップで開けるようにする。ボタンの形にして押しやすくする。
     rows.append(
         f'<a class="chart" href="{escape(chart_url(alert.code))}">'
@@ -860,6 +893,9 @@ def build_html_body(new_alerts: list[Alert], max_items: int | None = None) -> st
         parts.append(f'<div class="grp">■ {escape(key)}（{len(group)}件）</div>')
         parts.extend(_alert_html_card(alert) for alert in group)
 
+    if any(a.grade for a in shown):
+        parts.append('<div class="dis">' + "<br>".join(escape(x) for x in alert_grade.footer_lines())
+                     + "</div>")
     parts.append(f'<div class="dis">{escape(DISCLAIMER)}</div>')
     parts.append("</body></html>")
     return "".join(parts)

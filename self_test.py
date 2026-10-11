@@ -156,6 +156,7 @@ def main() -> None:
     _test_intraday_mail_time_is_jst()
     _test_intraday_morning_schedule_redundancy()
     _test_intraday_relay_contract()
+    _test_intraday_alert_grade()
     _test_intraday_openwork_link_only()
     _test_note_split_for_mobile()
     _test_note_split_passes_quality_gate()
@@ -3218,6 +3219,46 @@ def _test_intraday_relay_contract() -> None:
     wait, event, target = plan(2026, 12, 30, 22, 0)
     assert target.date() == dt.date(2027, 1, 4), target
     print("self-test: ザラ場の中継（cronに頼らない起動） OK")
+
+
+def _test_intraday_alert_grade() -> None:
+    """過去の成績ランク（alert_grade.py）の点数と、メールへの載り方（2026-10-12 追加）。"""
+    import numpy as np
+
+    import alert_grade as G
+    from intraday_high_alert import Alert, build_body, build_html_body
+
+    # 点数: 52週高値のすぐ下 +1、値幅の下の方 +1 → SS
+    g, sc, why = G.grade_of({"dist52_pct": -2.0, "close_pos": 0.1, "ret20": 0.01}, 0.0)
+    assert (g, sc) == ("SS", 2), (g, sc, why)
+    # 52週高値から遠い -1、値幅の上の方 -1、業種が弱い -1 → C
+    g, sc, why = G.grade_of({"dist52_pct": -30.0, "close_pos": 0.9, "ret20": 0.0}, -0.05)
+    assert (g, sc) == ("C", -3) and len(why) == 3, (g, sc, why)
+    assert G.grade_of(None, None) == ("", 0, [])
+    # 業種の勢い: 5銘柄未満の業種は出さない
+    st = G.sector_strength({"A": [0.1] * 5, "B": [0.0] * 4}, [0.1] * 5 + [0.0] * 4)
+    assert "A" in st and "B" not in st
+    # 日足から数字を出す（254本に満たなければ None）
+    idx = pd.date_range("2025-01-01", periods=260, freq="B")
+    h = pd.DataFrame({"High": np.linspace(100, 200, 260), "Low": np.linspace(90, 190, 260),
+                      "Close": np.linspace(95, 195, 260)}, index=idx)
+    f = G.facts_from_history(h)
+    assert f is not None and f["dist52_pct"] < 0 and 0 <= f["close_pos"] <= 1
+    assert G.facts_from_history(h.tail(100)) is None
+    # メール: 等級の行と末尾の説明（売買をすすめるものではない）が出る
+    a = Alert(code="1234", name="テスト", current_price=100.0, alert_type="直近高値ブレイク",
+              high_type="SWING_HIGH_BREAK", line_label="直近高値", line_price=95.0, dist_pct=0.0,
+              is_break=True, volume_ratio=1.2, turnover_20d=300_000_000, reason="r",
+              grade="S", grade_score=1, grade_reasons=["52週高値のすぐ下（-2.0%）+1"])
+    body = build_body([a])
+    html = build_html_body([a])
+    for text in (body, html):
+        assert "過去の成績ランク" in text and "売買をすすめるものではありません" in text
+        assert "S: 2022-23 1.17" in text
+    # 等級が無いアラートだけなら、末尾の説明は出さない
+    b = Alert(**{**a.__dict__, "grade": "", "grade_score": 0, "grade_reasons": []})
+    assert "過去の成績ランクについて" not in build_body([b])
+    print("self-test: ザラ場アラートの過去の成績ランク OK")
 
 
 def _test_intraday_openwork_link_only() -> None:
