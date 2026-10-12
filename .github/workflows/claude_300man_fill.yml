@@ -1,4 +1,4 @@
-name: Codex 300man Open Fill
+name: Dual AI 300man Open Fill
 
 on:
   workflow_dispatch:
@@ -93,30 +93,37 @@ jobs:
       - name: Fail when fill request is unsafe
         if: steps.guard.outputs.run != 'true' && steps.guard.outputs.reason != 'jpx_closed'
         run: |
-          echo "::error::Codex fill skipped: ${{ steps.guard.outputs.reason }}"
+          echo "::error::Claude/Codex fill skipped: ${{ steps.guard.outputs.reason }}"
           exit 1
 
       - name: Skip closed days safely
         if: steps.guard.outputs.run != 'true' && steps.guard.outputs.reason == 'jpx_closed'
         run: echo "dual_300man_fill=skip reason=jpx_closed"
 
-      # 【2026-10-11】Claude側の300万円運用は、持ち主の指示で止めた（Codex側だけ続ける）。
-      # Claude側の約定・影の運用・照合・日次監視の手順を外した。記録（data/claude_300man_*）は残す。
-      - name: Record Codex opening fills
+      - name: Record Claude and Codex opening fills
         if: steps.guard.outputs.run == 'true'
         run: |
+          python3 claude_300man_fill.py --date "${{ steps.guard.outputs.date }}"
           python3 codex_300man_fill.py --date "${{ steps.guard.outputs.date }}"
           python3 dual_300man_metrics.py --date "${{ steps.guard.outputs.date }}"
+          python3 dual_300man_compare.py
+          python3 claude_300man_shadow.py --date "${{ steps.guard.outputs.date }}"
+          python3 claude_300man_entry_shadow.py --date "${{ steps.guard.outputs.date }}"
+          python3 claude_300man_reconcile.py --date "${{ steps.guard.outputs.date }}"
+          python3 claude_300man_daily_review.py --date "${{ steps.guard.outputs.date }}"
       - name: Commit both independent ledgers
         if: steps.guard.outputs.run == 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data/codex_300man_orders.csv data/codex_300man_journal.csv docs/codex_300man_ledger.md docs/dual_300man_metrics.md
+          git add data/claude_300man_orders.csv data/claude_300man_journal.csv docs/claude_300man_ledger.md data/codex_300man_orders.csv data/codex_300man_journal.csv docs/codex_300man_ledger.md docs/dual_300man_comparison.md docs/dual_300man_metrics.md data/claude_300man_shadow.csv docs/claude_300man_shadow.md data/claude_300man_entry_shadow.csv docs/claude_300man_entry_shadow.md data/claude_300man_reconciliation.csv docs/claude_300man_reconciliation.md data/claude_300man_daily_monitor.csv data/claude_300man_improvement_candidates.csv docs/claude_300man_daily_monitor.md
           git diff --cached --quiet && exit 0
-          git commit -m "Update Codex 300man journals [skip ci]"
+          git commit -m "Update dual AI 300man journals [skip ci]"
           git pull --rebase origin "${GITHUB_REF_NAME}"
           git push origin HEAD:"${GITHUB_REF_NAME}"
+      - name: Fail visibly on reconciliation findings
+        if: steps.guard.outputs.run == 'true'
+        run: python3 claude_300man_reconcile.py --date "${{ steps.guard.outputs.date }}" --fail-on-critical
       - name: Notify failure by mail
         if: failure()
         env:
