@@ -37,7 +37,7 @@ ROOT = Path(__file__).resolve().parent
 RECORD_PATH = ROOT / "data" / "alert_grade_record.csv"
 SUMMARY_PATH = ROOT / "data" / "alert_grade_forward.json"
 COLUMNS = ["date", "time", "code", "name", "alert_type", "price", "grade", "grade_score",
-           "entry_date", "exit_date", "ret_pct", "status"]
+           "entry_date", "exit_date", "ret_pct", "status", "market"]
 GRADES = ("SS", "S", "A", "B", "C")
 # この日数たっても日足が取れない場面は「取れない」として数えるのをやめる（上場廃止など）。
 GIVE_UP_DAYS = 60
@@ -94,7 +94,8 @@ def collect(paths: list[Path]) -> pd.DataFrame:
                          "name": r.get("name", ""), "alert_type": r.get("alert_type", ""),
                          "price": r.get("current_price", ""), "grade": r["grade"],
                          "grade_score": r.get("grade_score", ""), "entry_date": "",
-                         "exit_date": "", "ret_pct": "", "status": ""})
+                         "exit_date": "", "ret_pct": "", "status": "",
+                         "market": r.get("market", "")})
     out = pd.DataFrame(rows, columns=COLUMNS)
     if out.empty:
         return out

@@ -3249,6 +3249,16 @@ def _test_intraday_alert_grade() -> None:
     # 等級が無いアラートだけなら、末尾の説明は出さない
     b = Alert(**{**a.__dict__, "grade": "", "grade_score": 0, "grade_reasons": []})
     assert "過去の成績ランクについて" not in build_body([b])
+    # 市場ごと（2026-10-12）: スタンダードの数字も載り、グロースは等級なしとその理由
+    for text in (body, html):
+        assert "東証スタンダード（24,249場面）" in text and "S: 2022-23 0.95" in text
+    facts = {"dist52_pct": -2.0, "close_pos": 0.1, "ret20": 0.01}
+    assert G.grade_of(facts, 0.0, "東証グロース") == ("", 0, [G.GROWTH_NOTE])
+    assert G.grade_of(facts, 0.0, "東証スタンダード")[0] == "SS"
+    c = Alert(**{**a.__dict__, "grade": "", "grade_score": 0,
+                 "grade_reasons": [G.GROWTH_NOTE], "market": "東証グロース"})
+    for text in (build_body([c]), build_html_body([c])):
+        assert "過去の成績ランク:なし（グロース市場は" in text and "過去の成績ランクについて" in text
     print("self-test: ザラ場アラートの過去の成績ランク OK")
 
 
