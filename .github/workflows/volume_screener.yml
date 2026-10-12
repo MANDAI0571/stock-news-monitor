@@ -1,0 +1,111 @@
+name: Volume Screener
+
+# 出来高急増×下降トレンドのスクリーナー（東証プライム約1,556銘柄）を GitHub で動かす。
+# 【2026-10-12 追加】もとは持ち主の Mac の定期タスク（14:10）で動かしていたが、
+#   ・Mac がスリープしていると動かない
+#   ・Claude の使用量の上限に当たると、失敗の知らせも出ずに止まる（2026-10-05 の実例）
+# ため、こちらへ移す。中身は volume_screener/（Mac の stock-volume-screener/screener の写し）。
+#
+# 起こし方: 中継（intraday_relay）が立会日の 14:05 に repository_dispatch で起こす。
+#   cron は数時間遅れて届くので予備だけ（今日の記録があれば何もしない）。
+# 試験期間は件名の頭に VS_TAG（【試験・GitHub版】）を付けて送り、Mac 側のメールと読み比べる。
+#   そろったら VS_TAG を空にして Mac 側を止める。VS_SEND が "1" でなければ送らない。
+# push で動いたとき（このファイルを変えたとき）は、前営業日の再現（--asof）で動作だけ確かめる。
+# このリポジトリは公開なので、結果（銘柄）はコミットも成果物（artifact）にもしない。記録
+# （out/history・out/track.json）は外から見えない Actions のキャッシュに置き、画面に出す注記は
+# 状態と件数だけにする。
+
+on:
+  repository_dispatch:
+    types: [volume_screener]
+  schedule:
+    - cron: "20 5 * * 1-5"   # 14:20 JST（予備。遅れて届く）
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/volume_screener.yml"
+
+concurrency:
+  group: volume-screener
+  cancel-in-progress: false
+
+jobs:
+  screen:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    env:
+      SCREENER_OUT: volume_screener/out
+      VS_SEND: "1"
+      VS_TAG: "【試験・GitHub版】"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install "openpyxl>=3.1,<4" "pandas>=2.2,<3.0" "jpholiday>=1.0,<2" >/dev/null
+
+      - name: Restore cache and history
+        uses: actions/cache@v4
+        with:
+          path: |
+            volume_screener/cache
+            volume_screener/out/history
+            volume_screener/out/track.json
+          key: volume-screener-${{ github.run_id }}
+          restore-keys: volume-screener-
+
+      - name: Guard (already ran today)
+        id: guard
+        run: |
+          today=$(TZ=Asia/Tokyo date +%F)
+          if [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            echo "mode=asof" >> "$GITHUB_OUTPUT"
+          elif [ -f "volume_screener/out/history/${today}.json" ] && [ "$GITHUB_EVENT_NAME" != "workflow_dispatch" ]; then
+            echo "volume_screener: ${today} は実行済み（何もしない）"
+            echo "mode=skip" >> "$GITHUB_OUTPUT"
+          else
+            echo "mode=live" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run screener
+        if: steps.guard.outputs.mode == 'live'
+        run: |
+          mkdir -p volume_screener/out
+          # 公開リポジトリの実行ログに銘柄が出ないよう、出力はファイルにだけ残す（失敗メールに末尾を使う）
+          python3 volume_screener/daily_run.py > volume_screener/out/stdout.log 2> volume_screener/out/stderr.log || true
+          echo "::notice title=volume_screener status::$(cat volume_screener/out/status.txt 2>/dev/null || echo MISSING)"
+
+      - name: Send (or dry run)
+        if: steps.guard.outputs.mode == 'live'
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+        run: python3 volume_screener/send.py
+
+      - name: Check run (previous business day, no mail)
+        if: steps.guard.outputs.mode == 'asof'
+        run: |
+          day=$(python3 -c "import sys; sys.path.insert(0, 'volume_screener'); import fetchlib as F, datetime as dt; d = dt.date.today() - dt.timedelta(days=1)
+          while not F.is_business_day(d)[0]: d -= dt.timedelta(days=1)
+          print(d)")
+          # SCREENER_OUT があると --asof もそこに書くので外す（out_asof に書かせる）
+          env -u SCREENER_OUT python3 volume_screener/daily_run.py --asof "$day" > /dev/null 2> asof_stderr.log || true
+          tail -5 asof_stderr.log | grep -v "split_adjusted" || true
+          python3 -c "import json; d = json.load(open('volume_screener/out_asof/result.json')); e = d['errors']; print('::notice title=volume_screener asof ${day}::rows=%d ' % len(d['rows']) + json.dumps({k: e.get(k) for k in ('universe', 'no_bar', 'daily', 'implausible', 'stage_b', 'fund_stale')}))" || echo "::warning title=volume_screener asof ${day}::result.json なし"
+
+
+      - name: Notify failure by mail
+        if: failure()
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+        run: python3 notify_workflow_failure.py

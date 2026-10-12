@@ -156,6 +156,7 @@ def main() -> None:
     _test_intraday_mail_time_is_jst()
     _test_intraday_morning_schedule_redundancy()
     _test_intraday_relay_contract()
+    _test_volume_screener_on_actions()
     _test_intraday_alert_grade()
     _test_alert_grade_track()
     _test_intraday_openwork_link_only()
@@ -3209,7 +3210,49 @@ def _test_intraday_relay_contract() -> None:
     # 年末年始は休み
     wait, event, target = plan(2026, 12, 30, 15, 31)
     assert target.date() == dt.date(2027, 1, 4), target
+    # 14:05 に出来高急増スクリーナーを起こす（2026-10-12 追加）。12:25 に巡回を起こした
+    # 直後の起こし直し（after=12:25）は 14:05 を狙い、同じ 12:25 をもう一度起こさない
+    now = dt.datetime(2026, 10, 13, 12, 25, 30, tzinfo=J)
+    wait, event, target = R.plan(now, R.is_business_day, after=dt.datetime(2026, 10, 13, 12, 25, tzinfo=J))
+    assert (event, target.strftime("%H:%M")) == ("volume_screener", "14:05"), (event, target)
+    wait, event, target = plan(2026, 10, 13, 14, 6)
+    assert (event, wait) == ("volume_screener", 0.0), (event, wait)
+    # 14:05 を起こした後は翌立会日の 08:50（その日の巡回の終わりの中継でも同じ）
+    now = dt.datetime(2026, 10, 13, 14, 5, 10, tzinfo=J)
+    wait, event, target = R.plan(now, R.is_business_day, after=dt.datetime(2026, 10, 13, 14, 5, tzinfo=J))
+    assert target.strftime("%m-%d %H:%M") == "10-14 08:50", target
+    assert "client_payload" in relay and "after" in relay and "${TARGET}" in relay, "起こし直しに after が無い"
     print("self-test: ザラ場の中継（cronに頼らない起動） OK")
+
+
+def _test_volume_screener_on_actions() -> None:
+    """出来高急増スクリーナーの GitHub 版（2026-10-12 追加）。公開リポジトリなので結果を
+    コミットも成果物にもしない。同じ日に2回動かない。送るかどうかは Mac の定期タスクと同じ判断。"""
+    import sys
+    import tempfile
+    from pathlib import Path
+
+    wf = Path(".github/workflows/volume_screener.yml").read_text(encoding="utf-8")
+    assert "types: [volume_screener]" in wf
+    assert "upload-artifact" not in wf and "git push" not in wf and "git add" not in wf
+    assert "contents: read" in wf and "contents: write" not in wf
+    assert "volume_screener/out/history" in wf, "記録はキャッシュに置く"
+    assert 'out/history/${today}.json' in wf, "同じ日の二重実行の歯止め"
+    assert "> volume_screener/out/stdout.log 2> volume_screener/out/stderr.log" in wf
+    assert "notify_workflow_failure.py" in wf
+    sys.path.insert(0, "volume_screener")
+    import send as V
+    d = Path(tempfile.mkdtemp())
+    assert V.decide(d, "2026-10-13")[:2] == ("fail", "【スクリーニング失敗】2026-10-13")
+    (d / "status.txt").write_text("skip"); (d / "subject.txt").write_text("休場 2026-10-12（祝日）のため送信なし")
+    (d / "error.txt").write_text("前回のエラー")
+    kind, subject, body, _ = V.decide(d, "2026-10-13", "今回の標準エラー")
+    assert kind == "fail" and "今回の標準エラー" in body and "前回のエラー" not in body
+    assert V.decide(d, "2026-10-12")[0] == "skip"
+    (d / "status.txt").write_text("send"); (d / "subject.txt").write_text("【出来高急増×下降】2026-10-13 13:55時点 2件")
+    (d / "body.txt").write_text("b"); (d / "body.html").write_text("<p>h</p>")
+    assert V.decide(d, "2026-10-13") == ("send", "【出来高急増×下降】2026-10-13 13:55時点 2件", "b", "<p>h</p>")
+    print("self-test: 出来高急増スクリーナーの GitHub 版 OK")
 
 
 def _test_intraday_alert_grade() -> None:

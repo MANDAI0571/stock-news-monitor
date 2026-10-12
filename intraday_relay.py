@@ -22,9 +22,13 @@ import time
 
 JST = dt.timezone(dt.timedelta(hours=9))
 
-# 巡回を起こす時刻。巡回側は 06:00〜08:59 に起きたら 09:00 まで、
+# 起こす時刻と、送るイベント。巡回側は 06:00〜08:59 に起きたら 09:00 まで、
 # 11:30〜12:29 に起きたら 12:30 まで待ってから巡回に入る。
-SLOTS = (dt.time(8, 50), dt.time(12, 25))
+# 14:05 は出来高急増スクリーナー（volume_screener.yml、2026-10-12 追加）。もとは
+# Mac の定期タスクで14:10に動かしていた。cron は数時間遅れて届くので中継で起こす。
+SLOTS = ((dt.time(8, 50), "intraday_tick"),
+         (dt.time(12, 25), "intraday_tick"),
+         (dt.time(14, 5), "volume_screener"))
 
 # 1回の待ちの上限（分）。ジョブの timeout-minutes 355 と、GitHub の上限
 # 360分の内側に、準備と送信のぶんを残す。
@@ -62,29 +66,33 @@ def is_business_day(d, holiday_lib=None):
 GRACE = dt.timedelta(minutes=3)
 
 
-def next_slot(now, business=is_business_day):
-    """まだ間に合う、立会日の SLOTS の時刻（GRACE 以内に過ぎたものを含む）。"""
+def next_slot(now, business=is_business_day, after=None):
+    """まだ間に合う、立会日の SLOTS の (時刻, イベント)（GRACE 以内に過ぎたものを含む）。
+
+    after を渡すと、その時刻以前のものは選ばない。起こした直後に中継を起こし直す
+    ときに使う（同じ時刻をもう一度起こさないため）。
+    """
     d = now.date()
     for _ in range(20):
         if business(d):
-            for s in SLOTS:
+            for s, event in SLOTS:
                 t = dt.datetime.combine(d, s, JST)
-                if t + GRACE > now:
-                    return t
+                if t + GRACE > now and (after is None or t > after):
+                    return t, event
         d += dt.timedelta(days=1)
     raise RuntimeError("20日先まで立会日が見つからない")
 
 
-def plan(now, business=is_business_day):
+def plan(now, business=is_business_day, after=None):
     """(待つ秒数, 送るイベント, 狙っている時刻) を返す。
 
-    次の時刻まで MAX_WAIT_MIN 以内なら、そこまで待って巡回を起こす。
+    次の時刻まで MAX_WAIT_MIN 以内なら、そこまで待ってそのイベントを送る。
     遠ければ MAX_WAIT_MIN だけ待って中継を起こし直す。
     """
-    target = next_slot(now, business)
+    target, event = next_slot(now, business, after)
     wait = (target - now).total_seconds()
     if wait <= MAX_WAIT_MIN * 60:
-        return max(0.0, wait), "intraday_tick", target
+        return max(0.0, wait), event, target
     return MAX_WAIT_MIN * 60.0, "intraday_relay", target
 
 
@@ -95,7 +103,14 @@ def main():
 
     lib = _jpholiday()
     now = dt.datetime.now(JST)
-    wait, event, target = plan(now, lambda d: is_business_day(d, lib))
+    after = None
+    raw = os.environ.get("RELAY_AFTER", "").strip()
+    if raw:
+        try:
+            after = dt.datetime.fromisoformat(raw)
+        except ValueError:
+            print(f"[RELAY] ignore bad RELAY_AFTER={raw!r}", flush=True)
+    wait, event, target = plan(now, lambda d: is_business_day(d, lib), after)
     print(f"[RELAY] now={now:%Y-%m-%d %H:%M} target={target:%Y-%m-%d %H:%M} "
           f"wait={wait / 60:.0f}min event={event} jpholiday={'yes' if lib else 'no'}",
           flush=True)
@@ -111,6 +126,7 @@ def main():
     if out:
         with open(out, "a", encoding="utf-8") as f:
             f.write(f"event={event}\n")
+            f.write(f"target={target.isoformat()}\n")
     print(f"[RELAY] fire {event} at {dt.datetime.now(JST):%H:%M:%S}", flush=True)
     return 0
 

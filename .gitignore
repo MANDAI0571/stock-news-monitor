@@ -17,3 +17,8 @@ outputs/note_autosave_error.png
 #   git の追跡対象に戻すため。ディレクトリごと無視すると ! が効かない）
 outputs/*
 !outputs/performance_report.md
+
+# 出来高急増スクリーナー（volume_screener/、2026-10-12 追加）。公開リポジトリなので結果は
+# コミットしない（記録は Actions のキャッシュに置く）。
+volume_screener/out/
+volume_screener/out_asof/
