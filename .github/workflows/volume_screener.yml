@@ -74,6 +74,13 @@ jobs:
             echo "mode=live" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Probe kabutan
+        # 2026-10-13 の初回は業績が3件とも取れなかった。株探が GitHub から届くかを応答の番号だけで見る。
+        continue-on-error: true
+        run: |
+          code=$(curl -sS -L -o /dev/null -w "%{http_code}" -A "Mozilla/5.0" --max-time 20 "https://kabutan.jp/stock/finance?code=7203" 2>&1 || true)
+          echo "::notice title=volume_screener kabutan::http=${code}"
+
       - name: Run screener
         if: steps.guard.outputs.mode == 'live'
         run: |
@@ -99,7 +106,7 @@ jobs:
           # SCREENER_OUT があると --asof もそこに書くので外す（out_asof に書かせる）
           env -u SCREENER_OUT python3 volume_screener/daily_run.py --asof "$day" > /dev/null 2> asof_stderr.log || true
           tail -5 asof_stderr.log | grep -v "split_adjusted" || true
-          python3 -c "import json; d = json.load(open('volume_screener/out_asof/result.json')); e = d['errors']; print('::notice title=volume_screener asof ${day}::rows=%d ' % len(d['rows']) + json.dumps({k: e.get(k) for k in ('universe', 'no_bar', 'daily', 'implausible', 'stage_b', 'fund_stale')}))" || echo "::warning title=volume_screener asof ${day}::result.json なし"
+          python3 -c "import json; d = json.load(open('volume_screener/out_asof/result.json')); e = d['errors']; print('::notice title=volume_screener asof ${day}::rows=%d ' % len(d['rows']) + json.dumps({k: e.get(k) for k in ('universe', 'no_bar', 'daily', 'implausible', 'stage_b', 'fund', 'fund_stale')}))" || echo "::warning title=volume_screener asof ${day}::result.json なし"
 
 
       - name: Notify failure by mail

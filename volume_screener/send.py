@@ -54,11 +54,15 @@ def main() -> int:
     if os.environ.get("VS_SEND") != "1":
         print("volume_screener_send=dry_run（VS_SEND が 1 でないので送らない）", flush=True)
         return 0
-    from gmail_notify import load_gmail_config, send_gmail
+    from gmail_notify import GmailConfig, load_gmail_config, send_gmail
     config = load_gmail_config()
     if config is None:
         print("volume_screener_send=failed reason=no_gmail_config", flush=True)
         return 1
+    # 宛先は持ち主（MAIL_TO の1つ目）だけ。MAIL_TO には他の宛先も入っていて、Mac 版
+    # （持ち主宛てだけ）と違う相手にも送っていた（2026-10-13 の初回で判明）。
+    config = GmailConfig(user=config.user, app_password=config.app_password,
+                         mail_to=config.mail_to.split(",")[0].strip())
     send_gmail(subject, body, config, allow_non_business_day=True, html_body=html or None)
     print("volume_screener_send=sent", flush=True)
     return 0
