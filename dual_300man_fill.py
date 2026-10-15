@@ -1,4 +1,4 @@
-"""Codex/Claude 300万円運用の共通・翌寄り約定処理。"""
+"""Claude 300万円運用の翌寄り約定処理（2026-10-16 に Codex 側を削除。名前の dual は当時のまま）。"""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from jpx_calendar import fetch_open_price_yfinance, is_jpx_business_day
 
 
 JST = ZoneInfo("Asia/Tokyo")
-DEFAULT_STRATEGIES = {"claude": "claude_momentum", "codex": "codex_quality_pullback"}
+DEFAULT_STRATEGIES = {"claude": "claude_momentum"}
 
 
 def account_paths(account: str) -> tuple[Path, Path, Path]:

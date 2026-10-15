@@ -4722,21 +4722,10 @@ def _test_dual_300man_phase2_controls() -> None:
     assert "自動マージ" in repair_policy
     assert "claude_300man_repair_guard.py" in repair_policy
 
-    # Codex側の宣告ジョブも同じ条件で守る。2026-10-02まで存在せず、Codex運用は
-    # 買った銘柄が売られないまま固定されていた（損切・利確・期限・新規建てが全部停止）。
-    # Claude側と1行ずつ同じ形にしてあるので、同じ検査をかける。
-    codex_declare_workflow = (
-        project_root / ".github" / "workflows" / "codex_300man_declare.yml"
-    ).read_text(encoding="utf-8")
-    assert 'cron: "50 9 * * 1-5"' in codex_declare_workflow
-    assert "daily_discipline_run.py --include-rejected --max-candidates 0" in codex_declare_workflow
-    assert 'codex_300man_declare.py --date "${{ steps.guard.outputs.date }}"' in codex_declare_workflow
-    assert "git add data/codex_300man_orders.csv" in codex_declare_workflow
-    assert "permissions:\n  contents: write" in codex_declare_workflow
-    assert "notify_workflow_failure.py" in codex_declare_workflow
-    assert "declaration_lost_" in codex_declare_workflow
-    assert "codex_300man_declare_date_moved" in codex_declare_workflow
-    assert "group: dual-ai-300man-ledger-write" in codex_declare_workflow
+    # Codex 側の宣告ジョブは 2026-10-16 に持ち主の指示で削除した。戻っていないこと。
+    assert not (project_root / ".github" / "workflows" / "codex_300man_declare.yml").exists()
+    assert not (project_root / "codex_300man_declare.py").exists()
+    assert "codex" not in fill_workflow.lower() and "dual_300man_compare" not in fill_workflow
 
     # 出来高0の足を値段に使わないこと。Yahooは配信の遅れた日に、前営業日の終値を
     # そのまま持った出来高0の足を返す（2026-09-29/30の9508が実例。終値2,098円・
@@ -4826,8 +4815,8 @@ def _test_dual_300man_phase2_controls() -> None:
             assert updated.iloc[0]["mfe_pct"] == "8.91"
             assert updated.iloc[0]["mae_pct"] == "-3.96"
             report = metrics.build_report(
-                {"codex": updated.iloc[0:0], "claude": updated},
-                {"codex": {"rows": 0, "updated": 0, "price_unavailable": 0}, "claude": stats},
+                {"claude": updated},
+                {"claude": stats},
             )
             assert "20決済未満" in report
             assert "判定翌朝の平均ギャップ" in report

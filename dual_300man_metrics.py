@@ -291,20 +291,24 @@ def _account_report(account: str, journal: pd.DataFrame) -> list[str]:
     return lines
 
 
+# 2026-10-16: 持ち主の指示で Codex 側を削除。Claude だけを集計する。
+ACCOUNTS = ("claude",)
+
+
 def build_report(accounts: dict[str, pd.DataFrame], stats: dict[str, dict[str, int]]) -> str:
     now = datetime.now(JST).strftime("%Y-%m-%d %H:%M JST")
     lines = [
-        "# Codex vs Claude 300万円運用 — 第2期検証レポート", "",
+        "# Claude 300万円運用 — 第2期検証レポート", "",
         f"- 更新: {now}", f"- 期: `{CONFIG.phase_id}`",
         f"- ルール版: `{CONFIG.strategy_version}` / 設定ハッシュ `{CONFIG.rule_hash}`",
         f"- 正本ルール: 1枠{CONFIG.slot_yen:,}円、損切り{CONFIG.stop_loss_pct:.0f}%、利確+{CONFIG.take_profit_pct:.0f}%、{CONFIG.timeout_days}営業日",
         "- 売買コスト・税金: ペーパー運用のため0円（実運用との差として明示）",
         "- トレーリング: 数値ルール未定義のため現在は無効。決済種別とMFEは記録済み。", "",
     ]
-    for account in ("codex", "claude"):
+    for account in ACCOUNTS:
         lines.extend(_account_report(account, accounts[account]))
     lines.extend(["## データ品質", ""])
-    for account in ("codex", "claude"):
+    for account in ACCOUNTS:
         item = stats[account]
         lines.append(
             f"- {account}: {item['updated']}/{item['rows']}行更新、"
@@ -317,7 +321,7 @@ def build_report(accounts: dict[str, pd.DataFrame], stats: dict[str, dict[str, i
 def run(as_of: date | None = None, fetcher: PriceFetcher = fetch_metrics_history) -> dict[str, dict[str, int]]:
     accounts: dict[str, pd.DataFrame] = {}
     stats: dict[str, dict[str, int]] = {}
-    for account in ("codex", "claude"):
+    for account in ACCOUNTS:
         accounts[account], stats[account] = update_account(account, fetcher=fetcher, as_of=as_of)
     REPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
     REPORT_PATH.write_text(build_report(accounts, stats), encoding="utf-8")

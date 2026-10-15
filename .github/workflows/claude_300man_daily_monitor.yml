@@ -95,7 +95,6 @@ jobs:
         run: |
           python3 self_test_groups.py --group critical
           python3 dual_300man_metrics.py --date "${{ steps.guard.outputs.date }}"
-          python3 dual_300man_compare.py
           python3 claude_300man_shadow.py --date "${{ steps.guard.outputs.date }}"
           python3 claude_300man_reconcile.py --date "${{ steps.guard.outputs.date }}"
           python3 claude_300man_daily_review.py --date "${{ steps.guard.outputs.date }}"
@@ -107,8 +106,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add \
             data/claude_300man_journal.csv docs/claude_300man_ledger.md \
-            data/codex_300man_journal.csv docs/codex_300man_ledger.md \
-            docs/dual_300man_comparison.md docs/dual_300man_metrics.md \
+            docs/dual_300man_metrics.md \
             data/claude_300man_shadow.csv docs/claude_300man_shadow.md \
             data/claude_300man_reconciliation.csv \
             docs/claude_300man_reconciliation.md \

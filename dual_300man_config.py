@@ -1,4 +1,4 @@
-"""Codex/Claude 300万円運用の正本設定とCSVスキーマ。
+"""Claude 300万円運用の正本設定とCSVスキーマ（2026-10-16 に Codex 側を削除。名前の dual は当時のまま）。
 
 ルール値を複数のスクリプトへ直書きすると、ローカルとGitHub Actionsで
 別のルールが動いても気づけない。data/dual_300man_start.json を唯一の正本にし、
@@ -158,10 +158,8 @@ CRITICAL_RULE_PATHS = (
     "data/dual_300man_start.json",
     "dual_300man_config.py",
     "claude_300man_declare.py",
-    "codex_300man_declare.py",
     "dual_300man_fill.py",
     "claude_300man_fill.py",
-    "codex_300man_fill.py",
 )
 
 
