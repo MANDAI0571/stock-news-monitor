@@ -2,7 +2,7 @@
 
 注文台帳・約定・保有台帳・現金を突合する安全ゲートです。記録は自動修正しません。
 
-- 基準日: 2026-10-14
+- 基準日: 2026-10-15
 - 判定: **HEALTHY**
 - CRITICAL: 0
 - 新規買い: 許可
@@ -20,4 +20,4 @@
 | INFO | journal_arithmetic | PASS | journal | 5 rows matched |
 | INFO | cash_balance | PASS | paper_cash | cash_jpy=2033400 |
 | INFO | open_position_limits | PASS | portfolio | open=2 max=3 |
-| INFO | pending_rule_compatibility | PASS | pending_orders | count=1 |
+| INFO | pending_rule_compatibility | PASS | pending_orders | count=0 |
