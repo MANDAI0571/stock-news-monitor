@@ -1,40 +1,40 @@
 {
  "since": "2026-10-13",
- "updated": "2026-10-15 22:34",
- "recorded": 341,
+ "updated": "2026-10-16 22:21",
+ "recorded": 510,
  "no_data": 0,
  "grades": {
   "SS": {
    "done": 0,
-   "pending": 27,
+   "pending": 43,
    "pf": null,
    "win": null,
    "avg_pct": null
   },
   "S": {
    "done": 0,
-   "pending": 45,
+   "pending": 65,
    "pf": null,
    "win": null,
    "avg_pct": null
   },
   "A": {
-   "done": 0,
-   "pending": 79,
-   "pf": null,
-   "win": null,
-   "avg_pct": null
+   "done": 1,
+   "pending": 109,
+   "pf": 0.0,
+   "win": 0.0,
+   "avg_pct": -14.78
   },
   "B": {
-   "done": 0,
-   "pending": 160,
-   "pf": null,
-   "win": null,
-   "avg_pct": null
+   "done": 2,
+   "pending": 241,
+   "pf": 1.42,
+   "win": 0.5,
+   "avg_pct": 1.52
   },
   "C": {
    "done": 0,
-   "pending": 30,
+   "pending": 49,
    "pf": null,
    "win": null,
    "avg_pct": null
