@@ -40,7 +40,7 @@ def article_lines(result: dict, track_note: str = "") -> tuple[str, list[str]]:
     title = f"出来高急増×下降トレンド｜{when}時点 {len(rows)}件"
     lines = [f"東証プライム全銘柄（約1,550銘柄）から、下降トレンドの途中で出来高が急に増えた銘柄を"
              f"機械的に探した結果です（{when}時点の値）。",
-             "**売買をすすめるものではありません。**", "",
+             "**売買をすすめるもの（投資助言）ではありません。** 個別のご相談・ご質問にはお答えしていません。", "",
              "## 条件", "",
              "- 出来高が過去20日平均の2倍以上（当日のその時刻までの出来高）",
              "- 現在値 < 25日線 < 75日線、25日線が5本前より低い（下降トレンド）",
@@ -61,7 +61,8 @@ def article_lines(result: dict, track_note: str = "") -> tuple[str, list[str]]:
         if r.get("suspect_split"):
             lines.append("- ※分割が調整されていない疑いがあり、乖離と順位は信用できません")
         lines.append(f"- 日足チャート https://kabutan.jp/stock/chart?code={r['code']}")
-    lines += ["", "---", "", DISCLAIMER]
+    from note_legal import COMPLIANCE_LINES
+    lines += ["", "---", ""] + COMPLIANCE_LINES
     return title, lines
 
 

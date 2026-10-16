@@ -3277,6 +3277,8 @@ def _test_note_two() -> None:
     assert "1. SS　3333" in text and "2. S　2222" in text and "ランクなし　5555" in text
     assert "注意なし1件" in text and "7003 c（200MA）" in text and "7001" not in text.split("押し目")[1].split("##")[0].split("注意あり")[0]
     assert "1. ◎ 8001" in text and "売買をすすめるものではありません" in text
+    from note_legal import COMPLIANCE_LINES
+    assert all(x in lines for x in COMPLIANCE_LINES)
     _, none_lines = N.ranking_lines(dt.date(2026, 10, 15), [], pb.iloc[0:0], None, {}, {}, {})
     assert "本日は数字を取得できませんでした" in "\n".join(none_lines)
     journal = pd.DataFrame([{"status": "OPEN", "code": "9697", "name": "カプコン", "shares": "100", "entry_date": "2026-10-05",
@@ -3287,6 +3289,7 @@ def _test_note_two() -> None:
     _, b = N.portfolio_lines(dt.date(2026, 10, 15), journal, orders, "- 現金残: 2,033,400円\n", {"9697": 4489.0})
     btext = "\n".join(b)
     assert "4,489円（+1.2%、+5,500円）" in btext and "窓が開いたため見送り" in btext and "Codex" not in btext
+    assert all(x in b for x in COMPLIANCE_LINES)
     html = N.body_html(lines)
     assert html.count("<h2>") >= 5 and "<ol>" in html and "<strong>" in html and "<h1>" not in html
     with tempfile.TemporaryDirectory() as tmp:
@@ -3328,6 +3331,8 @@ def _test_note_two_us() -> None:
     text = "\n".join(lines)
     assert "1. UPP Up Inc" in text and "ランクを付けていない理由" in text and "SS" not in text.split("## ランク")[0]
     assert "売買をすすめるものではありません" in text and title.startswith("米株")
+    from note_legal import COMPLIANCE_LINES
+    assert all(x in lines for x in COMPLIANCE_LINES)
     print("self-test: 米株の note 2本立て OK")
 
 
@@ -3389,7 +3394,9 @@ def _test_volume_screener_on_actions() -> None:
     text = "\n".join(lines)
     assert title == "出来高急増×下降トレンド｜2026-10-15 13:55時点 1件"
     assert text.index("その後の文") < text.index(na.PAID_LINE) < text.index("7599")
-    assert "売買をすすめるものではありません" in text
+    # 法律の断り書き（2026-10-16「法律で守ってやってください」）。無料部分にも、最後にも入る
+    assert "投資助言" in text.split(na.PAID_LINE)[0] and "個別のご相談・ご質問" in text.split(na.PAID_LINE)[0]
+    assert "将来の結果を保証するものではありません" in text and "データの正確さは保証できません" in text
     print("self-test: 出来高急増スクリーナーの GitHub 版 OK")
 
 

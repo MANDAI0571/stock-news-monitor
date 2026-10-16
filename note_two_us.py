@@ -25,6 +25,7 @@ import numpy as np
 import pandas as pd
 
 import alert_rank_research as R
+from note_legal import COMPLIANCE_LINES
 from note_two import body_html, write_outputs
 
 ROOT = Path(__file__).resolve().parent
@@ -106,7 +107,7 @@ def ranking_lines(day: dt.date, L: dict[str, list[dict]]) -> tuple[str, list[str
               "手じまい、売買コスト0.2%込み）で確かめると、期間ごとの並びがそろいませんでした。"
               "米株だけで探しても、4つの期間でそろった差はセリングクライマックスの「25日線に近い（浅い）ものは成績が下」"
               "だけでした（並べ方の「深い順」と同じ向きです）。そのため、米株にはランクを付けていません。",
-              "", "---", "", DISCLAIMER]
+              "", "---", ""] + COMPLIANCE_LINES
     return f"米株 高値更新・押し目・セリングクライマックス 一覧｜{day}", lines
 
 
@@ -132,6 +133,7 @@ def build(session: dt.date, output_dir: Path, histories: dict[str, pd.DataFrame]
     pmd = Path(output_dir) / "note_us_portfolio.md"
     ptitle = Path(output_dir) / "note_us_portfolio_title.txt"
     b_lines = [x for x in pmd.read_text(encoding="utf-8").splitlines() if not x.startswith("# ")]
+    b_lines += ["", "---", ""] + COMPLIANCE_LINES
     t_b = ptitle.read_text(encoding="utf-8").strip()
     out = Path(output_dir) / "note_two_us"
     write_outputs(out, [("us_ranking", t_a, l_a), ("us_20k", t_b, b_lines)])

@@ -29,6 +29,7 @@ from pathlib import Path
 import pandas as pd
 
 import alert_grade as G
+from note_legal import COMPLIANCE_LINES
 
 ROOT = Path(__file__).resolve().parent
 JST = dt.timezone(dt.timedelta(hours=9))
@@ -127,7 +128,7 @@ def ranking_lines(day: dt.date, alerts: list, pullback: pd.DataFrame, climax: li
               "4つの期間でそろって差が出たのは次の2つだけでした（損益比。2022-23 / 2024 / 2025 / 2026）。",
               "- 押し目：注意なし 1.37 / 0.93 / 1.77 / 1.48、注意あり（グロース・スタンダード、または60日で+25%以上）0.97 / 0.82 / 1.34 / 1.04",
               "- セリングクライマックス：業種の勢いがとても弱い（◎）2.06 / 2.36 / 3.49 / 1.18、それ以外 1.46 / 1.58 / 1.82 / 0.81",
-              "そのため、この2つには SS〜C ではなく「注意なし」「◎」の印だけを付けています。", "", "---", "", DISCLAIMER]
+              "そのため、この2つには SS〜C ではなく「注意なし」「◎」の印だけを付けています。", "", "---", ""] + COMPLIANCE_LINES
     return f"高値更新・押し目・セリングクライマックス ランキング｜{day}", lines
 
 
@@ -173,7 +174,7 @@ def portfolio_lines(day: dt.date, journal: pd.DataFrame, orders: pd.DataFrame, l
     lines += ["", "## ルール", "",
               "1銘柄あたり最大60万円。終値で判定し、翌営業日の寄付で売買します。損切りは-5%、利確は+12%、最長15営業日。"
               "売買コストと税金は入れていません（紙上運用のため）。", "", "---", "",
-              "紙上運用の記録です。売買をすすめるものではありません。投資の判断はご自身でお願いします。"]
+              "紙上運用の記録です。実際のお金での売買ではありません。", ""] + COMPLIANCE_LINES
     return f"Claudeが300万円運用｜運用状況 {day}", lines
 
 
