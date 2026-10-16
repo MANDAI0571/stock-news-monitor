@@ -117,7 +117,10 @@ jobs:
 
       - name: Save drafts in note.com
         id: save
-        if: steps.day.outputs.run == 'true' && steps.done.outputs.cache-hit != 'true' && github.event_name != 'push'
+        # 確認（push）のときは失敗しても失敗メールを出さない（注記で原因を見る）
+        continue-on-error: ${{ github.event_name == 'push' }}
+        # push の確認では保存しない。ただしコミットの文に [note-save] があるときは保存まで試す（障害の切り分け用）
+        if: steps.day.outputs.run == 'true' && steps.done.outputs.cache-hit != 'true' && (github.event_name != 'push' || contains(github.event.head_commit.message, '[note-save]'))
         env:
           NOTE_STORAGE_STATE: ${{ secrets.NOTE_STORAGE_STATE }}
           NOTE_EMAIL: ${{ secrets.NOTE_EMAIL }}
@@ -133,7 +136,12 @@ jobs:
             echo "休場日のため保存しない"
             exit 0
           fi
-          grep -q "note_draft_saved=2/2" "$OUT/autosave.log" || { echo "::error::note の下書き2本の保存が終わっていない（autosave.log）"; tail -20 "$OUT/autosave.log"; exit 1; }
+          if ! grep -q "note_draft_saved=2/2" "$OUT/autosave.log"; then
+            # 公開リポジトリの注記に出すので、メールアドレスは伏せる。エラーの行だけを出す
+            why=$(grep -E "Error|error|Exception|失敗|不足|Timeout" "$OUT/autosave.log" | tail -3 | sed -E 's/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+/<mail>/g' | tr '\n' ' ' | cut -c1-400)
+            echo "::error title=note の下書き保存::2本の保存が終わっていない: ${why:-（エラーの行なし）}"
+            exit 1
+          fi
           mkdir -p outputs/note_two_done && echo "${{ steps.day.outputs.day }}" > outputs/note_two_done/day.txt
           echo "saved=true" >> "$GITHUB_OUTPUT"
 
