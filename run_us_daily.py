@@ -12,8 +12,8 @@ YAMLからは `python run_us_daily.py` だけを呼ぶ。以後の変更は tmpa
   3. 52週新高値・押し目の記事を作る
   4. 規律ルールで次の営業日の注文を宣告する
   5. $20,000運用の記事を作る
-  6. 記事3本を確かめる（台帳と食い違っていたらここで止める。メールは送らない）
-  7. メールを送り、コピー用ページを公開する
+  6. 記事を確かめる（台帳と食い違っていたらここで止める）
+  7. note の2本立てを作って下書き保存し、台帳を main に残す（2026-10-16 にメールとコピー用ページから変更）
 
 米国市場が開いていない日は何もしない。値段が取れないものは見送る。推測では埋めない。
 """
@@ -52,9 +52,12 @@ def already_published(session: date) -> bool:
     先に走った回が公開ずみなら、後続はここで止める（メールの二重送信を防ぐ）。
     outputs/ は毎回まっさらなので、判定は main の中身で行う。
     """
-    name = f"docs/copy/us_{session.isoformat()}.html"
-    if (PROJECT_ROOT / name).exists():
+    # 2026-10-16 から、コピー用ページの代わりに data/us_daily_done/<日付>.txt を印にする
+    #   （メールとコピー用ページをやめ、note の下書きにしたため）。古い印も見る。
+    marks = (f"data/us_daily_done/{session.isoformat()}.txt", f"docs/copy/us_{session.isoformat()}.html")
+    if any((PROJECT_ROOT / m).exists() for m in marks):
         return True
+    name = marks[0]
     try:
         subprocess.run(
             ["git", "fetch", "--quiet", "origin", "main"],
@@ -67,7 +70,42 @@ def already_published(session: date) -> bool:
     except (OSError, subprocess.SubprocessError) as error:
         print(f"us_daily_guard=unknown reason={error}", flush=True)
         return False
-    return found.returncode == 0
+    if found.returncode == 0:
+        return True
+    old = subprocess.run(["git", "cat-file", "-e", f"origin/main:{marks[1]}"],
+                         cwd=PROJECT_ROOT, capture_output=True, text=True, timeout=60)
+    return old.returncode == 0
+
+
+def _push_ledger(session: date) -> bool:
+    """米株の注文台帳と、その日を終えた印を main に push する。
+    以前はコピー用ページ（us_mail_digest）と一緒に push していた。2026-10-16 にメールと
+    コピー用ページをやめたので、台帳だけをここで残す。"""
+    def run(*args):
+        return subprocess.run(list(args), cwd=PROJECT_ROOT, capture_output=True, text=True, timeout=120)
+    try:
+        mark = PROJECT_ROOT / "data" / "us_daily_done" / f"{session.isoformat()}.txt"
+        mark.parent.mkdir(parents=True, exist_ok=True)
+        mark.write_text(f"{session.isoformat()}\n", encoding="utf-8")
+        run("git", "config", "user.name", "github-actions[bot]")
+        run("git", "config", "user.email", "github-actions[bot]@users.noreply.github.com")
+        targets = [str(mark.relative_to(PROJECT_ROOT))]
+        for extra in ("data/claude_us20k_orders.csv", "data/claude_us20k_journal.csv"):
+            if (PROJECT_ROOT / extra).exists():
+                targets.append(extra)
+        run("git", "add", *targets)
+        if run("git", "diff", "--cached", "--quiet").returncode == 0:
+            return True
+        run("git", "commit", "-m", f"米株の台帳 {session.isoformat()} [skip ci]")
+        for _ in range(3):
+            if run("git", "pull", "--rebase", "origin", "main").returncode == 0 and \
+                    run("git", "push", "origin", "HEAD:main").returncode == 0:
+                return True
+        print("us_daily_ledger=push_failed", flush=True)
+        return False
+    except (OSError, subprocess.SubprocessError) as error:
+        print(f"us_daily_ledger=failed reason={error}", flush=True)
+        return False
 
 
 def _read_stamp() -> str:
@@ -91,7 +129,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="米株の1日ぶんをまとめて回す")
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR))
     parser.add_argument("--limit", type=int, default=None, help="動作確認用。本番では指定しない")
-    parser.add_argument("--no-mail", action="store_true", help="メールを送らない")
+    parser.add_argument("--no-mail", "--no-note", dest="no_mail", action="store_true",
+                        help="note の下書きを保存しない（記事は作る）")
     parser.add_argument(
         "--force", action="store_true", help="同じ営業日でもやり直す（手動再実行用）"
     )
@@ -181,24 +220,22 @@ def main() -> int:
         print(f"us_daily=failed steps={'/'.join(failures)} session={session}", flush=True)
         return 1
 
-    # 7. メールとコピー用ページ
-    if args.no_mail:
-        print("us_daily_mail=skipped reason=disabled", flush=True)
-    else:
-        try:
-            import sys
+    # 7. note の下書き（2026-10-16 持ち主の指示「米株も同じようにして」）。
+    #    日本株と同じく2本立て: 一覧の記事（note_two_us）と $20,000運用の記事（5. で作ったもの）。
+    #    メールとコピー用ページはやめた。台帳は _push_ledger で残す。
+    try:
+        import note_two_us
 
-            import us_mail_digest
-
-            saved = sys.argv
-            sys.argv = ["us_mail_digest.py", "--output-dir", str(output_dir)]
-            try:
-                us_mail_digest.main()
-            finally:
-                sys.argv = saved
-        except Exception:  # noqa: BLE001
-            failures.append("メール")
-            traceback.print_exc()
+        note_dir = note_two_us.build(session, output_dir)
+        if args.no_mail:
+            print("us_daily_note=skipped reason=disabled", flush=True)
+        elif not note_two_us.save_drafts(note_dir):
+            failures.append("note下書き")
+    except Exception:  # noqa: BLE001
+        failures.append("note下書き")
+        traceback.print_exc()
+    if not _push_ledger(session):
+        failures.append("台帳の保存")
 
     if failures:
         print(f"us_daily=failed steps={'/'.join(failures)} session={session}", flush=True)

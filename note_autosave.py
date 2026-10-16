@@ -48,6 +48,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-headless", action="store_false", dest="headless")
     # --single = manifest があっても従来の単一Note(note_daily)だけ保存する保険スイッチ
     parser.add_argument("--single", action="store_true", default=False)
+    # 2026-10-16: 米株の note（run_us_daily.py）は日本時間の朝に動き、土曜は日本の休場日になる。
+    #   米国の営業日の分なので、日本の休場日でも保存する。
+    parser.add_argument("--ignore-jp-holiday", action="store_true", default=False)
     parser.add_argument(
         "--cloud-article",
         action="store_true",
@@ -1227,7 +1230,7 @@ def should_skip_autosave(event_name: str | None = None, today=None) -> tuple[boo
 def main() -> None:
     args = parse_args()
     output_dir = Path(args.output_dir)
-    skip, reason = should_skip_autosave()
+    skip, reason = (False, "米国の営業日の分のため保存します") if args.ignore_jp_holiday else should_skip_autosave()
     print(f"note_autosave_guard={reason}")
     if skip:
         print("note_autosave_skipped=holiday_no_new_data")

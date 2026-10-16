@@ -158,6 +158,7 @@ def main() -> None:
     _test_intraday_relay_contract()
     _test_volume_screener_on_actions()
     _test_note_two()
+    _test_note_two_us()
     _test_intraday_alert_grade()
     _test_alert_grade_track()
     _test_intraday_openwork_link_only()
@@ -3301,6 +3302,35 @@ def _test_note_two() -> None:
     print("self-test: note の2本立て OK")
 
 
+def _test_note_two_us() -> None:
+    """米株の note 2本立て（note_two_us.py、2026-10-16 追加）。最後の足の高値更新・押し目・セリング
+    クライマックスを拾い、ランクは付けない（米株の5年で印がそろわなかったため）。"""
+    import datetime as dt
+
+    import numpy as np
+
+    import note_two_us as U
+
+    days = pd.bdate_range(end="2026-10-15", periods=300)
+    base = np.linspace(100, 150, 300)
+    up = pd.DataFrame({"Open": base, "High": base * 1.01, "Low": base * 0.99, "Close": base,
+                       "Volume": [1e6] * 300}, index=days)
+    up.iloc[-1, up.columns.get_loc("High")] = base.max() * 1.05      # 最後の足で52週高値を更新
+    down = np.concatenate([np.linspace(150, 120, 280), np.linspace(118, 100, 20)])
+    dn = pd.DataFrame({"Open": down, "High": down * 1.01, "Low": down * 0.99, "Close": down,
+                       "Volume": [1e6] * 299 + [5e6]}, index=days)
+    old = up.iloc[:-1]                                              # 最後の足が古い銘柄は使わない
+    L = U.lists_for_day(dt.date(2026, 10, 15), {"UPP": up, "DWN": dn, "OLD": old}, {"UPP": "Up Inc"})
+    assert [x["ticker"] for x in L["hi52"]] == ["UPP"], L["hi52"]
+    assert [x["ticker"] for x in L["climax"]] == ["DWN"], L["climax"]
+    assert not any(x["ticker"] == "OLD" for v in L.values() for x in v)
+    title, lines = U.ranking_lines(dt.date(2026, 10, 15), L)
+    text = "\n".join(lines)
+    assert "1. UPP Up Inc" in text and "ランクを付けていない理由" in text and "SS" not in text.split("## ランク")[0]
+    assert "売買をすすめるものではありません" in text and title.startswith("米株")
+    print("self-test: 米株の note 2本立て OK")
+
+
 def _test_volume_screener_on_actions() -> None:
     """出来高急増スクリーナーの GitHub 版（2026-10-12 追加）。公開リポジトリなので結果を
     コミットも成果物にもしない。同じ日に2回動かない。送るかどうかは Mac の定期タスクと同じ判断。"""
@@ -4189,17 +4219,19 @@ def _test_us_daily_runner() -> None:
         "from note_draft_us import build_us_notes",
         "from us_portfolio import declare_us_orders",
         "from us_portfolio import save_us_portfolio_note",
-        "import us_mail_digest",
+        "import note_two_us",
     ):
         assert needle in source, f"ない: {needle}"
-    # 約定 → スクリーニング → 記事 → 宣告 → 運用記事 → メール の順であること
+    # 2026-10-16: メールとコピー用ページはやめ、note の2本立てを下書き保存する。台帳は _push_ledger で残す
+    assert "import us_mail_digest" not in source and "_push_ledger(session)" in source
+    # 約定 → スクリーニング → 記事 → 宣告 → 運用記事 → note の順であること
     order = [
         source.index("from us_portfolio import fill_us_orders"),
         source.index("from run_screening_us import run_us_screening"),
         source.index("from note_draft_us import build_us_notes"),
         source.index("from us_portfolio import declare_us_orders"),
         source.index("from us_portfolio import save_us_portfolio_note"),
-        source.index("import us_mail_digest"),
+        source.index("import note_two_us"),
     ]
     assert order == sorted(order)
 
@@ -4211,7 +4243,8 @@ def _test_us_daily_runner() -> None:
         assert "notify_workflow_failure.py" in text, path.name
         assert "if: failure()" in text, path.name
         assert "cron:" in text, path.name
-        assert "contents: write" in text, f"{path.name}: コピー用ページのpushに write が要る"
+        assert "contents: write" in text, f"{path.name}: 台帳のpushに write が要る"
+        assert "NOTE_STORAGE_STATE" in text and "playwright install" in text, f"{path.name}: note の下書き保存の準備が無い"
     print(f"self-test: 米株の毎日の入口 OK（ワークフロー {len(us_flows)}本）")
 
 
@@ -4323,7 +4356,7 @@ def _test_us_note_gate() -> None:
 
     source = Path(rd.__file__).read_text(encoding="utf-8")
     assert "from validate_us_notes import" in source
-    assert source.index("validate_us_notes(output_dir)") < source.index("import us_mail_digest")
+    assert source.index("validate_us_notes(output_dir)") < source.index("import note_two_us")
 
     print("self-test: 米株の記事の門番 OK")
 
