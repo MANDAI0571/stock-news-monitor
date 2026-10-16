@@ -53,7 +53,11 @@ jobs:
           import intraday_relay as R
           import note_two as N
           lib = R._jpholiday()
+          import os
           now = dt.datetime.now(N.JST)
+          if os.environ.get("GITHUB_EVENT_NAME") == "push":
+              # 動作の確認だけ。立会中でも前の立会日で作る（保存はしない）
+              now = now.replace(hour=8, minute=0)
           day = N.target_day(now, lambda d: R.is_business_day(d, lib))
           print(f"day={day or ''}")
           print(f"run={'true' if day else 'false'}")
