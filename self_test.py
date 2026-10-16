@@ -157,6 +157,7 @@ def main() -> None:
     _test_intraday_morning_schedule_redundancy()
     _test_intraday_relay_contract()
     _test_volume_screener_on_actions()
+    _test_note_two()
     _test_intraday_alert_grade()
     _test_alert_grade_track()
     _test_intraday_openwork_link_only()
@@ -3077,6 +3078,15 @@ def _test_intraday_mail_is_capped() -> None:
     few = alerts[:5]
     shown2, omitted2 = select_mail_alerts(few, max_items=25)
     assert omitted2 == 0 and len(shown2) == 5
+    # 2026-10-16: ランクの高い順（SS→S→A→B→C→ランクなし）、同じランクは売買代金の大きい順
+    graded = [mk(i, turnover=(i + 1) * 100_000_000) for i in range(6)]
+    for a, g in zip(graded, ("B", "", "SS", "C", "S", "SS")):
+        a.grade = g
+    order = [(a.grade, a.turnover_20d) for a in select_mail_alerts(graded, max_items=25)[0]]
+    assert [g for g, _ in order] == ["SS", "SS", "S", "B", "C", ""], order
+    assert order[0][1] > order[1][1], order
+    top, cut = select_mail_alerts(graded, max_items=2)
+    assert [a.grade for a in top] == ["SS", "SS"] and cut == 4
     assert "省略" not in build_body(few, max_items=25)
     # 0以下は無制限（従来どおり）
     shown3, omitted3 = select_mail_alerts(alerts, max_items=0)
@@ -3188,11 +3198,14 @@ def _test_intraday_relay_contract() -> None:
         now = dt.datetime(*ymdhm, tzinfo=J)
         return R.plan(now, lambda d: R.is_business_day(d) and d not in holidays)
 
-    # 金曜の引け後 → 中継を継いで、月曜 08:50 を狙う
+    # 金曜の引け後 → 16:00 に note の2本立てを起こす（2026-10-16 追加）
     wait, event, target = plan(2026, 10, 9, 15, 31)
+    assert (event, target.strftime("%a %H:%M")) == ("note_daily", "Fri 16:00"), (event, target)
+    # 16:00 を過ぎたら中継を継いで、月曜 08:50 を狙う
+    wait, event, target = plan(2026, 10, 9, 16, 4)
     assert (event, target.strftime("%a %H:%M")) == ("intraday_relay", "Mon 08:50"), (event, target)
     # 祝日の月曜は飛ばす
-    wait, event, target = plan(2026, 10, 9, 15, 31, holidays={dt.date(2026, 10, 12)})
+    wait, event, target = plan(2026, 10, 9, 16, 4, holidays={dt.date(2026, 10, 12)})
     assert target.date() == dt.date(2026, 10, 13), target
     # 朝 08:50 の5時間40分以内なら、巡回を起こす
     wait, event, target = plan(2026, 10, 13, 3, 15)
@@ -3208,7 +3221,7 @@ def _test_intraday_relay_contract() -> None:
     wait, event, target = plan(2026, 10, 13, 8, 54)
     assert target.strftime("%H:%M") == "12:25", target
     # 年末年始は休み
-    wait, event, target = plan(2026, 12, 30, 15, 31)
+    wait, event, target = plan(2026, 12, 30, 16, 4)
     assert target.date() == dt.date(2027, 1, 4), target
     # 14:05 に出来高急増スクリーナーを起こす（2026-10-12 追加）。12:25 に巡回を起こした
     # 直後の起こし直し（after=12:25）は 14:05 を狙い、同じ 12:25 をもう一度起こさない
@@ -3217,12 +3230,75 @@ def _test_intraday_relay_contract() -> None:
     assert (event, target.strftime("%H:%M")) == ("volume_screener", "14:05"), (event, target)
     wait, event, target = plan(2026, 10, 13, 14, 6)
     assert (event, wait) == ("volume_screener", 0.0), (event, wait)
-    # 14:05 を起こした後は翌立会日の 08:50（その日の巡回の終わりの中継でも同じ）
+    # 14:05 を起こした後は 16:00 の note、その後は翌立会日の 08:50
     now = dt.datetime(2026, 10, 13, 14, 5, 10, tzinfo=J)
     wait, event, target = R.plan(now, R.is_business_day, after=dt.datetime(2026, 10, 13, 14, 5, tzinfo=J))
+    assert (event, target.strftime("%m-%d %H:%M")) == ("note_daily", "10-13 16:00"), (event, target)
+    now = dt.datetime(2026, 10, 13, 16, 0, 10, tzinfo=J)
+    wait, event, target = R.plan(now, R.is_business_day, after=dt.datetime(2026, 10, 13, 16, 0, tzinfo=J))
     assert target.strftime("%m-%d %H:%M") == "10-14 08:50", target
     assert "client_payload" in relay and "after" in relay and "${TARGET}" in relay, "起こし直しに after が無い"
     print("self-test: ザラ場の中継（cronに頼らない起動） OK")
+
+
+def _test_note_two() -> None:
+    """note の2本立て（note_two.py、2026-10-16 追加）。記事の日の決め方、本文、manifest、ワークフロー。"""
+    import datetime as dt
+    import json
+    import tempfile
+    from pathlib import Path
+
+    import note_two as N
+    from intraday_high_alert import Alert
+
+    J = N.JST
+    biz = lambda d: d.weekday() < 5  # noqa: E731
+    assert N.target_day(dt.datetime(2026, 10, 16, 16, 0, tzinfo=J), biz) == dt.date(2026, 10, 16)
+    assert N.target_day(dt.datetime(2026, 10, 16, 15, 45, tzinfo=J), biz) is None      # 引け直後は待つ
+    assert N.target_day(dt.datetime(2026, 10, 16, 10, 0, tzinfo=J), biz) is None       # 立会中は作らない
+    assert N.target_day(dt.datetime(2026, 10, 17, 1, 0, tzinfo=J), biz) == dt.date(2026, 10, 16)   # 土曜の夜中
+    assert N.target_day(dt.datetime(2026, 10, 19, 8, 0, tzinfo=J), biz) == dt.date(2026, 10, 16)   # 月曜の朝
+
+    def al(code, grade, kind="52週高値更新", turnover=10**9, market="東証プライム"):
+        return Alert(code=code, name=f"銘柄{code}", current_price=100.0, alert_type=kind, high_type="X",
+                     line_label="52週高値", line_price=99.0, dist_pct=0.0, is_break=True, volume_ratio=1.2,
+                     turnover_20d=turnover, reason="r", grade=grade, market=market)
+    alerts = [al("1111", "B"), al("2222", "S", turnover=5 * 10**9), al("3333", "SS"), al("4444", "A", "直近高値ブレイク"),
+              al("5555", "", market="東証グロース")]
+    pb = pd.DataFrame({"code": ["7001", "7002", "7003"], "name": ["a", "b", "c"], "ma25_touch": [True, True, False],
+                       "ma200_touch": [False, False, True], "turnover_20d": [3e9, 2e9, 1e9]})
+    info = {"7001": ("東証プライム", "機械"), "7002": ("東証グロース", "機械"), "7003": ("東証プライム", "銀行業"),
+            "8001": ("東証プライム", "建設業")}
+    climax = [{"code": "8001", "name": "x", "dev25_pct": -10.0, "ratio": 3.0}]
+    title, lines = N.ranking_lines(dt.date(2026, 10, 15), alerts, pb, climax, info, {"建設業": -0.05}, {"7001": 30.0})
+    text = "\n".join(lines)
+    assert "SS 1件・S 1件" in text and text.index("**SS｜3333") < text.index("**S｜2222")
+    assert "1. SS　3333" in text and "2. S　2222" in text and "ランクなし　5555" in text
+    assert "注意なし1件" in text and "7003 c（200MA）" in text and "7001" not in text.split("押し目")[1].split("##")[0].split("注意あり")[0]
+    assert "1. ◎ 8001" in text and "売買をすすめるものではありません" in text
+    _, none_lines = N.ranking_lines(dt.date(2026, 10, 15), [], pb.iloc[0:0], None, {}, {}, {})
+    assert "本日は数字を取得できませんでした" in "\n".join(none_lines)
+    journal = pd.DataFrame([{"status": "OPEN", "code": "9697", "name": "カプコン", "shares": "100", "entry_date": "2026-10-05",
+                             "entry_price": "4434", "mark_price": "4481", "last_mark_date": "2026-10-15"}]
+                           ).assign(exit_date="", realized_pnl="", exit_return_pct="", exit_reason="")
+    orders = pd.DataFrame([{"decision_date": "2026-10-14", "execution_date": "2026-10-15", "side": "BUY", "code": "8366",
+                            "name": "滋賀銀行", "shares": "200", "status": "CANCELLED_GAP"}])
+    _, b = N.portfolio_lines(dt.date(2026, 10, 15), journal, orders, "- 現金残: 2,033,400円\n", {"9697": 4489.0})
+    btext = "\n".join(b)
+    assert "4,489円（+1.2%、+5,500円）" in btext and "窓が開いたため見送り" in btext and "Codex" not in btext
+    html = N.body_html(lines)
+    assert html.count("<h2>") >= 5 and "<ol>" in html and "<strong>" in html and "<h1>" not in html
+    with tempfile.TemporaryDirectory() as tmp:
+        m = N.write_outputs(Path(tmp), [("ranking", title, lines), ("300man", "t", b)])
+        entries = json.loads(m.read_text(encoding="utf-8"))
+        assert [e["key"] for e in entries] == ["ranking", "300man"]
+        assert all((Path(tmp) / e["html_file"]).exists() and (Path(tmp) / e["title_file"]).exists() for e in entries)
+    wf = Path(".github/workflows/note_daily_drafts.yml").read_text(encoding="utf-8")
+    assert "types: [note_daily]" in wf and "note_draft_saved=2/2" in wf and "github.event_name != 'push'" in wf
+    assert "upload-artifact" not in wf and "git push" not in wf and "contents: read" in wf
+    old = Path(".github/workflows/note_draft_cloud.yml").read_text(encoding="utf-8")
+    assert "\n  schedule:" not in old, "古い4本の note の定時実行が戻っている"
+    print("self-test: note の2本立て OK")
 
 
 def _test_volume_screener_on_actions() -> None:

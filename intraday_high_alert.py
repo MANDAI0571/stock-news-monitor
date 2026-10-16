@@ -531,19 +531,25 @@ def build_subject(new_alerts: list[Alert]) -> str:
     return base
 
 
+# 過去の成績ランクの並び（メールの掲載順）
+GRADE_ORDER = {g: i for i, g in enumerate(alert_grade.GRADES)}
+
+
 def select_mail_alerts(
     new_alerts: list[Alert], max_items: int | None = None
 ) -> tuple[list[Alert], int]:
-    """メール本文に載せる分だけを選ぶ（売買代金の大きい順）。
+    """メール本文に載せる分だけを、過去の成績ランクの高い順（SS→S→A→B→C→ランクなし）、
+    同じランクの中は売買代金の大きい順に並べて選ぶ（2026-10-16 持ち主の指示。以前は
+    売買代金の順だけで、件数が上限以下なら銘柄コード順のままだった）。
 
-    戻り値は (掲載するアラート, 省略した件数)。
-    上限が0以下、または件数が上限以下ならそのまま全件を返す。
+    戻り値は (掲載するアラート, 省略した件数)。上限が0以下なら全件を並べて返す。
     """
     limit = _max_mail_items() if max_items is None else max_items
-    if limit <= 0 or len(new_alerts) <= limit:
-        return list(new_alerts), 0
-    ranked = sorted(new_alerts, key=lambda a: a.turnover_20d, reverse=True)
-    return ranked[:limit], len(new_alerts) - limit
+    ranked = sorted(new_alerts, key=lambda a: (GRADE_ORDER.get(a.grade, len(GRADE_ORDER)),
+                                               -a.turnover_20d))
+    if limit <= 0 or len(ranked) <= limit:
+        return ranked, 0
+    return ranked[:limit], len(ranked) - limit
 
 
 def build_body(new_alerts: list[Alert], max_items: int | None = None) -> str:
@@ -562,7 +568,7 @@ def build_body(new_alerts: list[Alert], max_items: int | None = None) -> str:
         lines.append(f"価格データ日: {_shown}{_extra}")
     if omitted:
         lines.append(
-            f"※本文には売買代金の大きい順に{len(shown)}件だけ掲載しています"
+            f"※本文にはランクの高い順（同じランクは売買代金の大きい順）に{len(shown)}件だけ掲載しています"
             f"（残り{omitted}件は省略）。全件は intraday_high_alerts_*.csv にあります。"
         )
     lines.append("")
@@ -884,7 +890,7 @@ def build_html_body(new_alerts: list[Alert], max_items: int | None = None) -> st
     ]
     if omitted:
         parts.append(
-            f'<p class="cut">※本文には売買代金の大きい順に{len(shown)}件だけ掲載しています'
+            f'<p class="cut">※本文にはランクの高い順（同じランクは売買代金の大きい順）に{len(shown)}件だけ掲載しています'
             f"（残り{omitted}件は省略）。全件は intraday_high_alerts_*.csv にあります。</p>"
         )
 

@@ -1,0 +1,142 @@
+name: Note Daily Drafts
+
+# note の2本立て（2026-10-16 持ち主の指示）。毎営業日の引け後に、
+#   (A) 高値更新・押し目・セリングクライマックス ランキング
+#   (B) Claudeが300万円運用｜運用状況
+# を作り、note に下書き保存する（公開はしない。note_autosave.py の manifest 保存）。
+# 中身は note_two.py。それまでの4本の note（note_draft_cloud.yml）とそのメールは止めた。
+#
+# 起こし方: 中継（intraday_relay）が立会日の 16:00 に note_daily を送る（終値は15分遅れで届くため）。cron は予備
+#   （数時間遅れて届く）。記事の日はその時刻で決め（引け後ならその日、翌朝なら前の立会日、
+#   立会中は作らない）、同じ日を二度保存しないよう、保存できた日を Actions のキャッシュに印として残す。
+# push のとき（このファイルを変えたとき）は、作るところまでで保存はしない（動作の確認）。
+# 公開リポジトリなので、実行ログには銘柄を出さない（スクリーニングの出力はファイルにだけ残す）。
+
+on:
+  repository_dispatch:
+    types: [note_daily]
+  schedule:
+    - cron: "10 8 * * 1-5"    # 17:10 JST（予備）
+    - cron: "10 12 * * 1-5"   # 21:10 JST（予備）
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/note_daily_drafts.yml"
+
+concurrency:
+  group: note-daily-drafts
+  cancel-in-progress: false
+
+jobs:
+  drafts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    env:
+      OUT: outputs/note_two
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Decide the day
+        id: day
+        run: |
+          python -m pip install jpholiday "pandas>=2.2,<3.0" >/dev/null 2>&1 || true
+          python3 - <<'EOF' >> "$GITHUB_OUTPUT"
+          import datetime as dt
+          import intraday_relay as R
+          import note_two as N
+          lib = R._jpholiday()
+          now = dt.datetime.now(N.JST)
+          day = N.target_day(now, lambda d: R.is_business_day(d, lib))
+          print(f"day={day or ''}")
+          print(f"run={'true' if day else 'false'}")
+          EOF
+          cat "$GITHUB_OUTPUT"
+
+      - name: Already saved for this day?
+        id: done
+        if: steps.day.outputs.run == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: outputs/note_two_done
+          key: note-daily-done-${{ steps.day.outputs.day }}
+          lookup-only: true
+
+      - name: Install dependencies
+        if: steps.day.outputs.run == 'true' && steps.done.outputs.cache-hit != 'true'
+        run: |
+          python -m pip install --upgrade pip >/dev/null
+          pip install -r requirements.txt >/dev/null
+          python -m playwright install --with-deps chromium >/dev/null
+
+      - name: Screening (pullback list)
+        if: steps.day.outputs.run == 'true' && steps.done.outputs.cache-hit != 'true'
+        env:
+          PRICE_CACHE_REFRESH: "1"
+        run: |
+          mkdir -p "$OUT"
+          python3 run_screening.py --output-dir "$OUT" --include-rejected > "$OUT/screening.log" 2>&1
+          tail -3 "$OUT/screening.log" | grep -E "timing|screening_summary" | sed 's/candidates=.*//' || true
+
+      - name: Selling climax (close)
+        if: steps.day.outputs.run == 'true' && steps.done.outputs.cache-hit != 'true'
+        run: |
+          pip install "openpyxl>=3.1,<4" >/dev/null
+          python3 volume_screener/daily_run.py --asof "${{ steps.day.outputs.day }}" > /dev/null 2> "$OUT/climax.log" || true
+          tail -2 "$OUT/climax.log" | grep -v "split_adjusted" || true
+
+      - name: Build two articles
+        if: steps.day.outputs.run == 'true' && steps.done.outputs.cache-hit != 'true'
+        env:
+          INTRADAY_USE_WATCHLIST: "0"
+          IH_MIN_TURNOVER: "50000000"
+          PREFETCH_BATCH_SIZE: "200"
+          YFINANCE_THREADS: "true"
+        run: |
+          python3 note_two.py --day "${{ steps.day.outputs.day }}" --out "$OUT" > "$OUT/build.log" 2>&1 || { tail -25 "$OUT/build.log"; exit 1; }
+          grep "^note_two" "$OUT/build.log"
+          test -f "$OUT/note_drafts_manifest.json"
+
+      - name: Save drafts in note.com
+        id: save
+        if: steps.day.outputs.run == 'true' && steps.done.outputs.cache-hit != 'true' && github.event_name != 'push'
+        env:
+          NOTE_STORAGE_STATE: ${{ secrets.NOTE_STORAGE_STATE }}
+          NOTE_EMAIL: ${{ secrets.NOTE_EMAIL }}
+          NOTE_PASSWORD: ${{ secrets.NOTE_PASSWORD }}
+        run: |
+          if command -v xvfb-run >/dev/null 2>&1; then
+            xvfb-run -a python3 note_autosave.py --no-headless --output-dir "$OUT" > "$OUT/autosave.log" 2>&1 || true
+          else
+            python3 note_autosave.py --output-dir "$OUT" > "$OUT/autosave.log" 2>&1 || true
+          fi
+          grep -E "note_auth=|note_autosave_guard|note_autosave_skipped|note_draft_saved=|note_draft_reopen_verified|note_draft_error" "$OUT/autosave.log" || true
+          if grep -q "note_autosave_skipped=holiday_no_new_data" "$OUT/autosave.log"; then
+            echo "休場日のため保存しない"
+            exit 0
+          fi
+          grep -q "note_draft_saved=2/2" "$OUT/autosave.log" || { echo "::error::note の下書き2本の保存が終わっていない（autosave.log）"; tail -20 "$OUT/autosave.log"; exit 1; }
+          mkdir -p outputs/note_two_done && echo "${{ steps.day.outputs.day }}" > outputs/note_two_done/day.txt
+          echo "saved=true" >> "$GITHUB_OUTPUT"
+
+      - name: Remember the saved day
+        if: steps.save.outputs.saved == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: outputs/note_two_done
+          key: note-daily-done-${{ steps.day.outputs.day }}
+
+      - name: Notify failure by mail
+        if: failure()
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+        run: python3 notify_workflow_failure.py

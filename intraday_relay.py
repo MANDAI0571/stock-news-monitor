@@ -26,9 +26,11 @@ JST = dt.timezone(dt.timedelta(hours=9))
 # 11:30〜12:29 に起きたら 12:30 まで待ってから巡回に入る。
 # 14:05 は出来高急増スクリーナー（volume_screener.yml、2026-10-12 追加）。もとは
 # Mac の定期タスクで14:10に動かしていた。cron は数時間遅れて届くので中継で起こす。
+# 16:00 は note の2本立て（note_daily_drafts.yml、2026-10-16 追加）。
 SLOTS = ((dt.time(8, 50), "intraday_tick"),
          (dt.time(12, 25), "intraday_tick"),
-         (dt.time(14, 5), "volume_screener"))
+         (dt.time(14, 5), "volume_screener"),
+         (dt.time(16, 0), "note_daily"))
 
 # 1回の待ちの上限（分）。ジョブの timeout-minutes 355 と、GitHub の上限
 # 360分の内側に、準備と送信のぶんを残す。
