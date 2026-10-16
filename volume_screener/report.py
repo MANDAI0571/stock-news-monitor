@@ -6,6 +6,15 @@
 """
 
 import html as H
+import os
+
+# GitHub 版（2026-10-16 から本番）は株探に届かない（HTTP 405）。業績は取らずに「出していません」と書く。
+NO_FUND_STATE = "出していません"
+NO_FUND_NOTE = "GitHub からは株探（業績の出所）に届かないため、業績は出していません"
+
+
+def _no_fund():
+    return os.environ.get("VS_NO_FUNDAMENTALS") == "1"
 
 SOURCES = (
     "株価・出来高: Yahoo Finance（日足）／"
@@ -114,6 +123,8 @@ def _pct(v):
 
 
 def _fund_note(f):
+    if _no_fund():
+        return NO_FUND_NOTE
     if not f or not f.get("period"):
         return "業績データを取得できませんでした"
     kind = f.get("period_kind") or ""
@@ -137,6 +148,8 @@ def _fund_state(r):
     かった銘柄が②に落ちても誤解は生じなかった。1つの一覧にして銘柄ごとに
     ○×を出すようになったので、取れていないものは「不明」と書く。
     """
+    if _no_fund():
+        return NO_FUND_STATE
     f = r.get("fund") or {}
     rev_known = (f.get("rev_yoy") is not None
                  or f.get("rev_yoy_raw", "") in LOSS_WORDS)
@@ -148,7 +161,7 @@ def _fund_state(r):
 
 def _reason_html(r):
     why = r.get("fund_reason")
-    if not why or _fund_state(r) == "不明":
+    if not why or _fund_state(r) in ("不明", NO_FUND_STATE):
         return ""
     return ('<div style="margin:8px 0 0 0;padding:7px 10px;background:#fff6ef;'
             'border:1px solid #f0d8c4;border-radius:6px;font-size:12px;'
@@ -247,13 +260,12 @@ def card(i, r):
     <div style="{s['sub']}">現在値 &lt; 25日線 &lt; 75日線。25日線は5本前の足の時点（{r['ma25_prev']:,.1f}円）より低い。</div>
   </div>
 
-  <div style="{s['sec']}">{_rows([
-      ("業績の参考条件", _fund_state(r), True),
+  <div style="{s['sec']}">{_rows([("業績の参考条件", _fund_state(r), True)] + ([] if _no_fund() else [
       ("売上高 前年同期比", _yoy(f.get('rev_yoy'), f.get('rev_yoy_raw', '')), False),
       ("営業益 前年同期比", _yoy(f.get('op_yoy'), f.get('op_yoy_raw', '')), False),
       ("ROE", _pct(f.get('roe')), False),
       ("自己資本比率", _pct(f.get('equity_ratio')), False),
-  ])}
+  ]))}
     <div style="{s['sub']}">{_fund_note(f)}</div>
     {_reason_html(r)}
   </div>
@@ -360,7 +372,8 @@ def _text_block(title, rows, start_no, plan):
     for i, r in enumerate(listed):
         f = r.get("fund") or {}
         mark = {"満たす": "参考条件を満たす", "満たさない": "参考条件は満たさない",
-                "不明": "業績の数字が取れず判定できず"}[_fund_state(r)]
+                "不明": "業績の数字が取れず判定できず",
+                NO_FUND_STATE: "業績は出していません"}[_fund_state(r)]
         n = start_no + i
         if i < n_card:
             line = (f"{n}. {r['code']} {r['name']}  [{mark}]\n"
@@ -372,13 +385,14 @@ def _text_block(title, rows, start_no, plan):
                     f"  25日線 {r['ma25']:,.1f} / 75日線 {r['ma75']:,.1f}"
                     f" 現在値は25日線から {r['dev25_pct']:+.1f}%"
                     f"（25日線は5本前の足の時点 {r['ma25_prev']:,.1f}円 より低い）\n"
-                    f"  売上高 {_yoy(f.get('rev_yoy'), f.get('rev_yoy_raw', ''))}"
-                    f" / 営業益 {_yoy(f.get('op_yoy'), f.get('op_yoy_raw', ''))}"
-                    f" ROE {_pct(f.get('roe'))} 自己資本比率 {_pct(f.get('equity_ratio'))}\n"
-                    f"  {_plain(_fund_note(f))}\n"
+                    + ("" if _no_fund() else
+                       f"  売上高 {_yoy(f.get('rev_yoy'), f.get('rev_yoy_raw', ''))}"
+                       f" / 営業益 {_yoy(f.get('op_yoy'), f.get('op_yoy_raw', ''))}"
+                       f" ROE {_pct(f.get('roe'))} 自己資本比率 {_pct(f.get('equity_ratio'))}\n")
+                    + f"  {_plain(_fund_note(f))}\n"
                     f"  20日平均売買代金 {_oku(r['turnover20'])}\n"
                     f"  日足チャート {_chart_url(r['code'])}")
-            if r.get("fund_reason") and _fund_state(r) != "不明":
+            if r.get("fund_reason") and _fund_state(r) not in ("不明", NO_FUND_STATE):
                 line += f"\n  ※業績の参考条件に未達: {r['fund_reason']}"
             if r.get("suspect_split"):
                 line += f"\n  ※要注意: {_split_note(r)}"
@@ -497,7 +511,7 @@ def build(rows, notes, date_label, cutoff_label, failure=None, warning="",
             if n_unknown:
                 inner += f" / 判定できず {n_unknown}"
             subject = (f"【出来高急増×下降】{mark}{date_label} {cutoff_label}時点 "
-                       f"{n}件（業績の参考条件 {inner}）")
+                       + (f"{n}件" if _no_fund() else f"{n}件（業績の参考条件 {inner}）"))
         body, text = _fit(rows)
         warn_html = ""
         if warning:

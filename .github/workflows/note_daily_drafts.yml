@@ -56,8 +56,9 @@ jobs:
           import os
           now = dt.datetime.now(N.JST)
           if os.environ.get("GITHUB_EVENT_NAME") == "push":
-              # 動作の確認だけ。立会中でも前の立会日で作る（保存はしない）
-              now = now.replace(hour=8, minute=0)
+              # 動作の確認だけ。立会中でもその日の途中の値で最後まで作る（保存はしない）。
+              # 前の立会日にすると、取れる株価（今日）と日付が合わず歯止めで止まった（2026-10-16）。
+              now = now.replace(hour=16, minute=0)
           day = N.target_day(now, lambda d: R.is_business_day(d, lib))
           print(f"day={day or ''}")
           print(f"run={'true' if day else 'false'}")
@@ -81,6 +82,8 @@ jobs:
           python -m playwright install --with-deps chromium >/dev/null
 
       - name: Screening (pullback list)
+        # 確認（push）のときは失敗しても失敗メールを出さない（本番の回だけ知らせる）
+        continue-on-error: ${{ github.event_name == 'push' }}
         if: steps.day.outputs.run == 'true' && steps.done.outputs.cache-hit != 'true'
         env:
           PRICE_CACHE_REFRESH: "1"
@@ -90,6 +93,8 @@ jobs:
           tail -3 "$OUT/screening.log" | grep -E "timing|screening_summary" | sed 's/candidates=.*//' || true
 
       - name: Selling climax (close)
+        # 確認（push）のときは失敗しても失敗メールを出さない（本番の回だけ知らせる）
+        continue-on-error: ${{ github.event_name == 'push' }}
         if: steps.day.outputs.run == 'true' && steps.done.outputs.cache-hit != 'true'
         run: |
           pip install "openpyxl>=3.1,<4" >/dev/null
@@ -97,6 +102,8 @@ jobs:
           tail -2 "$OUT/climax.log" | grep -v "split_adjusted" || true
 
       - name: Build two articles
+        # 確認（push）のときは失敗しても失敗メールを出さない（本番の回だけ知らせる）
+        continue-on-error: ${{ github.event_name == 'push' }}
         if: steps.day.outputs.run == 'true' && steps.done.outputs.cache-hit != 'true'
         env:
           INTRADAY_USE_WATCHLIST: "0"

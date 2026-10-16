@@ -10,6 +10,7 @@
            自己資本比率も数字は出すが、条件には入れていない。
 """
 
+import os
 import argparse
 import concurrent.futures as cf
 import datetime as dt
@@ -588,6 +589,8 @@ def run(asof=None, cutoff=dt.time(14, 0), limit=None, workers=8, volmode="prevda
     fbrk = {"streak": 0}
 
     def c(row):
+        if os.environ.get("VS_NO_FUNDAMENTALS") == "1":
+            return {"error": "業績は取得しない（GitHub 版）"}
         with brk_lock:
             offline = (fbrk["streak"] >= FUND_FAIL_STREAK
                        or time.time() - t0 > FUND_BUDGET)
@@ -645,10 +648,13 @@ def run(asof=None, cutoff=dt.time(14, 0), limit=None, workers=8, volmode="prevda
     n_ok = sum(1 for r in rows if r["fund_ok"])
     n_unknown = sum(1 for r in rows if not _fund_known(r.get("fund") or {}))
     n_ng = len(rows) - n_ok - n_unknown
-    notes.append(f"うち業績の参考条件を満たすもの: {n_ok}銘柄"
-                 f" / 満たさないもの: {n_ng}銘柄"
-                 f" / 業績が取れず判定できないもの: {n_unknown}銘柄"
-                 f"（業績の取得失敗 {errors['fund']}）")
+    if os.environ.get("VS_NO_FUNDAMENTALS") == "1":
+        notes.append("業績: GitHub からは株探（業績の出所）に届かないため、出していません")
+    else:
+        notes.append(f"うち業績の参考条件を満たすもの: {n_ok}銘柄"
+                     f" / 満たさないもの: {n_ng}銘柄"
+                     f" / 業績が取れず判定できないもの: {n_unknown}銘柄"
+                     f"（業績の取得失敗 {errors['fund']}）")
 
     # 並び順は「25日線からの乖離が深い順」。2026-10-04 の過去検証で決めた。
     # 2022-01-31〜2026-09-30 の1,329,486銘柄日で、同じ条件の中では乖離が深いほど

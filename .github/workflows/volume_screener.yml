@@ -8,8 +8,7 @@ name: Volume Screener
 #
 # 起こし方: 中継（intraday_relay）が立会日の 14:05 に repository_dispatch で起こす。
 #   cron は数時間遅れて届くので予備だけ（今日の記録があれば何もしない）。
-# 試験期間は件名の頭に VS_TAG（【試験・GitHub版】）を付けて送り、Mac 側のメールと読み比べる。
-#   そろったら VS_TAG を空にして Mac 側を止める。VS_SEND が "1" でなければ送らない。
+# 2026-10-16 から本番はこちらだけ（Mac の定期タスクは停止）。VS_SEND が "1" でなければ送らない。
 # push で動いたとき（このファイルを変えたとき）は、前営業日の再現（--asof）で動作だけ確かめる。
 # このリポジトリは公開なので、結果（銘柄）はコミットも成果物（artifact）にもしない。記録
 # （out/history・out/track.json）は外から見えない Actions のキャッシュに置き、画面に出す注記は
@@ -38,7 +37,10 @@ jobs:
     env:
       SCREENER_OUT: volume_screener/out
       VS_SEND: "1"
-      VS_TAG: "【試験・GitHub版】"
+      # 2026-10-16: 持ち主「出来高急増メールはGitHubだけでいい」。試験の印を外し、Mac の定期タスクは止めた。
+      VS_TAG: ""
+      # 株探は GitHub から届かない（HTTP 405、2026-10-13 に確認）。業績は取らずに「出していません」と書く。
+      VS_NO_FUNDAMENTALS: "1"
     steps:
       - name: Checkout
         uses: actions/checkout@v4

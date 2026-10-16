@@ -3358,6 +3358,25 @@ def _test_volume_screener_on_actions() -> None:
     (d / "status.txt").write_text("send"); (d / "subject.txt").write_text("【出来高急増×下降】2026-10-13 13:55時点 2件")
     (d / "body.txt").write_text("b"); (d / "body.html").write_text("<p>h</p>")
     assert V.decide(d, "2026-10-13") == ("send", "【出来高急増×下降】2026-10-13 13:55時点 2件", "b", "<p>h</p>")
+    # 2026-10-16: GitHub 版だけが本番。試験の印は外し、業績は取らずに「出していません」と書く
+    assert 'VS_TAG: ""' in wf and 'VS_NO_FUNDAMENTALS: "1"' in wf
+    import importlib.util
+    import os as _os
+    spec = importlib.util.spec_from_file_location("vs_report", "volume_screener/report.py")
+    vr = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(vr)
+    saved = _os.environ.get("VS_NO_FUNDAMENTALS")
+    try:
+        _os.environ["VS_NO_FUNDAMENTALS"] = "1"
+        assert vr._fund_state({"fund": {}}) == "出していません"
+        assert "株探" in vr._fund_note({}) and vr._reason_html({"fund_reason": "x"}) == ""
+        _os.environ["VS_NO_FUNDAMENTALS"] = "0"
+        assert vr._fund_state({"fund": {}}) == "不明"
+    finally:
+        if saved is None:
+            _os.environ.pop("VS_NO_FUNDAMENTALS", None)
+        else:
+            _os.environ["VS_NO_FUNDAMENTALS"] = saved
     print("self-test: 出来高急増スクリーナーの GitHub 版 OK")
 
 
