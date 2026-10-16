@@ -3377,6 +3377,19 @@ def _test_volume_screener_on_actions() -> None:
             _os.environ.pop("VS_NO_FUNDAMENTALS", None)
         else:
             _os.environ["VS_NO_FUNDAMENTALS"] = saved
+    # 2026-10-16: 同じ結果から note の有料記事の下書きを作る（公開しない。送らない日は作らない）
+    assert "volume_screener/note_article.py" in wf and "note_draft_saved=1/1" in wf
+    spec2 = importlib.util.spec_from_file_location("vs_note_article", "volume_screener/note_article.py")
+    na = importlib.util.module_from_spec(spec2)
+    spec2.loader.exec_module(na)
+    res = {"date": "2026-10-15", "cutoff": "13:55", "rows": [
+        {"code": "7599", "name": "ＩＤＯＭ", "price": 932.0, "chg_pct": -20.07, "dev25_pct": -21.0, "ratio": 9.32,
+         "base_label": "過去20日平均", "turnover20": 9.2e8, "prev_gap": 0, "suspect_split": None}]}
+    title, lines = na.article_lines(res, "その後の文")
+    text = "\n".join(lines)
+    assert title == "出来高急増×下降トレンド｜2026-10-15 13:55時点 1件"
+    assert text.index("その後の文") < text.index(na.PAID_LINE) < text.index("7599")
+    assert "売買をすすめるものではありません" in text
     print("self-test: 出来高急増スクリーナーの GitHub 版 OK")
 
 

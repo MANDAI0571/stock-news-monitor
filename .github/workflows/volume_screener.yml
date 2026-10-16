@@ -99,6 +99,28 @@ jobs:
           MAIL_TO: ${{ secrets.MAIL_TO }}
         run: python3 volume_screener/send.py
 
+      - name: Note draft (paid article)
+        # 2026-10-16 持ち主「出来高急増メールを有料化してnoteに出したい」。同じ結果から note の
+        # 下書きを1本作る（前半は無料、「▼ここから有料▼」より下が銘柄の一覧）。値段の設定と公開は
+        # 持ち主が note の画面で行う。ここでは公開しない。送らない日（休場・失敗）は作らない。
+        if: steps.guard.outputs.mode == 'live'
+        env:
+          NOTE_STORAGE_STATE: ${{ secrets.NOTE_STORAGE_STATE }}
+          NOTE_EMAIL: ${{ secrets.NOTE_EMAIL }}
+          NOTE_PASSWORD: ${{ secrets.NOTE_PASSWORD }}
+        run: |
+          python3 volume_screener/note_article.py --out outputs/vs_note
+          if [ ! -f outputs/vs_note/note_drafts_manifest.json ]; then exit 0; fi
+          pip install -r requirements.txt >/dev/null
+          python -m playwright install --with-deps chromium >/dev/null
+          if command -v xvfb-run >/dev/null 2>&1; then
+            xvfb-run -a python3 note_autosave.py --no-headless --output-dir outputs/vs_note > outputs/vs_note/autosave.log 2>&1 || true
+          else
+            python3 note_autosave.py --output-dir outputs/vs_note > outputs/vs_note/autosave.log 2>&1 || true
+          fi
+          grep -E "note_auth=|note_draft_saved=|note_draft_reopen_verified|note_draft_error" outputs/vs_note/autosave.log || true
+          grep -q "note_draft_saved=1/1" outputs/vs_note/autosave.log || { echo "::error::出来高急増の note 下書きを保存できなかった"; exit 1; }
+
       - name: Check run (previous business day, no mail)
         if: steps.guard.outputs.mode == 'asof'
         run: |
