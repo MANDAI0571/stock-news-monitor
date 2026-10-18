@@ -146,8 +146,10 @@ jobs:
           if ! grep -q "note_draft_saved=2/2" "$OUT/autosave.log"; then
             # 公開リポジトリの注記に出すので、メールアドレスは伏せる。エラーの行だけを出す
             why=$(grep -E "Error|error|Exception|失敗|不足|Timeout" "$OUT/autosave.log" | tail -3 | sed -E 's/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+/<mail>/g' | tr '\n' ' ' | cut -c1-400)
-            echo "::error title=note の下書き保存::2本の保存が終わっていない: ${why:-（エラーの行なし）}"
-            exit 1
+            # 2026-10-18 持ち主の指示: note のログインやパスワードのことで持ち主を呼び出さない。保存に失敗しても
+          # 失敗メールは出さず、注記（warning）だけ残す。直すのは Claude の側（持ち主に頼まない）。
+            echo "::warning title=note の下書き保存::2本の保存が終わっていない: ${why:-（エラーの行なし）}"
+            exit 0
           fi
           mkdir -p outputs/note_two_done && echo "${{ steps.day.outputs.day }}" > outputs/note_two_done/day.txt
           echo "saved=true" >> "$GITHUB_OUTPUT"

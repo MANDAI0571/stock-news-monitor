@@ -125,7 +125,12 @@ jobs:
             python3 note_autosave.py --output-dir outputs/vs_note > outputs/vs_note/autosave.log 2>&1 || true
           fi
           grep -E "note_auth=|note_draft_saved=|note_draft_reopen_verified|note_draft_error" outputs/vs_note/autosave.log || true
-          grep -q "note_draft_saved=1/1" outputs/vs_note/autosave.log || { echo "::error::出来高急増の note 下書きを保存できなかった"; exit 1; }
+          # 2026-10-18 持ち主の指示: note のログインやパスワードのことで持ち主を呼び出さない。保存に失敗しても
+          # 失敗メールは出さず、注記（warning）だけ残す。直すのは Claude の側（持ち主に頼まない）。
+          if ! grep -q "note_draft_saved=1/1" outputs/vs_note/autosave.log; then
+            why=$(grep -E "Error|error|Exception|失敗|不足|Timeout" outputs/vs_note/autosave.log | tail -2 | sed -E 's/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+/<mail>/g' | tr '\n' ' ' | cut -c1-300)
+            echo "::warning title=出来高急増の note 下書き::保存できなかった: ${why:-（エラーの行なし）}"
+          fi
 
       - name: Check run (previous business day, no mail)
         if: steps.guard.outputs.mode == 'asof'

@@ -230,7 +230,8 @@ def main() -> int:
         if args.no_mail:
             print("us_daily_note=skipped reason=disabled", flush=True)
         elif not note_two_us.save_drafts(note_dir):
-            failures.append("note下書き")
+            # 2026-10-18 持ち主の指示: note のログインのことで持ち主を呼び出さない。失敗メールにしない
+            print("us_daily_note=save_failed（失敗メールにはしない）", flush=True)
     except Exception:  # noqa: BLE001
         failures.append("note下書き")
         traceback.print_exc()
