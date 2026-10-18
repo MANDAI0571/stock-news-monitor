@@ -111,6 +111,12 @@ jobs:
         run: |
           python3 volume_screener/note_article.py --out outputs/vs_note
           if [ ! -f outputs/vs_note/note_drafts_manifest.json ]; then exit 0; fi
+          # note のログイン情報（NOTE_EMAIL / NOTE_PASSWORD）がまだ無い間は保存を飛ばす（失敗メールを出さない）。
+          # 2026-10-16: ログインの控えの期限が切れ、パスワードの登録待ちになった。
+          if [ -z "$NOTE_EMAIL" ] || [ -z "$NOTE_PASSWORD" ]; then
+            echo "::warning title=note の下書き保存::note のログイン情報（NOTE_EMAIL / NOTE_PASSWORD）が未登録のため保存を飛ばしました"
+            exit 0
+          fi
           pip install -r requirements.txt >/dev/null
           python -m playwright install --with-deps chromium >/dev/null
           if command -v xvfb-run >/dev/null 2>&1; then

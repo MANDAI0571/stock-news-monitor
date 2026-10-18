@@ -143,7 +143,12 @@ def build(session: dt.date, output_dir: Path, histories: dict[str, pd.DataFrame]
 
 
 def save_drafts(note_dir: Path) -> bool:
-    """note_autosave.py で2本を下書き保存する（公開しない）。日本の休場日でも保存する（米国の営業日の分）。"""
+    """note_autosave.py で2本を下書き保存する（公開しない）。日本の休場日でも保存する（米国の営業日の分）。
+    note のログイン情報（NOTE_EMAIL / NOTE_PASSWORD）がまだ無い間は飛ばして True を返す
+    （2026-10-16: ログインの控えの期限が切れ、パスワードの登録待ち。失敗メールを出さない）。"""
+    if not (os.environ.get("NOTE_EMAIL", "").strip() and os.environ.get("NOTE_PASSWORD", "").strip()):
+        print("note_two_us_save=skipped reason=no_note_credentials", flush=True)
+        return True
     cmd = ["python3", "note_autosave.py", "--output-dir", str(note_dir), "--ignore-jp-holiday"]
     if subprocess.run(["bash", "-c", "command -v xvfb-run"], capture_output=True).returncode == 0:
         cmd = ["xvfb-run", "-a"] + cmd[:3] + ["--no-headless"] + cmd[3:]

@@ -126,6 +126,12 @@ jobs:
           NOTE_EMAIL: ${{ secrets.NOTE_EMAIL }}
           NOTE_PASSWORD: ${{ secrets.NOTE_PASSWORD }}
         run: |
+          # note のログイン情報（NOTE_EMAIL / NOTE_PASSWORD）がまだ無い間は保存を飛ばす（失敗メールを出さない）。
+          # 2026-10-16: ログインの控えの期限が切れ、パスワードの登録待ちになった。
+          if [ -z "$NOTE_EMAIL" ] || [ -z "$NOTE_PASSWORD" ]; then
+            echo "::warning title=note の下書き保存::note のログイン情報（NOTE_EMAIL / NOTE_PASSWORD）が未登録のため保存を飛ばしました"
+            exit 0
+          fi
           if command -v xvfb-run >/dev/null 2>&1; then
             xvfb-run -a python3 note_autosave.py --no-headless --output-dir "$OUT" > "$OUT/autosave.log" 2>&1 || true
           else
