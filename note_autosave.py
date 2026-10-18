@@ -51,6 +51,8 @@ def parse_args() -> argparse.Namespace:
     # 2026-10-16: 米株の note（run_us_daily.py）は日本時間の朝に動き、土曜は日本の休場日になる。
     #   米国の営業日の分なので、日本の休場日でも保存する。
     parser.add_argument("--ignore-jp-holiday", action="store_true", default=False)
+    # 2026-10-18: ログインして編集画面が開くかだけを確かめる（下書きは作らない・保存しない）
+    parser.add_argument("--login-check", action="store_true", default=False)
     parser.add_argument(
         "--cloud-article",
         action="store_true",
@@ -239,6 +241,7 @@ def _save_one(context, payload: NoteDraftPayload, error_key: str | None = None) 
     image_status = "none"
     try:
         page.goto(NOTE_NEW_URL, wait_until="domcontentloaded", timeout=60_000)
+        page.wait_for_timeout(3000)    # ログイン画面への切り替えは描画の後に起きる
         if "login" in page.url:
             email, password = load_credentials()
             _login(page, email, password)
@@ -819,23 +822,61 @@ def is_saved_draft_url(url: str) -> bool:
     return note_id.lower() != "new"
 
 
+EMAIL_SELECTORS = [
+    'input[placeholder*="メールアドレス"]',
+    'input[placeholder*="note ID"]',
+    'input[type="email"]',
+    'input[name="email"]',
+    'input[name="login"]',
+    'input[autocomplete="username"]',
+]
+PASSWORD_SELECTORS = ['input[type="password"]', 'input[name="password"]']
+
+
+def _login_page_hint(page) -> str:
+    """ログイン画面のままだったときの手がかり（公開の注記に出すので、メールアドレスは伏せる）。"""
+    import re as _re
+    try:
+        inputs = [f"{e.get_attribute('type')}/{(e.get_attribute('placeholder') or '')[:20]}"
+                  for e in page.query_selector_all("input")][:5]
+        buttons = [(e.inner_text() or "").strip()[:12] for e in page.query_selector_all("button")]
+        buttons = [b for b in buttons if b][:6]
+        body = page.inner_text("body")
+        errs = [line.strip()[:60] for line in body.splitlines()
+                if _re.search(r"間違|正しく|認証|確認|ロボット|エラー|失敗|一時的|制限", line)][:3]
+        text = f"入力欄={inputs} ボタン={buttons} 画面の文={errs}"
+        return _re.sub(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+", "<mail>", text)
+    except Exception as exc:                              # noqa: BLE001
+        return f"手がかりを取れず（{type(exc).__name__}）"
+
+
 def _login(page, email: str, password: str) -> None:
-    _fill_first(page, [
-        'input[placeholder*="メールアドレス"]',
-        'input[placeholder*="note ID"]',
-        'input[type="email"]',
-        'input[name="email"]',
-    ], email)
-    _fill_first(page, [
-        'input[type="password"]',
-        'input[name="password"]',
-    ], password)
-    _click_first(page, [
+    """ログイン画面に入力して進む。2026-10-18: 画面が描き終わる前に入力して何も入らず、
+    2秒待つだけで先へ進んでいた（GitHub での失敗はこれと推定）。入力欄が出るまで待ち、
+    入ったことを確かめ、押した後はログイン画面から離れるまで待つ。"""
+    from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+
+    try:
+        page.wait_for_selector(", ".join(EMAIL_SELECTORS), state="visible", timeout=30_000)
+    except PlaywrightTimeoutError:
+        raise RuntimeError(f"noteのログイン画面に入力欄が出ませんでした（{_where(page)} {_login_page_hint(page)}）")
+    if not _fill_first(page, EMAIL_SELECTORS, email):
+        raise RuntimeError(f"noteのログイン画面でメールアドレスを入れられませんでした（{_login_page_hint(page)}）")
+    if not _fill_first(page, PASSWORD_SELECTORS, password):
+        raise RuntimeError(f"noteのログイン画面でパスワードを入れられませんでした（{_login_page_hint(page)}）")
+    if not _click_first(page, [
         'button:has-text("ログイン")',
+        'button[type="submit"]',
         'button:has-text("続ける")',
         'button:has-text("次へ")',
-    ])
-    page.wait_for_timeout(2000)
+    ]):
+        raise RuntimeError(f"noteのログイン画面でログインのボタンを押せませんでした（{_login_page_hint(page)}）")
+    for _ in range(30):
+        if "login" not in page.url:
+            break
+        page.wait_for_timeout(1000)
+    else:
+        raise RuntimeError(f"noteへのログインが通りませんでした（ログイン画面のまま。{_login_page_hint(page)}）")
 
 
 def _where(page) -> str:
@@ -846,6 +887,31 @@ def _where(page) -> str:
         return f"{url} 「{title}」"
     except Exception:                                   # noqa: BLE001
         return "不明"
+
+
+def login_check(headless: bool = True) -> None:
+    """ログインして、新しい記事の編集画面が開くかだけを確かめる。下書きは保存しない。"""
+    from playwright.sync_api import sync_playwright
+
+    _require_auth()
+    with sync_playwright() as playwright:
+        browser, context = _open_context(playwright, headless)
+        page = context.new_page()
+        try:
+            page.goto(NOTE_NEW_URL, wait_until="domcontentloaded", timeout=60_000)
+            page.wait_for_timeout(3000)
+            if "login" in page.url:
+                print("note_login_check=storage_state_expired", flush=True)
+                email, password = load_credentials()
+                _login(page, email, password)
+                page.goto(NOTE_NEW_URL, wait_until="domcontentloaded", timeout=60_000)
+            _wait_for_editor_ready(page, timeout_ms=60_000)
+            print(f"note_login_check=ok {_where(page)}", flush=True)
+        except Exception as exc:                          # noqa: BLE001
+            print(f"note_login_check=failed {exc}", flush=True)
+        finally:
+            context.close()
+            browser.close()
 
 
 def _wait_for_editor_ready(page, timeout_ms: int = 180_000) -> None:
@@ -1246,6 +1312,9 @@ def should_skip_autosave(event_name: str | None = None, today=None) -> tuple[boo
 def main() -> None:
     args = parse_args()
     output_dir = Path(args.output_dir)
+    if args.login_check:
+        login_check(headless=args.headless)
+        return
     skip, reason = (False, "米国の営業日の分のため保存します") if args.ignore_jp_holiday else should_skip_autosave()
     print(f"note_autosave_guard={reason}")
     if skip:
