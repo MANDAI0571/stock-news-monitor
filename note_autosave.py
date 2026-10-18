@@ -243,6 +243,9 @@ def _save_one(context, payload: NoteDraftPayload, error_key: str | None = None) 
             email, password = load_credentials()
             _login(page, email, password)
             page.goto(NOTE_NEW_URL, wait_until="domcontentloaded", timeout=60_000)
+            if "login" in page.url:
+                # パスワードが違う・確認画面（ロボットでないかの確認など）が出た、などでログインが通っていない
+                raise RuntimeError(f"noteへのログインが通りませんでした（開いていた画面: {_where(page)}）")
         try:
             _wait_for_editor_ready(page)
             _fill_title_verified(page, payload.title)
@@ -835,6 +838,16 @@ def _login(page, email: str, password: str) -> None:
     page.wait_for_timeout(2000)
 
 
+def _where(page) -> str:
+    """いま開いている画面の場所と題（公開の注記に出してよい形。問い合わせ部分は落とす）。"""
+    try:
+        url = str(page.url or "").split("?", 1)[0].split("#", 1)[0]
+        title = str(page.title() or "")[:60]
+        return f"{url} 「{title}」"
+    except Exception:                                   # noqa: BLE001
+        return "不明"
+
+
 def _wait_for_editor_ready(page, timeout_ms: int = 180_000) -> None:
     """note.com はSPA。goto直後はローディング表示だけで、タイトル/本文の編集欄は
     まだDOMに無い（失敗時スクショが3点ローディングだけだったのが証拠）。
@@ -863,7 +876,10 @@ def _wait_for_editor_ready(page, timeout_ms: int = 180_000) -> None:
         try:
             page.wait_for_selector(editor_selectors, state="visible", timeout=timeout_ms)
         except PlaywrightTimeoutError as exc:
-            raise RuntimeError("noteエディタの読み込みが完了しませんでした（描画待ちタイムアウト）") from exc
+            # 2026-10-18: どの画面で止まったか（ログイン画面のままか、編集画面か）を残す。
+            #   公開の注記に出るので、問い合わせ部分（? 以降）は落とし、画面の題だけを付ける。
+            raise RuntimeError("noteエディタの読み込みが完了しませんでした（描画待ちタイムアウト。開いていた画面: "
+                               f"{_where(page)}）") from exc
 
     # 描画直後はまだ入力を受け付けない事があるので少し待つ
     page.wait_for_timeout(1500)
