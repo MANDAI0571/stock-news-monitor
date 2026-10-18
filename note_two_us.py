@@ -142,20 +142,10 @@ def build(session: dt.date, output_dir: Path, histories: dict[str, pd.DataFrame]
     return out
 
 
-def save_drafts(note_dir: Path) -> bool:
-    """note_autosave.py で2本を下書き保存する（公開しない）。日本の休場日でも保存する（米国の営業日の分）。
-    note のログイン情報（NOTE_EMAIL / NOTE_PASSWORD）がまだ無い間は飛ばして True を返す
-    （2026-10-16: ログインの控えの期限が切れ、パスワードの登録待ち。失敗メールを出さない）。"""
-    if not (os.environ.get("NOTE_EMAIL", "").strip() and os.environ.get("NOTE_PASSWORD", "").strip()):
-        print("note_two_us_save=skipped reason=no_note_credentials", flush=True)
-        return True
-    cmd = ["python3", "note_autosave.py", "--output-dir", str(note_dir), "--ignore-jp-holiday"]
-    if subprocess.run(["bash", "-c", "command -v xvfb-run"], capture_output=True).returncode == 0:
-        cmd = ["xvfb-run", "-a"] + cmd[:3] + ["--no-headless"] + cmd[3:]
-    p = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, env=os.environ.copy())
-    log = (p.stdout or "") + (p.stderr or "")
-    (Path(note_dir) / "autosave.log").write_text(log, encoding="utf-8")
-    for line in log.splitlines():
-        if line.startswith(("note_auth=", "note_draft_saved=", "note_draft_reopen_verified", "note_draft_error")):
-            print(line, flush=True)
-    return "note_draft_saved=2/2" in log
+def save_drafts(note_dir: Path, session=None) -> bool:
+    """2本を note 貼り付け用のメールで持ち主に届ける（2026-10-18 から。note は reCAPTCHA で
+    自動ログインできないため、下書きへの自動保存はやめた）。名前は呼び出し側との互換のため残す。"""
+    import note_mail
+
+    day = f"{session} " if session else ""
+    return note_mail.send(Path(note_dir), f"【note貼り付け用】{day}米株（一覧・Claudeの$20,000運用）")

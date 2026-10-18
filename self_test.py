@@ -3298,7 +3298,8 @@ def _test_note_two() -> None:
         assert [e["key"] for e in entries] == ["ranking", "300man"]
         assert all((Path(tmp) / e["html_file"]).exists() and (Path(tmp) / e["title_file"]).exists() for e in entries)
     wf = Path(".github/workflows/note_daily_drafts.yml").read_text(encoding="utf-8")
-    assert "types: [note_daily]" in wf and "note_draft_saved=2/2" in wf and "github.event_name != 'push'" in wf
+    assert "types: [note_daily]" in wf and "python3 note_mail.py" in wf and "github.event_name != 'push'" in wf
+    assert "note_autosave.py" not in wf, "note は reCAPTCHA で自動ログインできない（2026-10-18）"
     assert "upload-artifact" not in wf and "git push" not in wf and "contents: read" in wf
     old = Path(".github/workflows/note_draft_cloud.yml").read_text(encoding="utf-8")
     assert "\n  schedule:" not in old, "古い4本の note の定時実行が戻っている"
@@ -3383,7 +3384,7 @@ def _test_volume_screener_on_actions() -> None:
         else:
             _os.environ["VS_NO_FUNDAMENTALS"] = saved
     # 2026-10-16: 同じ結果から note の有料記事の下書きを作る（公開しない。送らない日は作らない）
-    assert "volume_screener/note_article.py" in wf and "note_draft_saved=1/1" in wf
+    assert "volume_screener/note_article.py" in wf and "python3 note_mail.py" in wf and "note_autosave.py" not in wf
     spec2 = importlib.util.spec_from_file_location("vs_note_article", "volume_screener/note_article.py")
     na = importlib.util.module_from_spec(spec2)
     spec2.loader.exec_module(na)
@@ -4283,7 +4284,7 @@ def _test_us_daily_runner() -> None:
         assert "if: failure()" in text, path.name
         assert "cron:" in text, path.name
         assert "contents: write" in text, f"{path.name}: 台帳のpushに write が要る"
-        assert "NOTE_STORAGE_STATE" in text and "playwright install" in text, f"{path.name}: note の下書き保存の準備が無い"
+        assert "GMAIL_APP_PASSWORD" in text, f"{path.name}: note 貼り付け用のメールを送る準備が無い"
     print(f"self-test: 米株の毎日の入口 OK（ワークフロー {len(us_flows)}本）")
 
 

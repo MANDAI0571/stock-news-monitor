@@ -3,7 +3,7 @@ name: Note Daily Drafts
 # note の2本立て（2026-10-16 持ち主の指示）。毎営業日の引け後に、
 #   (A) 高値更新・押し目・セリングクライマックス ランキング
 #   (B) Claudeが300万円運用｜運用状況
-# を作り、note に下書き保存する（公開はしない。note_autosave.py の manifest 保存）。
+# を作り、持ち主に note 貼り付け用のメールで届ける（2026-10-18 から。note は reCAPTCHA で自動ログインできないため）。
 # 中身は note_two.py。それまでの4本の note（note_draft_cloud.yml）とそのメールは止めた。
 #
 # 起こし方: 中継（intraday_relay）が立会日の 16:00 に note_daily を送る（終値は15分遅れで届くため）。cron は予備
@@ -11,7 +11,9 @@ name: Note Daily Drafts
 #   立会中は作らない）、同じ日を二度保存しないよう、保存できた日を Actions のキャッシュに印として残す。
 # push のとき（このファイルを変えたとき）は、作るところまでで保存はしない（動作の確認）。
 # 公開リポジトリなので、実行ログには銘柄を出さない（スクリーニングの出力はファイルにだけ残す）。
-# 2026-10-18: 持ち主が NOTE_EMAIL / NOTE_PASSWORD を登録した（12:13 にパスワードを入れ替え）。[note-save] の確認で保存まで試す（失敗時は開いていた画面を注記に出す）。
+# 2026-10-18: note のログイン画面が reCAPTCHA を求め、自動ログインできないと分かった（突破はしない）。
+#   下書きへの自動保存はやめ、note に貼り付けるだけの形で持ち主にメールで届ける（note_mail.py）。
+#   push の確認ではメールを送らない。コミットの文に [note-mail] があるときだけ送る。
 
 on:
   repository_dispatch:
@@ -76,34 +78,15 @@ jobs:
           lookup-only: true
 
       - name: Install dependencies
-        if: steps.day.outputs.run == 'true' && steps.done.outputs.cache-hit != 'true' && !contains(github.event.head_commit.message || '', '[note-login-check]')
+        if: steps.day.outputs.run == 'true' && steps.done.outputs.cache-hit != 'true'
         run: |
           python -m pip install --upgrade pip >/dev/null
           pip install -r requirements.txt >/dev/null
-          python -m playwright install --with-deps chromium >/dev/null
-
-      - name: Note login check (no draft)
-        # 2026-10-18: コミットの文に [note-login-check] があるときだけ、ログインして編集画面が開くかを数分で確かめる
-        if: github.event_name == 'push' && contains(github.event.head_commit.message, '[note-login-check]')
-        env:
-          NOTE_STORAGE_STATE: ${{ secrets.NOTE_STORAGE_STATE }}
-          NOTE_EMAIL: ${{ secrets.NOTE_EMAIL }}
-          NOTE_PASSWORD: ${{ secrets.NOTE_PASSWORD }}
-        run: |
-          pip install -r requirements.txt >/dev/null
-          python -m playwright install --with-deps chromium >/dev/null
-          if command -v xvfb-run >/dev/null 2>&1; then
-            xvfb-run -a python3 note_autosave.py --no-headless --login-check > login_check.log 2>&1 || true
-          else
-            python3 note_autosave.py --login-check > login_check.log 2>&1 || true
-          fi
-          line=$(grep -E "note_login_check=" login_check.log | tail -2 | sed -E 's/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+/<mail>/g' | tr '\n' ' ' | cut -c1-700)
-          echo "::notice title=note のログイン確認::${line:-（結果の行なし）}"
 
       - name: Screening (pullback list)
         # 確認（push）のときは失敗しても失敗メールを出さない（本番の回だけ知らせる）
         continue-on-error: ${{ github.event_name == 'push' }}
-        if: steps.day.outputs.run == 'true' && steps.done.outputs.cache-hit != 'true' && !contains(github.event.head_commit.message || '', '[note-login-check]')
+        if: steps.day.outputs.run == 'true' && steps.done.outputs.cache-hit != 'true'
         env:
           PRICE_CACHE_REFRESH: "1"
         run: |
@@ -114,7 +97,7 @@ jobs:
       - name: Selling climax (close)
         # 確認（push）のときは失敗しても失敗メールを出さない（本番の回だけ知らせる）
         continue-on-error: ${{ github.event_name == 'push' }}
-        if: steps.day.outputs.run == 'true' && steps.done.outputs.cache-hit != 'true' && !contains(github.event.head_commit.message || '', '[note-login-check]')
+        if: steps.day.outputs.run == 'true' && steps.done.outputs.cache-hit != 'true'
         run: |
           pip install "openpyxl>=3.1,<4" >/dev/null
           python3 volume_screener/daily_run.py --asof "${{ steps.day.outputs.day }}" > /dev/null 2> "$OUT/climax.log" || true
@@ -123,7 +106,7 @@ jobs:
       - name: Build two articles
         # 確認（push）のときは失敗しても失敗メールを出さない（本番の回だけ知らせる）
         continue-on-error: ${{ github.event_name == 'push' }}
-        if: steps.day.outputs.run == 'true' && steps.done.outputs.cache-hit != 'true' && !contains(github.event.head_commit.message || '', '[note-login-check]')
+        if: steps.day.outputs.run == 'true' && steps.done.outputs.cache-hit != 'true'
         env:
           INTRADAY_USE_WATCHLIST: "0"
           IH_MIN_TURNOVER: "50000000"
@@ -134,41 +117,17 @@ jobs:
           grep "^note_two" "$OUT/build.log"
           test -f "$OUT/note_drafts_manifest.json"
 
-      - name: Save drafts in note.com
+      - name: Mail articles for pasting
         id: save
-        # 確認（push）のときは失敗しても失敗メールを出さない（注記で原因を見る）
-        continue-on-error: ${{ github.event_name == 'push' }}
-        # push の確認では保存しない。ただしコミットの文に [note-save] があるときは保存まで試す（障害の切り分け用）
-        if: steps.day.outputs.run == 'true' && steps.done.outputs.cache-hit != 'true' && !contains(github.event.head_commit.message || '', '[note-login-check]') && (github.event_name != 'push' || contains(github.event.head_commit.message, '[note-save]'))
+        # 2026-10-18: note は reCAPTCHA で自動ログインできない（突破はしない）。記事は持ち主に
+        # メールで届け、note には貼り付けるだけにする。push の確認では送らない（[note-mail] があれば送る）。
+        if: steps.day.outputs.run == 'true' && steps.done.outputs.cache-hit != 'true' && (github.event_name != 'push' || contains(github.event.head_commit.message, '[note-mail]'))
         env:
-          NOTE_STORAGE_STATE: ${{ secrets.NOTE_STORAGE_STATE }}
-          NOTE_EMAIL: ${{ secrets.NOTE_EMAIL }}
-          NOTE_PASSWORD: ${{ secrets.NOTE_PASSWORD }}
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
         run: |
-          # note のログイン情報（NOTE_EMAIL / NOTE_PASSWORD）がまだ無い間は保存を飛ばす（失敗メールを出さない）。
-          # 2026-10-16: ログインの控えの期限が切れ、パスワードの登録待ちになった。
-          if [ -z "$NOTE_EMAIL" ] || [ -z "$NOTE_PASSWORD" ]; then
-            echo "::warning title=note の下書き保存::note のログイン情報（NOTE_EMAIL / NOTE_PASSWORD）が未登録のため保存を飛ばしました"
-            exit 0
-          fi
-          if command -v xvfb-run >/dev/null 2>&1; then
-            xvfb-run -a python3 note_autosave.py --no-headless --output-dir "$OUT" > "$OUT/autosave.log" 2>&1 || true
-          else
-            python3 note_autosave.py --output-dir "$OUT" > "$OUT/autosave.log" 2>&1 || true
-          fi
-          grep -E "note_auth=|note_autosave_guard|note_autosave_skipped|note_draft_saved=|note_draft_reopen_verified|note_draft_error" "$OUT/autosave.log" || true
-          if grep -q "note_autosave_skipped=holiday_no_new_data" "$OUT/autosave.log"; then
-            echo "休場日のため保存しない"
-            exit 0
-          fi
-          if ! grep -q "note_draft_saved=2/2" "$OUT/autosave.log"; then
-            # 公開リポジトリの注記に出すので、メールアドレスは伏せる。エラーの行だけを出す
-            why=$(grep -E "Error|error|Exception|失敗|不足|Timeout" "$OUT/autosave.log" | tail -3 | sed -E 's/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+/<mail>/g' | tr '\n' ' ' | cut -c1-400)
-            # 2026-10-18 持ち主の指示: note のログインやパスワードのことで持ち主を呼び出さない。保存に失敗しても
-          # 失敗メールは出さず、注記（warning）だけ残す。直すのは Claude の側（持ち主に頼まない）。
-            echo "::warning title=note の下書き保存::2本の保存が終わっていない: ${why:-（エラーの行なし）}"
-            exit 0
-          fi
+          python3 note_mail.py --dir "$OUT" --subject "【note貼り付け用】${{ steps.day.outputs.day }} 日本株（ランク記事・Claudeの300万円運用）"
           mkdir -p outputs/note_two_done && echo "${{ steps.day.outputs.day }}" > outputs/note_two_done/day.txt
           echo "saved=true" >> "$GITHUB_OUTPUT"
 
