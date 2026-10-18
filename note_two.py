@@ -258,7 +258,10 @@ def main(argv=None) -> int:
     from scanner.prices import fetch_price_history
     from scanner.universe import UniverseConfig, load_jpx_listed
 
-    alerts = [x for x in M.scan(markets=("prime", "standard", "growth"), scope="break") if x.is_fresh_break]
+    # 先に動く run_screening.py と同じ18か月分にそろえ、その控え（cache/prices）をそのまま使う。
+    # 14か月分にしていたので、同じ株価を2回取りに行き、記事づくりに12分かかっていた（2026-10-18）。
+    alerts = [x for x in M.scan(markets=("prime", "standard", "growth"), scope="break", period="18mo")
+              if x.is_fresh_break]
     bars = {x.bar_date for x in alerts if x.bar_date}
     if bars and max(bars) != day.isoformat():
         raise SystemExit(f"note_two: 価格データの日付 {sorted(bars)} が記事の日 {day} と違うので作りません")
@@ -267,7 +270,7 @@ def main(argv=None) -> int:
     orders = pd.read_csv(ROOT / "data" / "claude_300man_orders.csv", dtype=str)
     held = set(journal.loc[journal["status"] == "OPEN", "code"].astype(str))
     info, strength, mom60, closes = market_facts(
-        universe, lambda t: fetch_price_history(t, period="14mo"), held)
+        universe, lambda t: fetch_price_history(t, period="18mo"), held)
     pbs = sorted(out.glob("screening_pullback_*.csv"))
     pullback = pd.read_csv(pbs[-1], dtype={"code": str}) if pbs else pd.DataFrame(
         columns=["code", "name", "ma25_touch", "ma200_touch", "turnover_20d"])
