@@ -67,9 +67,17 @@ jobs:
         id: guard
         run: |
           today=$(TZ=Asia/Tokyo date +%F)
+          hm=$((10#$(TZ=Asia/Tokyo date +%H%M)))
+          # 今日の記録が「予定の時間帯に取ったもの」かどうか（予定より前の手動の回で止めないため）
+          done_ok=$(python3 -c "import json,sys; d=json.load(open('volume_screener/out/history/${today}.json')); print('yes' if d.get('within_window', True) else 'no')" 2>/dev/null || echo "none")
           if [ "$GITHUB_EVENT_NAME" = "push" ]; then
             echo "mode=asof" >> "$GITHUB_OUTPUT"
-          elif [ -f "volume_screener/out/history/${today}.json" ] && [ "$GITHUB_EVENT_NAME" != "workflow_dispatch" ]; then
+          elif [ "$GITHUB_EVENT_NAME" = "schedule" ] && { [ "$hm" -lt 1420 ] || [ "$done_ok" = "yes" ]; }; then
+            # 予備の cron は 14:20 より前に届いても動かさない（夜中に前日分が届くと失敗メールになり、
+            # 午前に届くと途中の出来高で今日の記録を作って 14:05 の本番を止めていた。2026-10-19 の見直し）
+            echo "volume_screener: 予備の定期実行は動かさない（${hm} / 今日の記録 ${done_ok}）"
+            echo "mode=skip" >> "$GITHUB_OUTPUT"
+          elif [ "$done_ok" = "yes" ] && [ "$GITHUB_EVENT_NAME" != "workflow_dispatch" ]; then
             echo "volume_screener: ${today} は実行済み（何もしない）"
             echo "mode=skip" >> "$GITHUB_OUTPUT"
           else
@@ -100,6 +108,9 @@ jobs:
         run: python3 volume_screener/send.py
 
       - name: Note article (paid) by mail
+        # 失敗しても、出来高急増のメールは送り済み。ジョブを失敗にすると今日の記録がキャッシュに残らず、
+        # 予備の cron がもう一度メールを送っていた（2026-10-19 の見直し）
+        continue-on-error: true
         # 2026-10-16 持ち主「出来高急増メールを有料化してnoteに出したい」。同じ結果から note の
         # 有料記事（前半は無料、「▼ここから有料▼」より下が銘柄の一覧）を作り、貼り付け用のメールで届ける
         # （2026-10-18: note は reCAPTCHA で自動ログインできないため）。値段の設定と公開は持ち主が行う。

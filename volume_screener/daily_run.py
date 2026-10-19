@@ -233,8 +233,10 @@ def _early_reason(now, scheduled):
     return (f"予定の{scheduled}に実行できず、{now.strftime('%H:%M')}に動きました。"
             f"{why_no_price}、判定していません。\n"
             f"{lost}\n"
-            f"考えられる原因: 予定の時刻にMacがスリープしていたか、"
-            f"アプリが終了していた。本日の{scheduled}には自動で動きます。")
+            + (f"考えられる原因: 中継が予定の時刻に起こせず、予備の定期実行が遅れて届いた。"
+               f"本日の{scheduled}には自動で動きます。" if os.environ.get("GITHUB_ACTIONS") == "true" else
+               f"考えられる原因: 予定の時刻にMacがスリープしていたか、"
+               f"アプリが終了していた。本日の{scheduled}には自動で動きます。"))
 
 
 def _send_status(asof):
@@ -500,7 +502,11 @@ def _main(got):
     # 定期実行はMacが起きていてアプリが開いている時間しか動かない。
     # スリープしていると次に起動したときに遅れて走る（2026-09-29 04:40 に実際に発生）。
     # 立会前に走っても当日の日足は存在しないので、スキャンする前に理由を書いて返す。
-    SCHEDULED = "14:10"
+    # GitHub 版（2026-10-16 から本番）は中継が 14:05 に起こす。Mac のスリープは原因にならない
+    ON_GITHUB = os.environ.get("GITHUB_ACTIONS") == "true"
+    SCHEDULED = "14:05" if ON_GITHUB else "14:10"
+    late_cause = ("中継が予定の時刻に起こせず、予備の定期実行で動いた可能性" if ON_GITHUB
+                  else f"{SCHEDULED}時点でMacがスリープしていた可能性")
     late_note = ""
     early_note = ""
     if asof is None:
@@ -536,7 +542,7 @@ def _main(got):
         if t > dt.time(15, 30):
             # 「確定値」と言えるかは数字の時刻を見てから決める（本体の後で足す）。
             late_note = (f"※ 予定の{SCHEDULED}に実行できず、{now.strftime('%H:%M')}に動きました"
-                         f"（{SCHEDULED}時点でMacがスリープしていた可能性）。")
+                         f"（{late_cause}）。")
         elif t > dt.time(14, 40):
             late_note = (f"※ 予定の{SCHEDULED}より遅れて{now.strftime('%H:%M')}に実行しました。")
         elif t < dt.time(13, 55):

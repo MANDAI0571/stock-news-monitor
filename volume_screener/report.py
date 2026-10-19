@@ -23,12 +23,29 @@ SOURCES = (
     "休場日: 内閣府 国民の祝日CSV"
 )
 
+def _sources():
+    # 業績を出さない GitHub 版では、株探を出所に書かない（2026-10-19 の見直し）
+    return SOURCES.replace("業績・ROE・自己資本比率: 株探 kabutan.jp／", "") if _no_fund() else SOURCES
+
+
 def criteria_text(base_label="過去20日平均"):
     """メール末尾の「判定条件」。出来高の基準は実際に使ったものを書く。
 
     数字は2026-10-05の再測定による。判定できなかった銘柄日を「満たさない」に
     混ぜると結論が逆に見えるので、必ず3つに分けて書く。
     """
+    if _no_fund():
+        # 業績を出していない版で「参考条件として表示しています」「数字だけを出しています」と
+        # 書いていた（2026-10-19 の見直し）。条件と損益比の考え方だけを書く。
+        return (
+            f"出来高倍率 2.0倍以上（当日 ÷ {base_label}）／"
+            "25日線が5本前の足の時点より低い／現在値 &lt; 25日線 &lt; 75日線／"
+            "20日平均売買代金 1億円以上。<br>"
+            "業績は絞り込みにも並べ替えにも使っていません（過去の検証で、業績の条件を満たす側と"
+            "満たさない側にほとんど差が無かったため）。この版は業績の出所（株探）に届かないため、"
+            "業績の数字は出していません。<br>"
+            "損益比は「終値で決めて翌営業日の寄付で売買し、損切-5%・利確+12%・15営業日で手仕舞い」"
+            "とした場合の、決着した売買の集計です。過去の集計であって、今後を保証するものではありません。")
     return (
         f"出来高倍率 2.0倍以上（当日 ÷ {base_label}）／"
         "25日線が5本前の足の時点より低い／現在値 &lt; 25日線 &lt; 75日線／"
@@ -200,8 +217,8 @@ def _rows(pairs):
 CHART_NOTE = (
     "銘柄は、カード（「日足チャートを開く」ボタン付き）、1行ずつの短い形（チャートへの"
     "リンク付き）、名前と数字だけの行（リンクなし）のどれかで、上位から順に出します。"
-    "件数が多い日ほどカードやリンクの付く銘柄は減り、非常に多い日はカードが0件に"
-    "なります（Gmailは長すぎるメールを途中で切るため）。チャートは、4桁の銘柄コードは"
+    "どこまでにボタンやリンクが付くかは、その日の件数と銘柄名の長さで変わり、非常に多い日は"
+    "カードが0件になります（Gmailは長すぎるメールを途中で切るため）。チャートは、4桁の銘柄コードは"
     "株探、優先株など4桁でないものはYahooファイナンスです。"
     "銘柄コードで株探やYahooファイナンスを引けば同じチャートが見られます。"
 )
@@ -434,7 +451,7 @@ def _sec_lead():
 # Gmailは約102KBを超えると途中で切る。切られると末尾の「売買をすすめる
 # ものではありません」まで消える。_fit が測るのは銘柄一覧の部分だけで、
 # この外側に冒頭の説明・欠損の警告・末尾の判定条件や出所が付く（約19KB）。
-MIME_LIMIT = 78000
+MIME_LIMIT = 75000   # 2026-10-19: 送るときの base64 の改行と見出しのぶん（約3KB）を見込む
 
 
 def _mime_size(html, text):
@@ -553,9 +570,9 @@ def build(rows, notes, date_label, cutoff_label, failure=None, warning="",
         foot = ('<div style="font-size:12px;color:#777777;line-height:1.8;'
                 'margin:18px 0 0 0;padding:14px 0 0 0;'
                 'border-top:1px solid #dcdee1;">'
-                '<b>数字の出所</b><br>' + SOURCES +
+                '<b>数字の出所</b><br>' + _sources() +
                 '<br><br>判定していないため、銘柄の一覧は出していません。</div>')
-        foot_text = ("\n── 数字の出所 ──\n" + SOURCES +
+        foot_text = ("\n── 数字の出所 ──\n" + _sources() +
                      "\n\n判定していないため、銘柄の一覧は出していません。\n")
     else:
         foot = ('<div style="font-size:12px;color:#777777;line-height:1.8;'
@@ -565,7 +582,7 @@ def build(rows, notes, date_label, cutoff_label, failure=None, warning="",
                 '<br><br><b>判定条件</b><br>' + criteria +
                 (('<br><br><b>この一覧に出た銘柄のその後</b><br>' + H.escape(track_note))
                  if track_note else '') +
-                '<br><br><b>数字の出所</b><br>' + SOURCES +
+                '<br><br><b>数字の出所</b><br>' + _sources() +
                 '<br><br><b>処理の内訳</b><br>' +
                 '<br>'.join(H.escape(n) for n in notes) +
                 '<br><br>これは条件に当てはまった銘柄の一覧です。'
@@ -574,7 +591,7 @@ def build(rows, notes, date_label, cutoff_label, failure=None, warning="",
                      "\n\n── 判定条件 ──\n" + _plain(criteria) +
                      ("\n\n── この一覧に出た銘柄のその後 ──\n" + track_note
                       if track_note else "") +
-                     "\n\n── 数字の出所 ──\n" + SOURCES +
+                     "\n\n── 数字の出所 ──\n" + _sources() +
                      "\n\n── 処理の内訳 ──\n" + "\n".join(notes) +
                      "\n\nこれは条件に当てはまった銘柄の一覧です。"
                      "売買をすすめるものではありません。\n")

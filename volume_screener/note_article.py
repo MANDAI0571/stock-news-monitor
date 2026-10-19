@@ -34,7 +34,9 @@ def _oku(v) -> str:
         return "-"
 
 
-def article_lines(result: dict, track_note: str = "") -> tuple[str, list[str]]:
+def article_lines(result: dict, track_note: str = "", warning: str = "") -> tuple[str, list[str]]:
+    """warning はメールの先頭の注意書き（データの欠け・疑い・調べられなかった銘柄）。あれば
+    無料部分と一覧の両方に出す。0件の日に「該当なし」とだけ書いていた（2026-10-19 の見直し）。"""
     rows = result.get("rows") or []
     when = f"{result.get('date')} {result.get('cutoff')}"
     title = f"出来高急増×下降トレンド｜{when}時点 {len(rows)}件"
@@ -47,11 +49,16 @@ def article_lines(result: dict, track_note: str = "") -> tuple[str, list[str]]:
              "- 20日平均の売買代金が1億円以上",
              "- 並び順は25日線から深い順（過去の検証で、この順に差が出たため）", "",
              f"## 本日の件数：{len(rows)}件", ""]
+    if warning:
+        lines += [f"**※ 本日のデータについての注意：** {warning}", ""]
     if track_note:
         lines += ["## この一覧に出た銘柄のその後", "", track_note, ""]
     lines += ["---", "", PAID_LINE, "", "## 銘柄の一覧", ""]
     if not rows:
-        lines.append("本日は該当なし。")
+        lines.append("条件に当てはまった銘柄はありませんでした。" + (
+            "ただし上の注意のとおり、データの欠け・疑いがあるため、見落としがあり得ます。" if warning else ""))
+    elif warning:
+        lines += ["※ 上の注意のとおり、データの欠け・疑いがあるため、この一覧には見落としがあり得ます。", ""]
     for i, r in enumerate(rows, 1):
         lines.append(f"**{i}. {r['code']} {r['name']}**")
         lines.append(f"- {float(r['price']):,.1f}円（{'前日比' if not r.get('prev_gap') else '前回の足から'}"
@@ -95,7 +102,11 @@ def main(argv=None) -> int:
                           + ("30件に満たないうちは偶然の差が大きい数字です。" if sm["n"] < 30 else ""))
     except (OSError, ValueError, ImportError):
         track_note = ""
-    title, lines = article_lines(result, track_note)
+    # メールの先頭の注意書き（「※ …: 」で始まる最初の行）。件名に印があるのに記事に無かった
+    body = (src / "body.txt").read_text(encoding="utf-8") if (src / "body.txt").exists() else ""
+    first = body.splitlines()[0] if body else ""
+    warning = first.split(": ", 1)[1].strip() if first.startswith("※") and ": " in first else ""
+    title, lines = article_lines(result, track_note, warning)
     write_outputs(Path(a.out), [("volume", title, lines)])
     print(f"vs_note=built rows={len(result.get('rows') or [])}", flush=True)
     return 0
