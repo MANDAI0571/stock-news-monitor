@@ -78,7 +78,7 @@ jobs:
           lookup-only: true
 
       - name: Install dependencies
-        if: steps.day.outputs.run == 'true' && steps.done.outputs.cache-hit != 'true'
+        if: steps.day.outputs.run == 'true' && (steps.done.outputs.cache-hit != 'true' || contains(github.event.head_commit.message || '', '[note-mail]'))
         run: |
           python -m pip install --upgrade pip >/dev/null
           pip install -r requirements.txt >/dev/null
@@ -86,7 +86,7 @@ jobs:
       - name: Screening (pullback list)
         # 確認（push）のときは失敗しても失敗メールを出さない（本番の回だけ知らせる）
         continue-on-error: ${{ github.event_name == 'push' }}
-        if: steps.day.outputs.run == 'true' && steps.done.outputs.cache-hit != 'true'
+        if: steps.day.outputs.run == 'true' && (steps.done.outputs.cache-hit != 'true' || contains(github.event.head_commit.message || '', '[note-mail]'))
         env:
           PRICE_CACHE_REFRESH: "1"
         run: |
@@ -97,7 +97,7 @@ jobs:
       - name: Selling climax (close)
         # 確認（push）のときは失敗しても失敗メールを出さない（本番の回だけ知らせる）
         continue-on-error: ${{ github.event_name == 'push' }}
-        if: steps.day.outputs.run == 'true' && steps.done.outputs.cache-hit != 'true'
+        if: steps.day.outputs.run == 'true' && (steps.done.outputs.cache-hit != 'true' || contains(github.event.head_commit.message || '', '[note-mail]'))
         run: |
           pip install "openpyxl>=3.1,<4" >/dev/null
           python3 volume_screener/daily_run.py --asof "${{ steps.day.outputs.day }}" > /dev/null 2> "$OUT/climax.log" || true
@@ -106,7 +106,7 @@ jobs:
       - name: Build two articles
         # 確認（push）のときは失敗しても失敗メールを出さない（本番の回だけ知らせる）
         continue-on-error: ${{ github.event_name == 'push' }}
-        if: steps.day.outputs.run == 'true' && steps.done.outputs.cache-hit != 'true'
+        if: steps.day.outputs.run == 'true' && (steps.done.outputs.cache-hit != 'true' || contains(github.event.head_commit.message || '', '[note-mail]'))
         env:
           INTRADAY_USE_WATCHLIST: "0"
           IH_MIN_TURNOVER: "50000000"
@@ -121,13 +121,17 @@ jobs:
         id: save
         # 2026-10-18: note は reCAPTCHA で自動ログインできない（突破はしない）。記事は持ち主に
         # メールで届け、note には貼り付けるだけにする。push の確認では送らない（[note-mail] があれば送る）。
-        if: steps.day.outputs.run == 'true' && steps.done.outputs.cache-hit != 'true' && (github.event_name != 'push' || contains(github.event.head_commit.message, '[note-mail]'))
+        if: steps.day.outputs.run == 'true' && (steps.done.outputs.cache-hit != 'true' || contains(github.event.head_commit.message || '', '[note-mail]')) && (github.event_name != 'push' || contains(github.event.head_commit.message, '[note-mail]'))
         env:
           GMAIL_USER: ${{ secrets.GMAIL_USER }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           MAIL_TO: ${{ secrets.MAIL_TO }}
         run: |
-          python3 note_mail.py --dir "$OUT" --subject "【note貼り付け用】${{ steps.day.outputs.day }} 日本株（ランク記事・Claudeの300万円運用）"
+          python3 note_mail.py --dir "$OUT" --subject "【note貼り付け用】${{ steps.day.outputs.day }} 日本株（ランク記事・Claudeの300万円運用）" > "$OUT/mail.log" 2>&1 || true
+          # 2026-10-19: 「成功」なのにメールが届かなかった。結果の行（件名と送ったか）を注記に出す
+          line=$(grep -E "note_mail=|Error|error" "$OUT/mail.log" | tail -3 | sed -E 's/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+/<mail>/g' | tr '\n' ' ' | cut -c1-300)
+          echo "::notice title=note 貼り付け用メール::${line:-（結果の行なし）} files=$(ls "$OUT" | tr '\n' ' ' | cut -c1-200)"
+          grep -q "note_mail=sent" "$OUT/mail.log" || exit 1
           mkdir -p outputs/note_two_done && echo "${{ steps.day.outputs.day }}" > outputs/note_two_done/day.txt
           echo "saved=true" >> "$GITHUB_OUTPUT"
 
