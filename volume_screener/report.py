@@ -421,6 +421,15 @@ SEC_LEAD = ("25日線からの乖離が深い順に並べています。"
             "過去検証で、業績の条件を満たす側と満たさない側に"
             "ほとんど差が出なかったためです（下の「判定条件」に数字があります）。"
             "業績の数字は銘柄ごとにそのまま出しています。")
+# GitHub 版（株探に届かない）の説明。業績を出していないのに「そのまま出しています」と書いていた（2026-10-19）
+SEC_LEAD_NO_FUND = ("25日線からの乖離が深い順に並べています。"
+                    "業績は一覧を分けるのに使っていません（過去検証で、業績の条件を満たす側と満たさない側に"
+                    "ほとんど差が出なかったため。下の「判定条件」に数字があります）。"
+                    "この版は、業績の出所（株探）に届かないため、業績の数字は出していません。")
+
+
+def _sec_lead():
+    return SEC_LEAD_NO_FUND if _no_fund() else SEC_LEAD
 
 # Gmailは約102KBを超えると途中で切る。切られると末尾の「売買をすすめる
 # ものではありません」まで消える。_fit が測るのは銘柄一覧の部分だけで、
@@ -443,7 +452,7 @@ def _fit(rows):
     n = len(rows)
 
     def made(plan):
-        body = _section(SEC_TITLE, SEC_LEAD, rows, 1, plan)
+        body = _section(SEC_TITLE, _sec_lead(), rows, 1, plan)
         text = _text_block(SEC_TITLE, rows, 1, plan)
         return body, text, _mime_size(body, text)
 
