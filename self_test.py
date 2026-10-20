@@ -3334,6 +3334,19 @@ def _test_note_two_us() -> None:
     assert "売買をすすめるものではありません" in text and title.startswith("米株")
     from note_legal import COMPLIANCE_LINES
     assert all(x in lines for x in COMPLIANCE_LINES)
+    # 2026-10-20: 株価が取れなかった銘柄（空の表・列の欠け）で KeyError: ['Close'] になり、記事が
+    # 1本も作れなかった。飛ばして続け、使えた数を数え、少ない日は記事にそのことを書く
+    stats: dict = {}
+    L2 = U.lists_for_day(dt.date(2026, 10, 15), {"UPP": up, "EMP": pd.DataFrame(), "NOC": up.drop(columns=["Close"]),
+                                                 "OLD": old}, {}, stats)
+    assert [x["ticker"] for x in L2["hi52"]] == ["UPP"] and stats == {"used": 1, "total": 4}, stats
+    _, few = U.ranking_lines(dt.date(2026, 10, 15), L2, (1, 4))
+    assert any("4銘柄のうち 1銘柄しか株価が取れませんでした" in x for x in few)
+    _, full = U.ranking_lines(dt.date(2026, 10, 15), L2, (4, 4))
+    assert not any("しか株価が取れませんでした" in x for x in full)
+    # 米株のスクリーニングと同じ18か月分（その控えを使う。14か月分だと取り直して時間切れになった）
+    src = Path(U.__file__).read_text(encoding="utf-8")
+    assert 'period="18mo"' in src and 'period="14mo"' not in src
     print("self-test: 米株の note 2本立て OK")
 
 
@@ -4263,7 +4276,24 @@ def _test_us_daily_runner() -> None:
     ):
         assert needle in source, f"ない: {needle}"
     # 2026-10-16: メールとコピー用ページはやめ、note の2本立てを下書き保存する。台帳は _push_ledger で残す
-    assert "import us_mail_digest" not in source and "_push_ledger(session)" in source
+    assert "import us_mail_digest" not in source and "_push_ledger(session, mailed=mailed)" in source
+    # 2026-10-20: メールが出なかった日は、予備の回が記事とメールだけをやり直す。約定と宣告は二重にしない
+    assert source.count("if not note_only:") == 2
+    assert source.index("if not note_only:") < source.index("fill_us_orders(session)")
+    assert source.rindex("if not note_only:") < source.index("declare_us_orders(session, output_dir=output_dir)")
+    assert "return 0 if note_only else 1" in source
+    import tempfile
+    saved_root = rd.PROJECT_ROOT
+    try:
+        rd.PROJECT_ROOT = Path(tempfile.mkdtemp())
+        mark = rd.PROJECT_ROOT / "data" / "us_daily_done" / "2026-10-19.txt"
+        mark.parent.mkdir(parents=True)
+        mark.write_text("2026-10-19\n", encoding="utf-8")          # 台帳だけ残した日（メールは出ていない）
+        assert rd.note_sent(date(2026, 10, 19)) is False
+        mark.write_text("2026-10-19\nnote=sent\n", encoding="utf-8")
+        assert rd.note_sent(date(2026, 10, 19)) is True
+    finally:
+        rd.PROJECT_ROOT = saved_root
     # 約定 → スクリーニング → 記事 → 宣告 → 運用記事 → note の順であること
     order = [
         source.index("from us_portfolio import fill_us_orders"),

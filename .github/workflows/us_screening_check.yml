@@ -10,6 +10,11 @@ on:
     # 先に走った回が公開ずみなら run_us_daily.py が自分で止まる（二重送信しない）。
     - cron: "0 23 * * 1-5"
     - cron: "0 0 * * 2-6"
+  # このファイルを変えたときも動かす。その日の印にメールを送った行が無ければ、記事とメールだけを
+  # やり直す（約定と宣告はしない）。送り済みなら run_us_daily.py が自分で止まる（2026-10-20）。
+  push:
+    paths:
+      - ".github/workflows/us_screening_check.yml"
 
 concurrency:
   group: us-daily

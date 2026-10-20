@@ -12,7 +12,7 @@
 「セリングクライマックスで25日線に近い（浅い）もの」が下（0.82 / 0.83 / 0.68 / 0.89）だけで、
 これは並べ方（25日線から深い順）と同じ向き。根拠のない順位を見せないため、ランクは付けない。
 
-下書きの保存は note_autosave.py（公開しない）。run_us_daily.py の最後の手順から呼ぶ。
+記事は note 貼り付け用のメールで持ち主に届ける（note_mail.py。2026-10-18 から）。run_us_daily.py の最後の手順から呼ぶ。
 """
 from __future__ import annotations
 
@@ -39,14 +39,24 @@ def _r(df: pd.DataFrame) -> dict:
             "ohlc": {k: df[K].astype(float).tolist() for k, K in (("open", "Open"), ("high", "High"), ("low", "Low"))}}
 
 
-def lists_for_day(day: dt.date, histories: dict[str, pd.DataFrame], names: dict[str, str]) -> dict[str, list[dict]]:
-    """day の終値で、4つの条件に当てはまった銘柄（それぞれ並べ済み）。最後の足が day でない銘柄は使わない。"""
+COLUMNS = ("Open", "High", "Low", "Close", "Volume")
+
+
+def lists_for_day(day: dt.date, histories: dict[str, pd.DataFrame], names: dict[str, str],
+                  stats: dict | None = None) -> dict[str, list[dict]]:
+    """day の終値で、4つの条件に当てはまった銘柄（それぞれ並べ済み）。最後の足が day でない銘柄は使わない。
+    株価が取れなかった銘柄（空の表・列の欠け）は飛ばす（2026-10-20 に、取れなかった銘柄の空の表で
+    KeyError: ['Close'] となり、米株の記事が1本も作れなかった）。stats には使えた銘柄の数を入れる。"""
     hi52, swing, pb, sc = [], [], [], []
+    used = 0
     for t, df in histories.items():
+        if df is None or df.empty or any(c not in df.columns for c in COLUMNS):
+            continue
         df = df.dropna(subset=["Close"])
         df = df[[(d.date() if hasattr(d, "date") else d) <= day for d in df.index]]
         if len(df) < 260 or (df.index[-1].date() if hasattr(df.index[-1], "date") else df.index[-1]) != day:
             continue
+        used += 1
         cl = df["Close"].astype(float).to_numpy()
         vo = df["Volume"].fillna(0).astype(float).to_numpy()
         to20 = float(np.mean(cl[-20:] * vo[-20:]))
@@ -84,18 +94,24 @@ def lists_for_day(day: dt.date, histories: dict[str, pd.DataFrame], names: dict[
         va20 = float(np.mean(vo[-21:-1]))
         if va20 and vo[-1] / va20 >= 2.0 and cl[-1] < ma[25][-1] < ma[75][-1] and ma[25][-1] < ma[25][-6]:
             sc.append({**row, "dev25": (cl[-1] / ma[25][-1] - 1) * 100, "ratio": vo[-1] / va20})
+    if stats is not None:
+        stats.update(used=used, total=len(histories))
     by_turnover = lambda L: sorted(L, key=lambda x: -x["turnover"])  # noqa: E731
     return {"hi52": by_turnover(hi52), "swing": by_turnover(swing), "pullback": by_turnover(pb),
             "climax": sorted(sc, key=lambda x: x["dev25"])}
 
 
-def ranking_lines(day: dt.date, L: dict[str, list[dict]]) -> tuple[str, list[str]]:
+def ranking_lines(day: dt.date, L: dict[str, list[dict]], coverage: tuple[int, int] | None = None) -> tuple[str, list[str]]:
     def top10(title, rows, extra=lambda x: ""):
         out = [f"## {title} TOP10（全{len(rows)}件）", ""]
         out += [f"{i}. {x['ticker']} {x['name']}{extra(x)}" for i, x in enumerate(rows[:10], 1)]
         return out + ([] if rows else ["該当なし。"]) + [""]
     lines = [f"{day}（米国時間）の終値で、S&P500 と NASDAQ の大型株から、4つの条件に当てはまった銘柄を機械的に並べた一覧です。",
              "**売買をすすめるものではありません。**", ""]
+    if coverage and coverage[1] and coverage[0] < coverage[1] * 0.95:
+        # 取れなかった銘柄を黙って落とさない（件数が少なく見えるのはそのため、と分かるように）
+        lines += [f"※ この日は {coverage[1]}銘柄のうち {coverage[0]}銘柄しか株価が取れませんでした。"
+                  "取れなかった銘柄は、この一覧に入っていません。", ""]
     lines += top10("52週高値更新（売買代金の大きい順）", L["hi52"])
     lines += top10("直近高値更新（売買代金の大きい順）", L["swing"])
     lines += top10("25MA・200MA 押し目（売買代金の大きい順）", L["pullback"], lambda x: f"（{x['kind']}）")
@@ -120,16 +136,25 @@ def build(session: dt.date, output_dir: Path, histories: dict[str, pd.DataFrame]
     if histories is None:
         from scanner.prices import fetch_price_history, prefetch_price_histories
 
+        # 先に動く米株のスクリーニング（run_screening_us）と同じ18か月分にそろえ、その控え（cache/prices）を
+        # そのまま使う。14か月分にしていたので同じ株価をもう一度取りに行き、2026-10-20 は Yahoo の一括取得が
+        # すべて時間切れになった（日本株の note_two.py と同じ直し方）。
         tickers = list(names)
-        prefetch_price_histories(tickers, period="14mo")
+        prefetch_price_histories(tickers, period="18mo")
         histories = {}
         for t in tickers:
             try:
-                histories[t] = fetch_price_history(t, period="14mo")
+                histories[t] = fetch_price_history(t, period="18mo")
             except Exception:                                # noqa: BLE001
                 continue
-    L = lists_for_day(session, histories, names)
-    t_a, l_a = ranking_lines(session, L)
+    stats: dict = {}
+    L = lists_for_day(session, histories, names, stats)
+    used, total = stats.get("used", 0), max(len(names), stats.get("total", 0))
+    print(f"note_two_us_coverage used={used} total={total}", flush=True)
+    if total and used < total * 0.5:
+        # 半分も取れない日は、一覧として意味をなさないので作らない（呼び出し側が失敗として扱う）
+        raise RuntimeError(f"株価が取れた銘柄が少ない（{used}/{total}）")
+    t_a, l_a = ranking_lines(session, L, (used, total))
     pmd = Path(output_dir) / "note_us_portfolio.md"
     ptitle = Path(output_dir) / "note_us_portfolio_title.txt"
     b_lines = [x for x in pmd.read_text(encoding="utf-8").splitlines() if not x.startswith("# ")]
