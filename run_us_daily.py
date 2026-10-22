@@ -22,6 +22,7 @@ YAMLからは `python run_us_daily.py` だけを呼ぶ。以後の変更は tmpa
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import traceback
 from datetime import date, datetime
@@ -131,6 +132,40 @@ def _push_ledger(session: date, mailed: bool = False) -> bool:
         return False
 
 
+# 前営業日の日足が Yahoo に載ったかを見る銘柄（売買代金の大きい大型株）
+READY_SAMPLE = ("AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "JPM", "XOM", "JNJ", "PG",
+                "KO", "WMT", "V", "MA", "HD", "CVX", "PEP", "COST", "ABBV", "MRK")
+READY_SHARE = 0.8
+
+
+def data_ready(session: date, fetch=None, prefetch=None) -> tuple[bool, str]:
+    """直前の米国営業日（session）の日足が、スクリーニングと同じ取り方（18か月分の一括）で取れるか。
+
+    2026-10-20〜22: 朝いちばんの回（日本時間 9:20 ごろ）は、前営業日の足がほとんどの銘柄で無く
+    （10/21 は 0/516、10/22 は 1/516）、記事が作れずに失敗メールになっていた。1時間後の回では
+    そろっていた（511/517）。足が無いまま約定・宣告・記事を作らないよう、最初に確かめる。"""
+    if fetch is None or prefetch is None:
+        from scanner.prices import fetch_price_history, prefetch_price_histories
+
+        fetch = fetch or (lambda t: fetch_price_history(t, period="18mo"))
+        prefetch = prefetch or (lambda ts: prefetch_price_histories(ts, period="18mo"))
+    sample = list(READY_SAMPLE)
+    try:
+        prefetch(sample)
+    except Exception as error:  # noqa: BLE001 - 一括が転んでも1銘柄ずつ見る
+        print(f"us_ready_prefetch=failed reason={type(error).__name__}", flush=True)
+    ok = 0
+    for t in sample:
+        try:
+            closes = fetch(t)["Close"].dropna()
+            days = [(d.date() if hasattr(d, "date") else d) for d in closes.index]
+            days = [d for d in days if d <= session]
+            ok += bool(days) and days[-1] == session
+        except Exception:  # noqa: BLE001
+            continue
+    return ok >= len(sample) * READY_SHARE, f"{ok}/{len(sample)}"
+
+
 def _read_stamp() -> str:
     if not STAMP_PATH.exists():
         return ""
@@ -179,6 +214,15 @@ def main() -> int:
             print(f"us_daily=skipped reason=already_published session={session}", flush=True)
             return 0
         note_only = True
+
+    # 前営業日の日足が載るまで待つ（最後の回でなければ、失敗メールにせず次の回に回す）
+    ready, detail = data_ready(session)
+    if not ready:
+        last_try = os.environ.get("US_LAST_TRY") == "1"
+        print(f"::notice title=米株::{session} の日足がまだそろっていない（{detail}）。"
+              + ("最後の回なので失敗にします" if last_try else "次の回でやり直します"), flush=True)
+        print(f"us_daily=skipped reason=data_not_ready session={session} sample={detail}", flush=True)
+        return 1 if last_try else 0
 
     print(f"us_daily=start session={session} now={now:%Y-%m-%d %H:%M} JST"
           + (" mode=note_only（約定と宣告はしない）" if note_only else ""), flush=True)

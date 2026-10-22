@@ -51,6 +51,9 @@ jobs:
           GMAIL_USER: ${{ secrets.GMAIL_USER }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           MAIL_TO: ${{ secrets.MAIL_TO }}
+          # 3本目の cron（日本時間 9:00 予定。実際は 12 時ごろ）が最後の回。前営業日の日足がまだ無ければ、
+          # それより前の回は失敗にせず次の回に回し、最後の回だけ失敗にする（2026-10-22）
+          US_LAST_TRY: ${{ github.event.schedule == '0 0 * * 2-6' && '1' || '0' }}
         run: python3 run_us_daily.py
 
       - name: Show results

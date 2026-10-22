@@ -4398,6 +4398,21 @@ def _test_us_daily_runner() -> None:
     assert source.index("if not note_only:") < source.index("fill_us_orders(session)")
     assert source.rindex("if not note_only:") < source.index("declare_us_orders(session, output_dir=output_dir)")
     assert "return 0 if note_only else 1" in source
+    # 2026-10-22: 朝いちばんの回は前営業日の日足がまだ無く、毎日失敗メールになっていた。最初に確かめ、
+    # 足りなければ最後の回でない限り失敗にせず次の回に回す（約定・宣告・記事より前）
+    assert source.index("data_ready(session)") < source.index("fill_us_orders(session)")
+    assert "return 1 if last_try else 0" in source
+    wf_us = Path(".github/workflows/us_screening_check.yml").read_text(encoding="utf-8")
+    assert "US_LAST_TRY: ${{ github.event.schedule == '0 0 * * 2-6' && '1' || '0' }}" in wf_us
+    sess = date(2026, 10, 21)
+    have = pd.DataFrame({"Close": [1.0, 2.0, 3.0]}, index=pd.to_datetime(["2026-10-19", "2026-10-20", "2026-10-21"]))
+    stale = have.iloc[:2]
+    ok, detail = rd.data_ready(sess, fetch=lambda t: have, prefetch=lambda ts: None)
+    assert ok and detail == "20/20", detail
+    ok, detail = rd.data_ready(sess, fetch=lambda t: stale, prefetch=lambda ts: None)
+    assert not ok and detail == "0/20", detail
+    nan_last = have.copy(); nan_last.iloc[-1, 0] = float("nan")       # 足はあるが値が空
+    assert not rd.data_ready(sess, fetch=lambda t: nan_last, prefetch=lambda ts: None)[0]
     import tempfile
     saved_root = rd.PROJECT_ROOT
     try:
