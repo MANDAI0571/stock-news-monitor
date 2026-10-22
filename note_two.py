@@ -255,6 +255,15 @@ def write_outputs(out: Path, items: list[tuple[str, str, list[str]]]) -> Path:
     out.mkdir(parents=True, exist_ok=True)
     manifest = []
     for key, title, lines in items:
+        # 2026-10-22 持ち主「タグ画像もコピペワンタッチで」。note のハッシュタグは下書きに残せない（公開の設定で
+        # 「投稿する」まで保存されない）が、この1行をコピーしてハッシュタグの欄に貼ると、1回で全部のタグになる
+        # （2026-10-22 に確かめた）。記事の最後に置く。
+        try:
+            import note_assets
+
+            lines = list(lines) + ["", note_assets.tag_line(key)]
+        except ImportError:
+            pass
         (out / f"note_{key}_title.txt").write_text(title + "\n", encoding="utf-8")
         (out / f"note_{key}.md").write_text(f"# {title}\n\n" + "\n".join(lines) + "\n", encoding="utf-8")
         (out / f"note_{key}.html").write_text(body_html(lines), encoding="utf-8")
