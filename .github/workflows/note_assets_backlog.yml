@@ -1,0 +1,66 @@
+name: Note Assets Backlog
+
+# 1回だけ使う（2026-10-22）。持ち主「メールでnoteのタグと画像だけそれぞれの記事のぶんを送って」。
+# 毎日の分は note_mail.py が本文のメールのあとに送る。ここでは、すでに note の下書きにした記事
+# （2026-10-20〜10-22 の13本）の分をまとめて1通で送る。送ったらこのファイルは消す。
+# タイトルだけを使う（銘柄は入らない）。宛先は MAIL_TO の1つ目（持ち主）だけ。
+
+on:
+  push:
+    paths:
+      - ".github/workflows/note_assets_backlog.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt >/dev/null
+          pip install "pillow>=10,<12" >/dev/null && pip install --no-deps "japanize-matplotlib==1.1.3" >/dev/null
+
+      - name: Mail tags and images
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+          ITEMS: >-
+            [{"key": "ranking", "title": "高値更新・押し目・セリングクライマックス ランキング｜2026-10-20"},
+            {"key": "300man", "title": "Claudeが300万円運用｜運用状況 2026-10-20"},
+            {"key": "volume", "title": "出来高急増×下降トレンド｜2026-10-20 13:50時点 2件"},
+            {"key": "us_ranking", "title": "米株 高値更新・押し目・セリングクライマックス 一覧｜2026-10-20"},
+            {"key": "us_20k", "title": "米国株 $20,000運用｜Claudeの実験記録 2026-10-20"},
+            {"key": "volume", "title": "出来高急増×下降トレンド｜2026-10-21 13:49時点 3件"},
+            {"key": "ranking", "title": "高値更新・押し目・セリングクライマックス ランキング｜2026-10-21"},
+            {"key": "300man", "title": "Claudeが300万円運用｜運用状況 2026-10-21"},
+            {"key": "us_ranking", "title": "米株 高値更新・押し目・セリングクライマックス 一覧｜2026-10-21"},
+            {"key": "us_20k", "title": "米国株 $20,000運用｜Claudeの実験記録 2026-10-21"},
+            {"key": "volume", "title": "出来高急増×下降トレンド｜2026-10-22 13:50時点 2件"},
+            {"key": "ranking", "title": "高値更新・押し目・セリングクライマックス ランキング｜2026-10-22"},
+            {"key": "300man", "title": "Claudeが300万円運用｜運用状況 2026-10-22"}]
+        run: |
+          python3 note_assets.py --items "$ITEMS" --subject "【noteタグ・画像】下書きにした記事（2026-10-20〜10-22・13本）" --out assets > assets.log 2>&1 || true
+          line=$(grep -E "note_assets|Error|error" assets.log | sed -E 's/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+/<mail>/g' | tail -3 | tr '\n' ' ' | cut -c1-300)
+          echo "::notice title=note タグ・画像::${line:-（結果の行なし）} images=$(ls assets 2>/dev/null | wc -l)"
+          grep -q "note_assets=sent" assets.log
+
+      - name: Notify failure by mail
+        if: failure()
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+        run: python3 notify_workflow_failure.py

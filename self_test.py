@@ -159,6 +159,7 @@ def main() -> None:
     _test_volume_screener_on_actions()
     _test_note_two()
     _test_note_two_us()
+    _test_note_assets()
     _test_intraday_alert_grade()
     _test_alert_grade_track()
     _test_intraday_openwork_link_only()
@@ -3348,6 +3349,41 @@ def _test_note_two_us() -> None:
     src = Path(U.__file__).read_text(encoding="utf-8")
     assert 'period="18mo"' in src and 'period="14mo"' not in src
     print("self-test: 米株の note 2本立て OK")
+
+
+def _test_note_assets() -> None:
+    """note のタグと見出し画像のメール（note_assets.py、2026-10-22 持ち主の指示）。"""
+    import tempfile
+
+    import note_assets as NA
+
+    # 記事の種類ごとにタグがあり、売買をすすめる語は入れない
+    for key in ("ranking", "300man", "volume", "us_ranking", "us_20k"):
+        tags = NA.tags_for(key)
+        assert 5 <= len(tags) <= 10, (key, tags)
+        assert not any(w in t for t in tags for w in ("おすすめ", "買い時", "必ず", "爆上")), tags
+        assert NA.tag_line(key).startswith("#") and " #" in NA.tag_line(key)
+    # 件名に「note貼り付け用」を含めない（下書きを作る仕組みが拾わないように）
+    subj = NA.assets_subject("【note貼り付け用】2026-10-22 日本株（ランク記事・Claudeの300万円運用）")
+    assert subj == "【noteタグ・画像】2026-10-22 日本株（ランク記事・Claudeの300万円運用）" and "貼り付け用" not in subj
+    assert NA.split_title("出来高急増×下降トレンド｜2026-10-22 13:50時点 2件") == (
+        "出来高急増×下降トレンド", "2026-10-22 13:50時点 2件")
+    assert NA.split_title("Claudeが300万円運用｜運用状況 2026-10-22") == ("Claudeが300万円運用｜運用状況", "2026-10-22")
+    built = NA.build([{"key": "volume", "title": "出来高急増×下降トレンド｜2026-10-22 13:50時点 2件"}],
+                     Path(tempfile.mkdtemp()))
+    if built[0]["image"] is not None:                 # 字体がある所だけ（GitHub の自己テストには無い）
+        from PIL import Image
+
+        assert Image.open(built[0]["image"]).size == (1280, 670)
+    _, text, html_doc = NA.build_mail(built, subj)
+    assert NA.tag_line("volume") in text and "見出し画像" in text and NA.tag_line("volume") in html_doc
+    # 本文の貼り付け用メールのあとに送る。転んでも本文のメールは失敗にしない
+    src = Path("note_mail.py").read_text(encoding="utf-8")
+    assert src.index('print("note_mail=sent"') < src.index("note_assets.send(")
+    # 見出し画像の字体を入れる（3つのワークフロー）
+    for wf in ("note_daily_drafts.yml", "volume_screener.yml", "us_screening_check.yml"):
+        assert 'japanize-matplotlib==1.1.3' in Path(".github/workflows", wf).read_text(encoding="utf-8"), wf
+    print("self-test: note のタグと見出し画像 OK")
 
 
 def _test_volume_screener_on_actions() -> None:
