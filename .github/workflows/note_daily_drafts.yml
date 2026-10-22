@@ -119,6 +119,16 @@ jobs:
           grep "^note_two" "$OUT/build.log"
           test -f "$OUT/note_drafts_manifest.json"
 
+      - name: Keep sector strength for the next 13:50 screener
+        # 全市場の業種の勢い（その日の終値。業種名と数字だけ）を、翌営業日 14:05 の出来高急増の
+        # ランク（◎）に渡す（volume_screener/rank.py）。立会中の push の値を渡さないよう、push では残さない。
+        if: github.event_name != 'push' && hashFiles('sector_strength/strength.json') != ''
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: sector_strength
+          key: sector-strength-${{ steps.day.outputs.day }}
+
       - name: Mail articles for pasting
         id: save
         # 2026-10-18: note は reCAPTCHA で自動ログインできない（突破はしない）。記事は持ち主に

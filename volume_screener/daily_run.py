@@ -971,7 +971,9 @@ def _main(got):
                                          "base_label": r["base_label"],
                                          "ratio_at_run": r["ratio"],
                                          "price_at_run": r["price"],
-                                         "dev25_pct": r["dev25_pct"]}
+                                         "dev25_pct": r["dev25_pct"],
+                                         # ランク（◎）。実際の成績をランクごとに数えるため（2026-10-22）
+                                         "mark": r.get("mark", "")}
                                         for r in rows]},
                               f, ensure_ascii=False, indent=1)
                 os.replace(f"{hp}.{os.getpid()}.new", hp)

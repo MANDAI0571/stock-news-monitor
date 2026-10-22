@@ -45,7 +45,8 @@ def criteria_text(base_label="過去20日平均"):
             "満たさない側にほとんど差が無かったため）。この版は業績の出所（株探）に届かないため、"
             "業績の数字は出していません。<br>"
             "損益比は「終値で決めて翌営業日の寄付で売買し、損切-5%・利確+12%・15営業日で手仕舞い」"
-            "とした場合の、決着した売買の集計です。過去の集計であって、今後を保証するものではありません。")
+            "とした場合の、決着した売買の集計です。過去の集計であって、今後を保証するものではありません。"
+            + _rank_text())
     return (
         f"出来高倍率 2.0倍以上（当日 ÷ {base_label}）／"
         "25日線が5本前の足の時点より低い／現在値 &lt; 25日線 &lt; 75日線／"
@@ -75,6 +76,7 @@ def criteria_text(base_label="過去20日平均"):
            f"<br><b>なお上の損益比は「当日 ÷ 過去20日平均が2倍以上」で測った"
            f"数字です。今回の一覧は「当日 ÷ {base_label}」で選んでいるので、"
            f"同じ集団ではありません。</b>")
+        + _rank_text()
     )
 
 
@@ -251,6 +253,13 @@ def _split_html(r):
             'line-height:1.6;color:#7a2d1c;"><b>要注意:</b> ' + H.escape(note) + '</div>')
 
 
+def _rank_html(r):
+    if not _mark(r):
+        return ""
+    return ('  <div style="font-size:13px;color:#7a4b00;padding:4px 0 0 0;">'
+            'ランク ◎（業種の勢いがとても弱い。過去5年でこの形は成績が良かった。下の「ランク（◎）について」）</div>')
+
+
 def card(i, r):
     f = r["fund"]
     chg = r["chg_pct"]
@@ -258,7 +267,8 @@ def card(i, r):
     s = _S
     return f"""
 <div style="{s['card']}">
-  <div><span style="{s['rank']}">{i}</span>&nbsp;<span style="{s['name']}">{H.escape(str(r['code']))} {H.escape(r['name'])}</span></div>
+  <div><span style="{s['rank']}">{i}</span>&nbsp;<span style="{s['name']}">{_mark(r)}{H.escape(str(r['code']))} {H.escape(r['name'])}</span></div>
+{_rank_html(r)}
   <div style="{s['big']}">{r['price']:,.1f}円 <span style="color:{color};">({_chg_label(r)} {chg:+.2f}%)</span></div>
   <div style="{s['sub']}">{r['asof_label']}時点</div>
 {_split_html(r)}{_chart_html(r)}
@@ -293,6 +303,21 @@ def card(i, r):
 </div>"""
 
 
+def _mark(r):
+    """ランク（◎）の印。付いていなければ空（2026-10-22。rank.py に根拠）。"""
+    return "◎ " if r.get("mark") == "◎" else ""
+
+
+def _rank_text():
+    """判定条件に足す「ランク（◎）について」。"""
+    try:
+        import rank as RK
+
+        return "<br><b>ランク（◎）について</b><br>" + "<br>".join(H.escape(x) for x in RK.explain_lines())
+    except Exception:                                  # noqa: BLE001
+        return ""
+
+
 def _tiny(i, r):
     """最小限の1行。全銘柄を必ずどこかに出すための最後の段。
 
@@ -300,7 +325,7 @@ def _tiny(i, r):
     <br>でつないで1件55バイトほどに抑える。
     """
     flag = "【分割未調整の疑い】" if r.get("suspect_split") else ""
-    return (f'{i}. {H.escape(str(r["code"]))} {H.escape(r["name"])}{flag}'
+    return (f'{i}. {_mark(r)}{H.escape(str(r["code"]))} {H.escape(r["name"])}{flag}'
             f' ／乖離 {r["dev25_pct"]:+.1f}% ／出来高 {r["ratio"]:.2f}倍{_own_time(r)}<br>')
 
 
@@ -323,7 +348,7 @@ def _brief(i, r):
             if r.get("suspect_split") else "")
     return (f'<div style="border-top:1px solid #eceef0;padding:9px 2px;'
             f'font-size:13px;line-height:1.6;color:#333333;">'
-            f'<b>{i}. {code} {H.escape(r["name"])}</b>{flag}<br>'
+            f'<b>{i}. {_mark(r)}{code} {H.escape(r["name"])}</b>{flag}<br>'
             f'乖離 {r["dev25_pct"]:+.1f}% ／ 出来高 {r["ratio"]:.2f}倍 ／ '
             f'{r["price"]:,.1f}円（{_chg_label(r)} {r["chg_pct"]:+.2f}%）'
             f'{_own_time(r)}／ '
@@ -372,7 +397,7 @@ def _section(title, lead, rows, start_no, plan):
                  'border-radius:10px;padding:12px 14px;font-size:13px;'
                  'line-height:1.7;color:#7a2d1c;">'
                  f'さらに{dropped}件が条件を満たしましたが、メールに入りきらない'
-                 f'ため載せていません（乖離の浅い方から順に省きました。全{total}件）。'
+                 f'ため載せていません（並びの後ろ＝◎でないもののうち乖離の浅い方から省きました。全{total}件）。'
                  '</div>')
     return head + body
 
@@ -393,8 +418,9 @@ def _text_block(title, rows, start_no, plan):
                 NO_FUND_STATE: "業績は出していません"}[_fund_state(r)]
         n = start_no + i
         if i < n_card:
-            line = (f"{n}. {r['code']} {r['name']}  [{mark}]\n"
-                    f"  {r['price']:,.1f}円 ({_chg_label(r)} {r['chg_pct']:+.2f}%)"
+            line = (f"{n}. {_mark(r)}{r['code']} {r['name']}  [{mark}]\n"
+                    + ("  ランク ◎（業種の勢いがとても弱い。末尾の「ランク（◎）について」）\n" if _mark(r) else "")
+                    + f"  {r['price']:,.1f}円 ({_chg_label(r)} {r['chg_pct']:+.2f}%)"
                     f" {r['asof_label']}時点\n"
                     f"  出来高倍率 {r['ratio']:.2f}倍"
                     f"（当日 {r['vol_today']:,.0f}株 ÷ {r['base_label']} {r['vol_base']:,.0f}株）\n"
@@ -414,32 +440,32 @@ def _text_block(title, rows, start_no, plan):
             if r.get("suspect_split"):
                 line += f"\n  ※要注意: {_split_note(r)}"
         elif i < n_card + n_brief:
-            line = (f"{n}. {r['code']} {r['name']}"
+            line = (f"{n}. {_mark(r)}{r['code']} {r['name']}"
                     f"{'【分割未調整の疑い】' if r.get('suspect_split') else ''}  "
                     f"乖離 {r['dev25_pct']:+.1f}% / 出来高 {r['ratio']:.2f}倍 / "
                     f"{r['price']:,.1f}円({_chg_label(r)} {r['chg_pct']:+.2f}%){_own_time(r)}"
                     f" [{mark}{_fund_age(r)}]\n"
                     f"  {_chart_url(r['code'])}")
         else:
-            line = (f"{n}. {r['code']} {r['name']}"
+            line = (f"{n}. {_mark(r)}{r['code']} {r['name']}"
                     f"{'【分割未調整の疑い】' if r.get('suspect_split') else ''}"
                     f" ／乖離 {r['dev25_pct']:+.1f}% ／出来高 {r['ratio']:.2f}倍{_own_time(r)}")
         out.append(line)
     if dropped:
         out.append(f"（さらに{dropped}件が条件を満たしましたが、メールに"
-                   f"入りきらないため載せていません。乖離の浅い方から順に"
+                   f"入りきらないため載せていません。並びの後ろ（◎でないもののうち乖離の浅い方）から順に"
                    f"省きました。全{total}件）")
     return "\n\n".join(out) + "\n"
 
 
 SEC_TITLE = "出来高が急に増えた下降トレンドの銘柄"
-SEC_LEAD = ("25日線からの乖離が深い順に並べています。"
+SEC_LEAD = ("ランク（◎）の銘柄を先に、その中は25日線からの乖離が深い順に並べています。"
             "業績は一覧を分けるのに使っていません。"
             "過去検証で、業績の条件を満たす側と満たさない側に"
             "ほとんど差が出なかったためです（下の「判定条件」に数字があります）。"
             "業績の数字は銘柄ごとにそのまま出しています。")
 # GitHub 版（株探に届かない）の説明。業績を出していないのに「そのまま出しています」と書いていた（2026-10-19）
-SEC_LEAD_NO_FUND = ("25日線からの乖離が深い順に並べています。"
+SEC_LEAD_NO_FUND = ("ランク（◎）の銘柄を先に、その中は25日線からの乖離が深い順に並べています。"
                     "業績は一覧を分けるのに使っていません（過去検証で、業績の条件を満たす側と満たさない側に"
                     "ほとんど差が出なかったため。下の「判定条件」に数字があります）。"
                     "この版は、業績の出所（株探）に届かないため、業績の数字は出していません。")
@@ -497,7 +523,7 @@ def build(rows, notes, date_label, cutoff_label, failure=None, warning="",
           base_label=None, suspect=False, notice=False, unchecked=0, track_note=""):
     """(subject, html, text) を返す。
 
-    rows     条件に当てはまった銘柄の一覧（25日線からの乖離が深い順）
+    rows     条件に当てはまった銘柄の一覧（◎を先に、その中は25日線からの乖離が深い順）
     failure  渡すと失敗通知メールになる。
     warning  データの欠損など、一覧は出すが但し書きが要るときの文言。
              件名と本文の先頭の両方に出す。奥に書くと気づけないため。
@@ -552,7 +578,8 @@ def build(rows, notes, date_label, cutoff_label, failure=None, warning="",
                 f'<div style="font-size:14px;line-height:1.75;color:#444444;'
                 f'padding:0 0 4px 0;">東証プライム全銘柄から、'
                 f'<b>下降トレンドのまま出来高が急に増えた銘柄</b>を探した結果です。'
-                f'25日線からの乖離が深い順に並べています。</div>')
+                f'ランク（◎＝業種の勢いがとても弱い）の銘柄を先に、その中は25日線からの乖離が深い順に'
+                f'並べています。</div>')
         if warning:
             text = (("※ お知らせ: " if notice
                      else "※ データに問題がある疑いがあります: " if suspect

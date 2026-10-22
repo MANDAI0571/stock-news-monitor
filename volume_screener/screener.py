@@ -672,7 +672,17 @@ def run(asof=None, cutoff=dt.time(14, 0), limit=None, workers=8, volmode="prevda
 
     # 出来高倍率の大きい順に戻すときは key を -r["ratio"] にする。
     rows.sort(key=lambda r: r["dev25_pct"])
-    notes.append("並び順: 25日線からの乖離が深い順（過去検証でこの順が最も差が出たため）")
+    # 2026-10-22: ランク（◎＝業種の勢いがとても弱い）を付け、◎ を先に並べる（rank.py に根拠）。
+    # 付けられなくても一覧は出す（並びは25日線から深い順のまま）
+    try:
+        import rank as RK
+
+        notes.append(RK.apply(rows, target))
+    except Exception as e:                           # noqa: BLE001
+        for r in rows:
+            r.setdefault("mark", "")
+        notes.append(f"ランク（◎）は付けていません（{type(e).__name__}）")
+    notes.append("並び順: ランク（◎）の銘柄を先に、その中は25日線からの乖離が深い順")
     notes.append(f"所要時間: {time.time() - t0:.0f}秒")
     return rows, notes, errors
 

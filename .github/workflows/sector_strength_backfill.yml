@@ -1,0 +1,77 @@
+name: Sector Strength Backfill
+
+# 1回だけ使う（2026-10-22）。出来高急増のランク（◎）は、前営業日の引け後に note_daily_drafts.yml が残す
+# 全市場の業種の勢いを使う。その仕組みは 10/22 の記事づくりの後に入ったので、10/22 の分をここで作り、
+# 10/23 14:05 の出来高急増に間に合わせる。使ったらこのファイルは消す。
+# 残すのは業種名と数字だけ（銘柄は入らない）。
+
+on:
+  push:
+    paths:
+      - ".github/workflows/sector_strength_backfill.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt >/dev/null
+
+      - name: Build sector strength (2026-10-22 close)
+        env:
+          PREFETCH_BATCH_SIZE: "200"
+          YFINANCE_THREADS: "true"
+        run: |
+          python3 - <<'EOF' > strength.log 2>&1 || { tail -5 strength.log; exit 1; }
+          import datetime as dt
+          import note_two as N
+          from scanner.prices import fetch_price_history, prefetch_price_histories
+          from scanner.universe import UniverseConfig, load_jpx_listed
+
+          day = dt.date(2026, 10, 22)
+          uni = load_jpx_listed(UniverseConfig(markets=("prime", "standard", "growth")))
+          prefetch_price_histories(list(uni["ticker"].astype(str)), period="6mo")
+          last_ok = [0]
+
+          def fetch(t):
+              h = fetch_price_history(t, period="6mo")
+              h = h[[(i.date() if hasattr(i, "date") else i) <= day for i in h.index]]
+              if len(h) and (h.index[-1].date() if hasattr(h.index[-1], "date") else h.index[-1]) == day:
+                  last_ok[0] += 1
+              return h
+
+          info, strength, mom60, closes = N.market_facts(uni, fetch, set())
+          N.write_strength(day, strength)
+          print(f"sector_strength day={day} universe={len(uni)} last_bar_ok={last_ok[0]} sectors={len(strength)}")
+          EOF
+          line=$(grep "^sector_strength" strength.log | tail -1)
+          echo "::notice title=sector strength::${line:-（結果の行なし）}"
+          grep -q "^sector_strength" strength.log
+          test -f sector_strength/strength.json
+
+      - name: Keep for the next 13:50 screener
+        uses: actions/cache/save@v4
+        with:
+          path: sector_strength
+          key: sector-strength-2026-10-22
+
+      - name: Notify failure by mail
+        if: failure()
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+        run: python3 notify_workflow_failure.py

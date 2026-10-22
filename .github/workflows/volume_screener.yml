@@ -66,6 +66,15 @@ jobs:
           key: volume-screener-${{ github.run_id }}
           restore-keys: volume-screener-
 
+      - name: Restore sector strength (previous business day)
+        # ランク（◎＝業種の勢いがとても弱い）に使う全市場の業種の勢い。前営業日の引け後に
+        # note_daily_drafts.yml が残した最新のものを使う。前営業日のものでなければ rank.py が付けない。
+        uses: actions/cache/restore@v4
+        with:
+          path: sector_strength
+          key: sector-strength-none-${{ github.run_id }}
+          restore-keys: sector-strength-
+
       - name: Guard (already ran today)
         id: guard
         run: |

@@ -10,8 +10,13 @@
 下書きの保存は note_autosave.py（manifest を読み、1回のログインで保存。公開はしない）。
 押し目とセリングクライマックスの印の根拠は、5年の検証（2026-10-16、review/STATUS.md）:
   押し目: 注意なし 1.37 / 0.93 / 1.77 / 1.48、注意あり 0.97 / 0.82 / 1.34 / 1.04
-  セリングクライマックス: 業種の勢いがとても弱い 2.06 / 2.36 / 3.49 / 1.18、それ以外 1.46 / 1.58 / 1.82 / 0.81
+  セリングクライマックス: 業種の勢いがとても弱い（全市場で測った業種の20日騰落の平均が中央値より4ポイント以上低い）
+    2.65 / 6.52 / 9.87 / 1.38、それ以外 1.48 / 1.59 / 1.87 / 0.83（2026-10-22 に出来高急増のスクリーナーと同じ
+    条件の10,776場面で測り直した。stock-volume-screener/backtest/vs_rank_research.py。以前の区切り
+    （2ポイント）は、急落の13日を除くと2024年に逆になったので4ポイントにした）
 どちらも SS〜C の5段階を支える差は無かったので、SS〜C は付けない。売買をすすめるものではない。
+業種の勢い（全市場、その日の終値）は sector_strength/strength.json にも書く。次の営業日 13:50 の
+出来高急増のスクリーナーが、ランク（◎）にこの前営業日の値を使う（volume_screener/rank.py）。
 
   python3 note_two.py --day 2026-10-15 --out outputs/note_two
     （先に run_screening.py --output-dir outputs/note_two と、
@@ -34,6 +39,18 @@ from note_legal import COMPLIANCE_LINES
 ROOT = Path(__file__).resolve().parent
 JST = dt.timezone(dt.timedelta(hours=9))
 CLIMAX_JSON = ROOT / "volume_screener" / "out_asof" / "result.json"
+CLIMAX_MARK_REL = -0.04          # ◎ の区切り（volume_screener/rank.py の THRESHOLD と同じ）
+STRENGTH_JSON = ROOT / "sector_strength" / "strength.json"
+
+
+def write_strength(day: dt.date, strength: dict, path: Path = STRENGTH_JSON) -> Path:
+    """全市場の業種の勢い（その日の終値）を書く。翌営業日 13:50 の出来高急増のランクに使う。
+    業種名と数字だけ（銘柄は入らない）。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"date": day.isoformat(), "universe": "prime,standard,growth",
+                                "strength": {k: round(float(v), 6) for k, v in strength.items()}},
+                               ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+    return path
 GRADE_ORDER = {g: i for i, g in enumerate(G.GRADES)}
 # 押し目の注意（4期間とも成績が下だった条件）
 PULLBACK_MOM60_LIMIT = 25.0
@@ -107,13 +124,13 @@ def ranking_lines(day: dt.date, alerts: list, pullback: pd.DataFrame, climax: li
         lines += [f"## セリングクライマックス（下降中の出来高急増）全{len(climax)}件（25日線から深い順・終値）", ""]
         for i, r in enumerate(climax[:10], 1):
             rel = strength.get(info.get(str(r["code"]), ("", ""))[1])
-            mark = "◎ " if rel is not None and rel < -0.02 else ""
+            mark = "◎ " if rel is not None and rel < CLIMAX_MARK_REL else ""
             lines.append(f"{i}. {mark}{r['code']} {r['name']}（25日線から{r['dev25_pct']:+.1f}%・出来高{r['ratio']:.1f}倍）")
         if not climax:
             lines.append("本日は該当なし。")
         if len(climax) > 10:
             lines.append(f"（ほか{len(climax) - 10}件）")
-        lines += ["（◎＝業種の勢いがとても弱い）", ""]
+        lines += ["（◎＝業種の勢いがとても弱い：その業種の20日騰落の平均が、全銘柄の中央値より4ポイント以上低い）", ""]
     lines += ["## ランクについて", "",
               "似た形のアラートが過去5年（2022〜2026年）にどうなったかで付けた目安です（52週高値更新・直近高値更新だけ。"
               "プライムとスタンダード。グロースは過去の検証で並びがそろわなかったため付けていません）。"
@@ -127,7 +144,9 @@ def ranking_lines(day: dt.date, alerts: list, pullback: pd.DataFrame, climax: li
     lines += ["", "押し目とセリングクライマックスは、同じ決まりで過去5年を調べると、SS〜Cの5段階を支える差は見つからず、"
               "4つの期間でそろって差が出たのは次の2つだけでした（損益比。2022-23 / 2024 / 2025 / 2026）。",
               "- 押し目：注意なし 1.37 / 0.93 / 1.77 / 1.48、注意あり（グロース・スタンダード、または60日で+25%以上）0.97 / 0.82 / 1.34 / 1.04",
-              "- セリングクライマックス：業種の勢いがとても弱い（◎）2.06 / 2.36 / 3.49 / 1.18、それ以外 1.46 / 1.58 / 1.82 / 0.81",
+              "- セリングクライマックス：業種の勢いがとても弱い（◎。その業種の20日騰落の平均が全銘柄の中央値より4ポイント以上低い）"
+              "2.65 / 6.52 / 9.87 / 1.38、それ以外 1.48 / 1.59 / 1.87 / 0.83（急落で1日に60件以上出た13日を除いても"
+              " ◎ 2.97 / 3.32 / 4.21 / 1.38、それ以外 1.30 / 0.93 / 1.31 / 0.83）",
               "そのため、この2つには SS〜C ではなく「注意なし」「◎」の印だけを付けています。", "", "---", ""] + COMPLIANCE_LINES
     return f"高値更新・押し目・セリングクライマックス ランキング｜{day}", lines
 
@@ -282,6 +301,10 @@ def main(argv=None) -> int:
     except (OSError, ValueError, KeyError):
         pass
     t_a, l_a = ranking_lines(day, alerts, pullback, climax, info, strength, mom60)
+    try:
+        write_strength(day, strength)
+    except OSError as error:
+        print(f"note_two_strength=failed reason={type(error).__name__}", flush=True)
     ledger = (ROOT / "docs" / "claude_300man_ledger.md").read_text(encoding="utf-8")
     t_b, l_b = portfolio_lines(day, journal, orders, ledger, closes)
     path = write_outputs(out, [("ranking", t_a, l_a), ("300man", t_b, l_b)])

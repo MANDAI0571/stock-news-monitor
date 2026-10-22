@@ -157,6 +157,7 @@ def main() -> None:
     _test_intraday_morning_schedule_redundancy()
     _test_intraday_relay_contract()
     _test_volume_screener_on_actions()
+    _test_volume_rank()
     _test_note_two()
     _test_note_two_us()
     _test_note_assets()
@@ -3448,6 +3449,85 @@ def _test_volume_screener_on_actions() -> None:
     assert "投資助言" in text.split(na.PAID_LINE)[0] and "個別のご相談・ご質問" in text.split(na.PAID_LINE)[0]
     assert "将来の結果を保証するものではありません" in text and "データの正確さは保証できません" in text
     print("self-test: 出来高急増スクリーナーの GitHub 版 OK")
+
+
+def _test_volume_rank() -> None:
+    """出来高急増×下降のランク（◎＝業種の勢いがとても弱い。volume_screener/rank.py、2026-10-22）。"""
+    import datetime as dt
+    import importlib.util
+    import json as _json
+    import os as _os
+    import sys
+    import tempfile
+
+    sys.path.insert(0, "volume_screener")
+    import rank as RK
+
+    assert RK.grade(-0.05) == "◎" and RK.grade(-0.03) == "" and RK.grade(None) == ""
+    # 前営業日の値だけを使う（2026-10-23 金 → 10-22 木）。古ければ付けない
+    d = Path(tempfile.mkdtemp())
+    f = d / "strength.json"
+    f.write_text(_json.dumps({"date": "2026-10-22", "strength": {"電気機器": -0.05, "銀行業": 0.01}}), encoding="utf-8")
+    s, why = RK.load_strength(dt.date(2026, 10, 23), str(f), hol=set())
+    assert s == {"電気機器": -0.05, "銀行業": 0.01} and why == ""
+    s, why = RK.load_strength(dt.date(2026, 10, 26), str(f), hol=set())      # 月曜の前営業日は 10-23
+    assert s is None and "前営業日" in why
+    s, why = RK.load_strength(dt.date(2026, 10, 23), str(d / "none.json"), hol=set())
+    assert s is None and "ない" in why
+    # ◎ を先に、その中は25日線から深い順
+    rows = [{"code": "1111", "dev25_pct": -15.0}, {"code": "2222", "dev25_pct": -5.0},
+            {"code": "3333", "dev25_pct": -8.0}, {"code": "4444", "dev25_pct": -20.0}]
+    note = RK.apply(rows, dt.date(2026, 10, 23), strength={"電気機器": -0.05, "銀行業": 0.01},
+                    sectors={"1111": "銀行業", "2222": "電気機器", "3333": "電気機器", "4444": "銀行業"})
+    assert [r["code"] for r in rows] == ["3333", "2222", "4444", "1111"], rows
+    assert [r["mark"] for r in rows] == ["◎", "◎", "", ""] and note.startswith("ランク:") and "2件" in note
+    # 数字が無い日は付けずに理由を残す（並びは25日線から深い順のまま）
+    saved = _os.environ.get("VS_SECTOR_STRENGTH")
+    try:
+        _os.environ["VS_SECTOR_STRENGTH"] = str(d / "none.json")
+        rows2 = [{"code": "1111", "dev25_pct": -5.0}, {"code": "2222", "dev25_pct": -9.0}]
+        note2 = RK.apply(rows2, dt.date(2026, 10, 23), hol=set())
+        assert [r["code"] for r in rows2] == ["2222", "1111"] and all(r["mark"] == "" for r in rows2)
+        assert "付けていません" in note2
+    finally:
+        if saved is None:
+            _os.environ.pop("VS_SECTOR_STRENGTH", None)
+        else:
+            _os.environ["VS_SECTOR_STRENGTH"] = saved
+    # メール（HTML とテキスト）と有料記事に ◎ と説明が出る
+    spec = importlib.util.spec_from_file_location("vs_report_rank", "volume_screener/report.py")
+    vr = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(vr)
+    assert vr._mark({"mark": "◎"}) == "◎ " and vr._mark({}) == ""
+    assert "ランク（◎）について" in vr.criteria_text() and "4ポイント" in vr.criteria_text()
+    spec2 = importlib.util.spec_from_file_location("vs_note_article_rank", "volume_screener/note_article.py")
+    na = importlib.util.module_from_spec(spec2)
+    spec2.loader.exec_module(na)
+    base = {"price": 900.0, "chg_pct": -3.0, "ratio": 2.5, "base_label": "過去20日平均", "turnover20": 2e8,
+            "prev_gap": 0, "suspect_split": None}
+    res = {"date": "2026-10-23", "cutoff": "13:50", "notes": ["ランク: ◎（業種の勢いがとても弱い）1件 / それ以外 1件。"],
+           "rows": [{**base, "code": "3333", "name": "甲", "dev25_pct": -8.0, "mark": "◎"},
+                    {**base, "code": "1111", "name": "乙", "dev25_pct": -15.0, "mark": ""}]}
+    _, lines = na.article_lines(res)
+    text = "\n".join(lines)
+    free, paid = text.split(na.PAID_LINE)
+    assert "（うち ◎ 1件）" in free and "## ランク（◎）について" in free and "3.98 / 5.74 / 8.28 / 1.37" in free
+    assert "**1. ◎ 3333 甲**" in paid and "**2. 1111 乙**" in paid
+    res["notes"] = ["業種の勢いの数字がないため、ランク（◎）は付けていません"]
+    _, lines = na.article_lines(res)
+    assert any("付けていません" in x for x in lines) and not any("（うち ◎" in x for x in lines)
+    # 記事のセリングクライマックスの ◎ も同じ区切り。業種の勢いは翌営業日の13:50に渡す
+    import note_two as N2
+    assert N2.CLIMAX_MARK_REL == RK.THRESHOLD
+    out = N2.write_strength(dt.date(2026, 10, 22), {"電気機器": -0.05}, d / "s" / "strength.json")
+    assert _json.loads(out.read_text(encoding="utf-8"))["date"] == "2026-10-22"
+    nd = Path(".github/workflows/note_daily_drafts.yml").read_text(encoding="utf-8")
+    vs = Path(".github/workflows/volume_screener.yml").read_text(encoding="utf-8")
+    assert "key: sector-strength-${{ steps.day.outputs.day }}" in nd and "github.event_name != 'push'" in nd
+    assert "restore-keys: sector-strength-" in vs
+    assert vs.index("restore-keys: sector-strength-") < vs.index("python3 volume_screener/daily_run.py >")
+    assert '"mark": r.get("mark", "")' in Path("volume_screener/daily_run.py").read_text(encoding="utf-8")
+    print("self-test: 出来高急増のランク（◎）OK")
 
 
 def _test_intraday_alert_grade() -> None:

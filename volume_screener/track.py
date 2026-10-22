@@ -73,8 +73,8 @@ def update(out_dir, today, budget_s=60, workers=4, fetch=None):
         for r in rec.get("rows") or []:
             key = f"{day}|{r.get('code')}"
             if r.get("code") and key not in done:
-                pending.append((day, r["code"], r.get("name", "")))
-    codes = sorted({c for _, c, _ in pending})
+                pending.append((day, r["code"], r.get("name", ""), r.get("mark", "")))
+    codes = sorted({p[1] for p in pending})
     bars, errored, deadline = {}, set(), time.time() + budget_s
 
     def one(code):
@@ -97,19 +97,19 @@ def update(out_dir, today, budget_s=60, workers=4, fetch=None):
             pass
         ex.shutdown(wait=False, cancel_futures=True)
     open_n = 0
-    for day, code, name in pending:
+    for day, code, name, mark in pending:
         b = bars.get(code)
         res = None
         if b and len(b[1]) == len(b[0]):
             res = sim(b[0], b[1], b[2], dt.date.fromisoformat(day))
         if res:
             done[f"{day}|{code}"] = {"ret": round(res[0], 6), "exit": res[1].isoformat(),
-                                     "name": name}
+                                     "name": name, "mark": mark}
         elif ((b or code in errored)
               and (today - dt.date.fromisoformat(day)).days > GIVE_UP_DAYS):
             # 取りに行けて、それでも決着できないときだけ打ち切る。時間切れで
             # 取れなかっただけの場面まで打ち切っていた（2026-10-12、作成時の確認で判明）。
-            done[f"{day}|{code}"] = {"ret": None, "exit": None, "name": name}
+            done[f"{day}|{code}"] = {"ret": None, "exit": None, "name": name, "mark": mark}
         else:
             open_n += 1
     state = {"done": done, "updated": dt.datetime.now(F.JST).strftime("%Y-%m-%d %H:%M"),

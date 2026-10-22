@@ -39,6 +39,11 @@ def article_lines(result: dict, track_note: str = "", warning: str = "") -> tupl
     無料部分と一覧の両方に出す。0件の日に「該当なし」とだけ書いていた（2026-10-19 の見直し）。"""
     rows = result.get("rows") or []
     when = f"{result.get('date')} {result.get('cutoff')}"
+    # ランク（◎）。付けられなかった日は、その理由（screener の経過メモ）を書く（2026-10-22）
+    rank_note = next((str(n) for n in result.get("notes") or []
+                      if "ランク" in str(n) and not str(n).startswith("並び順")), "")
+    ranked = rank_note.startswith("ランク:")
+    n_mark = sum(1 for r in rows if r.get("mark") == "◎")
     title = f"出来高急増×下降トレンド｜{when}時点 {len(rows)}件"
     lines = [f"東証プライム全銘柄（約1,550銘柄）から、下降トレンドの途中で出来高が急に増えた銘柄を"
              f"機械的に探した結果です（{when}時点の値）。",
@@ -47,8 +52,16 @@ def article_lines(result: dict, track_note: str = "", warning: str = "") -> tupl
              "- 出来高が過去20日平均の2倍以上（当日のその時刻までの出来高）",
              "- 現在値 < 25日線 < 75日線、25日線が5本前より低い（下降トレンド）",
              "- 20日平均の売買代金が1億円以上",
-             "- 並び順は25日線から深い順（過去の検証で、この順に差が出たため）", "",
-             f"## 本日の件数：{len(rows)}件", ""]
+             "- 並び順はランク（◎）の銘柄が先、その中は25日線から深い順", "",
+             f"## 本日の件数：{len(rows)}件" + (f"（うち ◎ {n_mark}件）" if ranked and rows else ""), ""]
+    try:
+        import rank as RK
+
+        lines += ["## ランク（◎）について", ""] + RK.explain_lines() + [""]
+    except Exception:                                 # noqa: BLE001
+        pass
+    if rank_note and not ranked:
+        lines += [f"※ 本日は、{rank_note}。", ""]
     if warning:
         lines += [f"**※ 本日のデータについての注意：** {warning}", ""]
     if track_note:
@@ -60,7 +73,9 @@ def article_lines(result: dict, track_note: str = "", warning: str = "") -> tupl
     elif warning:
         lines += ["※ 上の注意のとおり、データの欠け・疑いがあるため、この一覧には見落としがあり得ます。", ""]
     for i, r in enumerate(rows, 1):
-        lines.append(f"**{i}. {r['code']} {r['name']}**")
+        lines.append(f"**{i}. {'◎ ' if r.get('mark') == '◎' else ''}{r['code']} {r['name']}**")
+        if r.get("mark") == "◎":
+            lines.append("- ランク ◎（業種の勢いがとても弱い）")
         lines.append(f"- {float(r['price']):,.1f}円（{'前日比' if not r.get('prev_gap') else '前回の足から'}"
                      f" {float(r['chg_pct']):+.2f}%）・25日線から {float(r['dev25_pct']):+.1f}%")
         lines.append(f"- 出来高 {float(r['ratio']):.2f}倍（{r.get('base_label', '過去20日平均')}比）・"
