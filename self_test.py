@@ -3333,6 +3333,9 @@ def _test_note_two_us() -> None:
     title, lines = U.ranking_lines(dt.date(2026, 10, 15), L)
     text = "\n".join(lines)
     assert "1. UPP Up Inc" in text and "ランクを付けていない理由" in text and "SS" not in text.split("## ランク")[0]
+    # 2026-10-22「米株も日本株と同じように」: 上位の紹介（日本株の SS・S の紹介と同じ形。ランクなし）
+    assert "## 52週高値更新の上位1件（売買代金の大きい順）" in text and "**UPP Up Inc**" in text
+    assert "📈 チャート:https://finance.yahoo.com/quote/UPP/chart" in text and "上抜け" in text
     assert "売買をすすめるものではありません" in text and title.startswith("米株")
     from note_legal import COMPLIANCE_LINES
     assert all(x in lines for x in COMPLIANCE_LINES)

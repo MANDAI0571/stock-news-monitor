@@ -42,6 +42,40 @@ def _r(df: pd.DataFrame) -> dict:
 COLUMNS = ("Open", "High", "Low", "Close", "Volume")
 
 
+def _card_facts(df: pd.DataFrame, vo) -> dict:
+    """52週高値更新の紹介に使う数字（日本株の記事の SS・S の紹介と同じ並び）。最後の足が判定の日。"""
+    hi = df["High"].astype(float).to_numpy()
+    prev = df.iloc[-253:-1]
+    k = int(np.argmax(prev["High"].astype(float).to_numpy()))
+    line = float(prev["High"].astype(float).iloc[k])
+    d = prev.index[k]
+    va20 = float(np.mean(vo[-21:-1])) if len(vo) > 21 else 0.0
+    close = float(df["Close"].astype(float).iloc[-1])
+    prev_close = float(df["Close"].astype(float).iloc[-2])
+    return {"close": close, "high": float(hi[-1]), "line": line,
+            "line_date": d.date() if hasattr(d, "date") else d,
+            "excess": (float(hi[-1]) / line - 1) * 100 if line else 0.0,
+            "vol_ratio": float(vo[-1]) / va20 if va20 else 0.0,
+            "chg": (close / prev_close - 1) * 100 if prev_close else 0.0}
+
+
+def _usd(v: float) -> str:
+    return f"${v / 1e9:.1f}B" if v >= 1e9 else f"${v / 1e6:.0f}M"
+
+
+def card_lines(rows: list[dict], n: int = 5) -> list[str]:
+    """日本株の記事の「過去の成績ランク SS・S の銘柄」と同じ形の紹介（ランクは付けない）。"""
+    out = []
+    for x in rows[:n]:
+        out += [f"**{x['ticker']} {x['name']}**",
+                f"終値:${x['close']:,.2f}（前日比 {x['chg']:+.2f}%） / 当日高値:${x['high']:,.2f} / 種別:52週高値更新",
+                f"52週高値ライン:${x['line']:,.2f}（{x['line_date']}の高値） / 本日${x['high']:,.2f}まで"
+                f" {x['excess']:+.2f}% 上抜け",
+                f"出来高比:{x['vol_ratio']:.2f}倍（前日までの20日平均比） / 売買代金:{_usd(x['turnover'])}（20日平均）",
+                f"📈 チャート:https://finance.yahoo.com/quote/{x['ticker']}/chart", ""]
+    return out
+
+
 def lists_for_day(day: dt.date, histories: dict[str, pd.DataFrame], names: dict[str, str],
                   stats: dict | None = None) -> dict[str, list[dict]]:
     """day の終値で、4つの条件に当てはまった銘柄（それぞれ並べ済み）。最後の足が day でない銘柄は使わない。
@@ -72,7 +106,10 @@ def lists_for_day(day: dt.date, histories: dict[str, pd.DataFrame], names: dict[
         r["dates"].append(day + dt.timedelta(days=1))
         for e in R.events_for(t, r, {}):
             if e["date"] == day:
-                (hi52 if e["kind"] == "52W" else swing).append(row)
+                if e["kind"] == "52W":
+                    hi52.append({**row, **_card_facts(df, vo)})
+                else:
+                    swing.append(row)
         s = pd.Series(cl)
         ma = {k: s.rolling(k).mean().to_numpy() for k in (25, 75, 200, 240)}
         if to20 < MIN_TURNOVER_USD:
@@ -112,6 +149,10 @@ def ranking_lines(day: dt.date, L: dict[str, list[dict]], coverage: tuple[int, i
         # 取れなかった銘柄を黙って落とさない（件数が少なく見えるのはそのため、と分かるように）
         lines += [f"※ この日は {coverage[1]}銘柄のうち {coverage[0]}銘柄しか株価が取れませんでした。"
                   "取れなかった銘柄は、この一覧に入っていません。", ""]
+    if L["hi52"]:
+        # 2026-10-22 持ち主「米株も日本株と同じようにして」。日本株の記事の SS・S の紹介と同じ形で、
+        # 売買代金の大きい上位5件を紹介する。ランクは付けない（下の「ランクを付けていない理由」）
+        lines += [f"## 52週高値更新の上位{min(5, len(L['hi52']))}件（売買代金の大きい順）", ""] + card_lines(L["hi52"])
     lines += top10("52週高値更新（売買代金の大きい順）", L["hi52"])
     lines += top10("直近高値更新（売買代金の大きい順）", L["swing"])
     lines += top10("25MA・200MA 押し目（売買代金の大きい順）", L["pullback"], lambda x: f"（{x['kind']}）")
