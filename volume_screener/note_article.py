@@ -115,6 +115,8 @@ def main(argv=None) -> int:
                           f"手じまいまで終わった{sm['n']}件で、損益比{pf}・勝率{sm['win'] * 100:.0f}%・"
                           f"1回あたり平均{sm['avg'] * 100:+.1f}%でした。"
                           + ("30件に満たないうちは偶然の差が大きい数字です。" if sm["n"] < 30 else ""))
+            ml = TR.mark_line(sm)
+            track_note += (" " + ml) if ml else ""
     except (OSError, ValueError, ImportError):
         track_note = ""
     # メールの先頭の注意書き（「※ …: 」で始まる最初の行）。件名に印があるのに記事に無かった

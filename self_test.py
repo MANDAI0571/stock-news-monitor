@@ -3527,6 +3527,13 @@ def _test_volume_rank() -> None:
     assert "restore-keys: sector-strength-" in vs
     assert vs.index("restore-keys: sector-strength-") < vs.index("python3 volume_screener/daily_run.py >")
     assert '"mark": r.get("mark", "")' in Path("volume_screener/daily_run.py").read_text(encoding="utf-8")
+    # 実際の成績をランクごとに数える（印を記録し始めた後の分だけ。印の無い古い分は数えない）
+    import track as TRK
+    sm = TRK.summary({"since": "2026-10-13", "done": {"a": {"ret": 0.05, "mark": "◎"}, "b": {"ret": -0.03, "mark": ""},
+                                                       "c": {"ret": 0.02}}}, 0)
+    assert sm["n"] == 3 and sm["by_mark"]["◎"]["n"] == 1 and sm["by_mark"][""]["n"] == 1
+    assert "◎ 1件" in TRK.mark_line(sm) and "ランク別" in TRK.note(sm)
+    assert TRK.mark_line(TRK.summary({"since": "x", "done": {"c": {"ret": 0.02}}}, 0)) == ""
     print("self-test: 出来高急増のランク（◎）OK")
 
 

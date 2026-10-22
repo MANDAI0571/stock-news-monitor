@@ -121,14 +121,39 @@ def update(out_dir, today, budget_s=60, workers=4, fetch=None):
     return summary(state, open_n)
 
 
-def summary(state, open_n):
-    rets = [v["ret"] for v in state.get("done", {}).values() if v.get("ret") is not None]
+def _stats(rets):
     win = [x for x in rets if x > 0]
     loss = [x for x in rets if x <= 0]
     pf = (sum(win) / -sum(loss)) if loss and sum(loss) else None
-    return {"since": state.get("since"), "n": len(rets), "open": open_n,
-            "pf": pf, "win": (len(win) / len(rets)) if rets else None,
+    return {"n": len(rets), "pf": pf, "win": (len(win) / len(rets)) if rets else None,
             "avg": (sum(rets) / len(rets)) if rets else None}
+
+
+def summary(state, open_n):
+    done = state.get("done", {}).values()
+    rets = [v["ret"] for v in done if v.get("ret") is not None]
+    out = {"since": state.get("since"), "open": open_n, **_stats(rets)}
+    # ランク（◎）ごと。印を記録し始めた 2026-10-23 以降の分だけ（それより前は印が無いので数えない）
+    marked = [v for v in done if v.get("ret") is not None and "mark" in v]
+    out["by_mark"] = {m: _stats([v["ret"] for v in marked if v["mark"] == m]) for m in ("◎", "")}
+    return out
+
+
+def _cell(x):
+    if not x.get("n"):
+        return "0件"
+    pf = "-" if x["pf"] is None else f"{x['pf']:.2f}"
+    return f"{x['n']}件・損益比{pf}・勝率{x['win'] * 100:.0f}%"
+
+
+def mark_line(s):
+    """ランク（◎）ごとの実際の成績（1文）。◎ の決着が1件も無ければ空。"""
+    bm = (s or {}).get("by_mark") or {}
+    a, b = bm.get("◎") or {}, bm.get("") or {}
+    if not a.get("n"):
+        return ""
+    return (f"ランク別（印を付け始めた2026-10-23以降に手じまいまで終わった分）：◎ {_cell(a)}、"
+            f"それ以外 {_cell(b)}。件数が少ないうちは偶然の差が大きい数字です。")
 
 
 def note(s):
@@ -143,4 +168,5 @@ def note(s):
             f"1回あたり平均{s['avg'] * 100:+.1f}%でした（途中 {s['open']}件）。")
     if s["n"] < 30:
         text += "30件に満たないうちは偶然の差が大きく、上の検証の数字と食い違っても不思議ではありません。"
-    return text
+    ml = mark_line(s)
+    return text + (" " + ml if ml else "")
