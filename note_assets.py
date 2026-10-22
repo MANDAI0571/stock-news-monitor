@@ -52,6 +52,18 @@ DEFAULT_STYLE = ("#1b1f24", "#3a414b", "#e0e0e0", "毎営業日の機械スク�
 FOOTER = "※ 投資助言ではありません。過去の成績は将来の結果を保証しません。"
 
 
+# タイトルの書き出し → 記事の種類（下書きを作る側が、タイトルだけから見出し画像を作るため）
+TITLE_KEYS = (("高値更新・押し目・セリングクライマックス ランキング", "ranking"), ("Claudeが300万円運用", "300man"),
+              ("出来高急増×下降トレンド", "volume"), ("米株 高値更新", "us_ranking"), ("米国株 $20,000運用", "us_20k"))
+
+
+def key_for_title(title: str) -> str:
+    for head, key in TITLE_KEYS:
+        if title.strip().startswith(head):
+            return key
+    return ""
+
+
 def tags_for(key: str) -> list[str]:
     return list(TAGS.get(key, DEFAULT_TAGS))
 
@@ -237,9 +249,16 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="note のタグと見出し画像をメールで送る")
     ap.add_argument("--dir", default="")
     ap.add_argument("--items", default="", help='[{"key": ..., "title": ...}] の JSON（作り直し用）')
-    ap.add_argument("--subject", required=True)
+    ap.add_argument("--subject", default="")
     ap.add_argument("--out", default="", help="画像を書く場所（既定は一時フォルダ）")
+    ap.add_argument("--image-for-title", default="", help="このタイトルの見出し画像だけを --out（ファイル名）に作る")
     a = ap.parse_args(argv)
+    if a.image_for_title:
+        # 下書きを作る Mac 側から使う（2026-10-22）。メールは送らない
+        key = key_for_title(a.image_for_title)
+        path = make_image(key, a.image_for_title, Path(a.out))
+        print(f"note_image={'made' if path else 'failed'} key={key or '-'} path={path or '-'}", flush=True)
+        return 0 if path else 1
     if a.items:
         items = json.loads(a.items)
     elif a.dir and (Path(a.dir) / "note_drafts_manifest.json").exists():

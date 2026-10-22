@@ -63,15 +63,10 @@ def send(note_dir: Path, subject: str) -> bool:
     subj, text, html_doc = build_mail(Path(note_dir), subject)
     send_gmail(subj, text, config, allow_non_business_day=True, html_body=html_doc)
     print("note_mail=sent", flush=True)
-    # 2026-10-22 持ち主「メールでnoteのタグと画像だけそれぞれの記事のぶんを送って」。本文のメールとは
-    # 別の1通にする（件名に「note貼り付け用」を含めない）。転んでも本文のメールは送り済みなので失敗にしない
-    try:
-        import note_assets
-
-        note_assets.send(note_assets.items_from_dir(Path(note_dir)), note_assets.assets_subject(subject),
-                         Path(note_dir) / "assets")
-    except Exception as error:  # noqa: BLE001
-        print(f"note_assets=failed reason={type(error).__name__}", flush=True)
+    # タグと見出し画像の別メール（【noteタグ・画像】）は 2026-10-22 夜にやめた。持ち主「メールはリアルタイムと
+    # 出来高急増以外はない方向で」「タグ画像もコピペワンタッチで」。タグは記事の最後の1行に入れ
+    # （note_two.write_outputs）、見出し画像は下書きを作るときに Mac 側で作って note に入れる
+    # （note_assets.py --image-for-title。持ち主の了承あり）。このメール自体も Gmail のフィルタで受信トレイに入れない。
     return True
 
 

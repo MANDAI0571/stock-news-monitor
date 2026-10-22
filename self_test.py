@@ -3378,9 +3378,19 @@ def _test_note_assets() -> None:
         assert Image.open(built[0]["image"]).size == (1280, 670)
     _, text, html_doc = NA.build_mail(built, subj)
     assert NA.tag_line("volume") in text and "見出し画像" in text and NA.tag_line("volume") in html_doc
-    # 本文の貼り付け用メールのあとに送る。転んでも本文のメールは失敗にしない
+    # 2026-10-22 夜: 別メールはやめた（タグは記事の最後の1行、見出し画像は下書きを作る Mac 側で入れる）
     src = Path("note_mail.py").read_text(encoding="utf-8")
-    assert src.index('print("note_mail=sent"') < src.index("note_assets.send(")
+    assert "note_assets.send(" not in src
+    assert NA.key_for_title("高値更新・押し目・セリングクライマックス ランキング｜2026-10-22") == "ranking"
+    assert NA.key_for_title("米国株 $20,000運用｜Claudeの実験記録 2026-10-21") == "us_20k"
+    assert NA.key_for_title("出来高急増×下降トレンド｜2026-10-22 13:50時点 2件") == "volume"
+    assert NA.key_for_title("Claudeが300万円運用｜運用状況 2026-10-22") == "300man"
+    assert NA.key_for_title("米株 高値更新・押し目・セリングクライマックス 一覧｜2026-10-21") == "us_ranking"
+    # 記事の最後にタグの1行（コピーしてハッシュタグの欄に貼ると全部入る）
+    import note_two as N2
+    d2 = Path(tempfile.mkdtemp())
+    N2.write_outputs(d2, [("volume", "T", ["本文"])])
+    assert (d2 / "note_volume.md").read_text(encoding="utf-8").rstrip().endswith(NA.tag_line("volume"))
     # 見出し画像の字体を入れる（3つのワークフロー）
     for wf in ("note_daily_drafts.yml", "volume_screener.yml", "us_screening_check.yml"):
         assert 'japanize-matplotlib==1.1.3' in Path(".github/workflows", wf).read_text(encoding="utf-8"), wf
