@@ -4423,14 +4423,22 @@ def _test_us_daily_runner() -> None:
     assert source.index("data_ready(session)") < source.index("fill_us_orders(session)")
     assert "return 1 if last_try else 0" in source
     wf_us = Path(".github/workflows/us_screening_check.yml").read_text(encoding="utf-8")
-    assert "US_LAST_TRY: ${{ github.event.schedule == '0 0 * * 2-6' && '1' || '0' }}" in wf_us
+    assert "US_LAST_TRY: ${{ github.event.schedule == '0 2 * * 2-6' && '1' || '0' }}" in wf_us
+    for c in ('"0 22 * * 1-5"', '"0 23 * * 1-5"', '"0 0 * * 2-6"', '"0 1 * * 2-6"', '"0 2 * * 2-6"'):
+        assert f"cron: {c}" in wf_us, c                    # 最後の回は一番うしろの cron
     sess = date(2026, 10, 21)
     have = pd.DataFrame({"Close": [1.0, 2.0, 3.0]}, index=pd.to_datetime(["2026-10-19", "2026-10-20", "2026-10-21"]))
     stale = have.iloc[:2]
     ok, detail = rd.data_ready(sess, fetch=lambda t: have, prefetch=lambda ts: None)
     assert ok and detail == "20/20", detail
     ok, detail = rd.data_ready(sess, fetch=lambda t: stale, prefetch=lambda ts: None)
-    assert not ok and detail == "0/20", detail
+    assert not ok and detail == "0/20。最後の足 2026-10-20:20", detail
+    def flaky(t):                                       # 取得が転んだ銘柄は「取れず」に数える
+        if t in ("AAPL", "MSFT"):
+            raise TimeoutError("x")
+        return stale
+    ok, detail = rd.data_ready(sess, fetch=flaky, prefetch=lambda ts: None)
+    assert not ok and detail == "0/20。最後の足 2026-10-20:18、取れず 2", detail
     nan_last = have.copy(); nan_last.iloc[-1, 0] = float("nan")       # 足はあるが値が空
     assert not rd.data_ready(sess, fetch=lambda t: nan_last, prefetch=lambda ts: None)[0]
     import tempfile

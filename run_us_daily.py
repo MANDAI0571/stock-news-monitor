@@ -154,16 +154,27 @@ def data_ready(session: date, fetch=None, prefetch=None) -> tuple[bool, str]:
         prefetch(sample)
     except Exception as error:  # noqa: BLE001 - 一括が転んでも1銘柄ずつ見る
         print(f"us_ready_prefetch=failed reason={type(error).__name__}", flush=True)
-    ok = 0
+    ok, errors = 0, 0
+    lasts: dict[str, int] = {}
     for t in sample:
         try:
             closes = fetch(t)["Close"].dropna()
             days = [(d.date() if hasattr(d, "date") else d) for d in closes.index]
             days = [d for d in days if d <= session]
             ok += bool(days) and days[-1] == session
+            key = days[-1].isoformat() if days else "なし"
+            lasts[key] = lasts.get(key, 0) + 1
         except Exception:  # noqa: BLE001
+            errors += 1
             continue
-    return ok >= len(sample) * READY_SHARE, f"{ok}/{len(sample)}"
+    ready = ok >= len(sample) * READY_SHARE
+    detail = f"{ok}/{len(sample)}"
+    if not ready:
+        # 2026-10-23: 10:21 の回でも 0/20 だった（同じ時刻に Mac からは 20/20）。足が古いのか、取得が
+        # 転んだのかを公開の注記で見分けられるよう、最後の足の日付と取れなかった数を添える（銘柄名は出さない）
+        seen = "、".join(f"{d}:{n}" for d, n in sorted(lasts.items(), reverse=True))
+        detail += f"。最後の足 {seen or 'なし'}" + (f"、取れず {errors}" if errors else "")
+    return ready, detail
 
 
 def _read_stamp() -> str:
