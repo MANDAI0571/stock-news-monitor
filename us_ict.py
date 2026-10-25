@@ -123,7 +123,18 @@ def section_lines(rows: list[dict], limit: int = 15, market: str = "us") -> list
     """一覧記事の節。rows は state() の結果に ticker / name / turnover を足したもの。
     market="jp" は日本株のランキング記事用（円で書き、日本株の過去の数字を出す。2026-10-25）。"""
     pf = lambda xs: " / ".join(f"{x:.2f}" for x in xs)  # noqa: E731
+    import re
+
     rows = sorted(rows, key=lambda x: (x["kind"] != "③", -x.get("turnover", 0)))
+    # 同じ会社の別の株（Alphabet の Class A と Class C など）は、売買代金の大きい方の1行だけにする（2026-10-26）
+    seen, uniq = set(), []
+    for x in rows:
+        key = re.sub(r"\s*\(Class [A-Z]\)", "", str(x.get("name", ""))).strip() or x["ticker"]
+        if key in seen:
+            continue
+        seen.add(key)
+        uniq.append(x)
+    rows = uniq
     out = [f"## 押し目の箱（オーダーブロック）まで戻った銘柄（{len(rows)}件・③が先、その中は売買代金の大きい順）", "",
            "上昇の節目（直前の戻り高値を終値で上抜け）のあと、上昇が始まる直前の最後の陰線（箱）まで戻ってきた銘柄です。"
            "箱がレンジ（上昇の始まりの安値〜その後の高値）の真ん中より下にあるものだけを出しています。"

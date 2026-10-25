@@ -3355,6 +3355,10 @@ def _test_us_ict() -> None:
     for bad in ("おすすめ", "買い時", "必ず上がる"):
         assert bad not in text, bad
     assert "本日は該当なし。" in "\n".join(us_ict.section_lines([]))
+    two = [{**st, "ticker": "GOOGL", "name": "Alphabet Inc. (Class A)", "turnover": 2e9},
+           {**st, "ticker": "GOOG", "name": "Alphabet Inc. (Class C)", "turnover": 1e9}]
+    tt = "\n".join(us_ict.section_lines(two))
+    assert "GOOGL" in tt and "GOOG Alphabet" not in tt and "（1件" in tt, tt      # 同じ会社は1行
     src = Path("note_two_us.py").read_text(encoding="utf-8")
     assert "us_ict.state(df.iloc[-260:])" in src and 'us_ict.section_lines(L.get("ict", []))' in src
     jsrc = Path("note_two.py").read_text(encoding="utf-8")
