@@ -314,6 +314,19 @@ def main(argv=None) -> int:
         write_strength(day, strength)
     except OSError as error:
         print(f"note_two_strength=failed reason={type(error).__name__}", flush=True)
+    # 2026-10-25 持ち主「今後はデータを残し調査する」。高値更新の銘柄の「注文の溜まり」を記録し、その後どちらへ
+    # 先に動いたかを判定する（liquidity_track.py）。記事には出さない。転んでも記事づくりは止めない。
+    try:
+        import liquidity_track as LT
+
+        fetch18 = lambda t: fetch_price_history(t, period="18mo")  # noqa: E731
+        added = LT.record(day, alerts, fetch18)
+        judged = LT.evaluate(fetch18)
+        print(f"liquidity_track_added={added} judged={judged}", flush=True)
+        for line in LT.summary_lines():
+            print(line, flush=True)
+    except Exception as error:                                     # noqa: BLE001
+        print(f"liquidity_track=failed reason={type(error).__name__}", flush=True)
     ledger = (ROOT / "docs" / "claude_300man_ledger.md").read_text(encoding="utf-8")
     t_b, l_b = portfolio_lines(day, journal, orders, ledger, closes)
     path = write_outputs(out, [("ranking", t_a, l_a), ("300man", t_b, l_b)])

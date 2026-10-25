@@ -105,7 +105,18 @@ jobs:
           python3 volume_screener/daily_run.py --asof "${{ steps.day.outputs.day }}" > /dev/null 2> "$OUT/climax.log" || true
           tail -2 "$OUT/climax.log" | grep -v "split_adjusted" || true
 
+      - name: Restore liquidity track
+        # 高値更新の銘柄の「注文の溜まり」の記録（liquidity_track.py）。前の回までの記録を戻して書き足す（2026-10-25）
+        if: steps.day.outputs.run == 'true'
+        continue-on-error: true
+        uses: actions/cache/restore@v4
+        with:
+          path: liquidity_track
+          key: liquidity-track-none-${{ github.run_id }}
+          restore-keys: liquidity-track-
+
       - name: Build two articles
+        id: build
         # 確認（push）のときは失敗しても失敗メールを出さない（本番の回だけ知らせる）
         continue-on-error: ${{ github.event_name == 'push' }}
         if: steps.day.outputs.run == 'true' && (steps.done.outputs.cache-hit != 'true' || contains(github.event.head_commit.message || '', '[note-mail]'))
@@ -117,7 +128,17 @@ jobs:
         run: |
           python3 note_two.py --day "${{ steps.day.outputs.day }}" --out "$OUT" > "$OUT/build.log" 2>&1 || { tail -25 "$OUT/build.log"; exit 1; }
           grep "^note_two" "$OUT/build.log"
+          grep "^liquidity_track" "$OUT/build.log" | while read -r l; do echo "::notice title=liquidity track::$l"; done || true
           test -f "$OUT/note_drafts_manifest.json"
+
+      - name: Keep liquidity track
+        # 記録は銘柄が入るのでコミットせず、キャッシュに置く。push（確認）の回の記録は残さない
+        if: github.event_name != 'push' && steps.build.outcome == 'success' && hashFiles('liquidity_track/records.jsonl') != ''
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: liquidity_track
+          key: liquidity-track-${{ steps.day.outputs.day }}-${{ github.run_id }}
 
       - name: Keep sector strength for the next 13:50 screener
         # 全市場の業種の勢い（その日の終値。業種名と数字だけ）を、翌営業日 14:05 の出来高急増の

@@ -22,3 +22,6 @@ outputs/*
 # コミットしない（記録は Actions のキャッシュに置く）。
 volume_screener/out/
 volume_screener/out_asof/
+
+# 高値更新の銘柄の「注文の溜まり」の記録（liquidity_track.py、2026-10-25）。銘柄が入るのでコミットしない（Actions のキャッシュに置く）。
+liquidity_track/

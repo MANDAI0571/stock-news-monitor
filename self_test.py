@@ -159,6 +159,7 @@ def main() -> None:
     _test_volume_screener_on_actions()
     _test_volume_rank()
     _test_note_two()
+    _test_liquidity_track()
     _test_note_two_us()
     _test_note_assets()
     _test_intraday_alert_grade()
@@ -3463,6 +3464,55 @@ def _test_volume_screener_on_actions() -> None:
     assert "将来の結果を保証するものではありません" in text and "データの正確さは保証できません" in text
     print("self-test: 出来高急増スクリーナーの GitHub 版 OK")
 
+
+
+def _test_liquidity_track() -> None:
+    """高値更新の銘柄の「注文の溜まり」の記録と判定（liquidity_track.py、2026-10-25 持ち主「今後はデータを残し調査する」）。"""
+    import datetime as dt
+    import tempfile
+    from types import SimpleNamespace
+
+    import pandas as pd
+
+    import liquidity_track as LT
+
+    days = pd.bdate_range("2026-01-05", periods=120)
+    # 山（60本目の高値120）→ 谷（90本目の安値95）→ 上げて最後に新高値、という形
+    close = [100 + i * 0.3 for i in range(60)] + [118 - (i * 0.8) for i in range(30)] + [95 + i * 1.0 for i in range(30)]
+    df = pd.DataFrame({"Open": close, "High": [c + 1 for c in close], "Low": [c - 1 for c in close],
+                       "Close": close, "Volume": [1000.0] * 120}, index=days)
+    df.loc[days[59], "High"] = 125.0        # 戻り高値（終値より上）
+    lv = LT.levels(df.iloc[:-5])
+    assert lv and lv["below1"] is not None and lv["below1"] < lv["close"], lv
+    assert lv["poc"] and lv["val"] <= lv["poc"] <= lv["vah"], lv
+    assert lv["above"] == 125.0, lv
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "records.jsonl"
+        day = days[-21].date()
+        hist = df.iloc[:-20]
+        a = SimpleNamespace(code="1234", grade="SS", alert_type="52週高値更新", market="東証プライム", is_fresh_break=True)
+        b = SimpleNamespace(code="1234", grade="SS", alert_type="直近高値ブレイク", market="東証プライム", is_fresh_break=True)
+        assert LT.record(day, [b, a], lambda t: hist, path) == 1
+        assert LT.record(day, [a], lambda t: hist, path) == 0          # 同じ日・同じ銘柄は二重に足さない
+        rec = LT._read(path)[0]
+        assert rec["kind"] == "52週高値更新" and rec["grade"] == "SS" and rec["final"] is False
+        stale = dt.date(2030, 1, 1)                                     # 記事の日の足でなければ記録しない
+        assert LT.record(stale, [a], lambda t: hist, path) == 0
+        # その後: 1本目で押し安値を割る → 下が先
+        after = df.copy()
+        after.iloc[-20:, after.columns.get_loc("Low")] = rec["below1"] - 1
+        assert LT.evaluate(lambda t: after, path) == 1
+        r2 = LT._read(path)[0]
+        assert r2["sym"] == "down" and r2["sym_day"] == 1 and r2["final"] is True and "ret20" in r2, r2
+        lines = LT.summary_lines(path)
+        assert lines[0].startswith("liquidity_track records=1") and "1234" not in " ".join(lines), lines
+    wf = Path(".github/workflows/note_daily_drafts.yml").read_text(encoding="utf-8")
+    assert "restore-keys: liquidity-track-" in wf and "key: liquidity-track-${{ steps.day.outputs.day }}" in wf
+    assert "github.event_name != 'push' && steps.build.outcome == 'success'" in wf
+    assert "liquidity_track/" in Path(".gitignore").read_text(encoding="utf-8")
+    src = Path("note_two.py").read_text(encoding="utf-8")
+    assert "LT.record(day, alerts, fetch18)" in src and "liquidity_track=failed" in src
+    print("self-test: 注文の溜まりの記録と判定 OK", flush=True)
 
 def _test_volume_rank() -> None:
     """出来高急増×下降のランク（◎＝業種の勢いがとても弱い。volume_screener/rank.py、2026-10-22）。"""
