@@ -3285,6 +3285,16 @@ def _test_note_two() -> None:
     assert all(x in lines for x in COMPLIANCE_LINES)
     _, none_lines = N.ranking_lines(dt.date(2026, 10, 15), [], pb.iloc[0:0], None, {}, {}, {})
     assert "本日は数字を取得できませんでした" in "\n".join(none_lines)
+    assert "押し目の箱" not in "\n".join(none_lines)                  # 判定できなかった日（None）は節を出さない
+    # 2026-10-25: 押し目の箱（us_ict.py）を日本株のランキング記事にも出す（円で書き、日本株の過去の数字）
+    ict = [{"kind": "③", "close": 1234.0, "box_lo": 1100.0, "box_hi": 1150.0, "stop": 1095.0, "target": 1600.0,
+            "rr": 2.6, "ticker": "1234", "name": "テスト", "turnover": 1e9}]
+    _, ict_lines = N.ranking_lines(dt.date(2026, 10, 15), [], pb.iloc[0:0], None, {}, {}, {}, ict)
+    it = "\n".join(ict_lines)
+    assert "押し目の箱（オーダーブロック）まで戻った銘柄（1件" in it and "1. ③ 1234 テスト（終値1,234.0円" in it, it
+    assert "1.16 / 3.18 / 2.05 / 3.12" in it and it.index("押し目の箱") < it.index("## ランクについて")
+    _, ict0 = N.ranking_lines(dt.date(2026, 10, 15), [], pb.iloc[0:0], None, {}, {}, {}, [])
+    assert "押し目の箱（オーダーブロック）まで戻った銘柄（0件" in "\n".join(ict0) and "本日は該当なし。" in "\n".join(ict0)
     journal = pd.DataFrame([{"status": "OPEN", "code": "9697", "name": "カプコン", "shares": "100", "entry_date": "2026-10-05",
                              "entry_price": "4434", "mark_price": "4481", "last_mark_date": "2026-10-15"}]
                            ).assign(exit_date="", realized_pnl="", exit_return_pct="", exit_reason="")
@@ -3347,6 +3357,8 @@ def _test_us_ict() -> None:
     assert "本日は該当なし。" in "\n".join(us_ict.section_lines([]))
     src = Path("note_two_us.py").read_text(encoding="utf-8")
     assert "us_ict.state(df.iloc[-260:])" in src and 'us_ict.section_lines(L.get("ict", []))' in src
+    jsrc = Path("note_two.py").read_text(encoding="utf-8")
+    assert "ict_rows(universe" in jsrc and 'us_ict.section_lines(ict, market="jp")' in jsrc and "note_two_ict=failed" in jsrc
     print("self-test: 米株の押し目の箱 OK", flush=True)
 
 def _test_note_two_us() -> None:

@@ -79,7 +79,7 @@ def _grade_key(a) -> tuple:
 
 
 def ranking_lines(day: dt.date, alerts: list, pullback: pd.DataFrame, climax: list[dict] | None,
-                  info: dict, strength: dict, mom60: dict) -> tuple[str, list[str]]:
+                  info: dict, strength: dict, mom60: dict, ict: list[dict] | None = None) -> tuple[str, list[str]]:
     """(A) のタイトルと本文（markdown 風の行）。alerts は今日はじめての高値更新（is_fresh_break）。"""
     import intraday_high_alert as M
 
@@ -131,6 +131,11 @@ def ranking_lines(day: dt.date, alerts: list, pullback: pd.DataFrame, climax: li
         if len(climax) > 10:
             lines.append(f"（ほか{len(climax) - 10}件）")
         lines += ["（◎＝業種の勢いがとても弱い：その業種の20日騰落の平均が、全銘柄の中央値より4ポイント以上低い）", ""]
+    if ict is not None:
+        # 2026-10-25: 押し目の箱（オーダーブロック。us_ict.py）。米株と同じ手法で、プライムの5年でも4期間そろって上だった
+        import us_ict
+
+        lines += us_ict.section_lines(ict, market="jp")
     lines += ["## ランクについて", "",
               "似た形のアラートが過去5年（2022〜2026年）にどうなったかで付けた目安です（52週高値更新・直近高値更新だけ。"
               "プライムとスタンダード。グロースは過去の検証で並びがそろわなかったため付けていません）。"
@@ -251,6 +256,32 @@ def market_facts(universe: pd.DataFrame, fetch, codes_for_close: set[str]):
     return info, G.sector_strength(ret20_by_sector, all_ret20), mom60, closes
 
 
+def ict_rows(universe: pd.DataFrame, fetch, day: dt.date) -> list[dict]:
+    """東証プライム・20日平均売買代金1億円以上で、押し目の箱（us_ict.state）に当てはまる銘柄。最後の足が day の銘柄だけ。"""
+    import us_ict
+
+    rows = []
+    for r in universe.itertuples():
+        if str(r.market) != "東証プライム":
+            continue
+        try:
+            df = fetch(str(r.ticker))
+        except Exception:                                   # noqa: BLE001
+            continue
+        if df is None or len(df) < 60 or df.index[-1].date() != day:
+            continue
+        to20 = float((df["Close"].astype(float) * df["Volume"].fillna(0).astype(float)).iloc[-20:].mean())
+        if to20 < 1e8:
+            continue
+        try:
+            st = us_ict.state(df.iloc[-260:])
+        except Exception:                                   # noqa: BLE001
+            st = None
+        if st:
+            rows.append({**st, "ticker": str(r.code), "name": str(r.name), "turnover": to20})
+    return rows
+
+
 def write_outputs(out: Path, items: list[tuple[str, str, list[str]]]) -> Path:
     out.mkdir(parents=True, exist_ok=True)
     manifest = []
@@ -309,7 +340,12 @@ def main(argv=None) -> int:
             climax = cj["rows"]
     except (OSError, ValueError, KeyError):
         pass
-    t_a, l_a = ranking_lines(day, alerts, pullback, climax, info, strength, mom60)
+    try:
+        ict = ict_rows(universe, lambda t: fetch_price_history(t, period="18mo"), day)
+    except Exception as error:                                     # noqa: BLE001
+        print(f"note_two_ict=failed reason={type(error).__name__}", flush=True)
+        ict = None
+    t_a, l_a = ranking_lines(day, alerts, pullback, climax, info, strength, mom60, ict)
     try:
         write_strength(day, strength)
     except OSError as error:
@@ -332,7 +368,7 @@ def main(argv=None) -> int:
     path = write_outputs(out, [("ranking", t_a, l_a), ("300man", t_b, l_b)])
     # 公開リポジトリの実行ログなので、銘柄は出さず件数だけ出す
     print(f"note_two_built day={day} alerts={len(alerts)} pullback={len(pullback)} "
-          f"climax={'-' if climax is None else len(climax)} manifest={path}", flush=True)
+          f"climax={'-' if climax is None else len(climax)} ict={'-' if ict is None else len(ict)} manifest={path}", flush=True)
     return 0
 
 
