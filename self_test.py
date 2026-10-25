@@ -161,6 +161,7 @@ def main() -> None:
     _test_note_two()
     _test_liquidity_track()
     _test_note_two_us()
+    _test_us_ict()
     _test_note_assets()
     _test_intraday_alert_grade()
     _test_alert_grade_track()
@@ -3308,6 +3309,45 @@ def _test_note_two() -> None:
     assert "\n  schedule:" not in old, "古い4本の note の定時実行が戻っている"
     print("self-test: note の2本立て OK")
 
+
+
+def _test_us_ict() -> None:
+    """米株の押し目の箱（オーダーブロック。us_ict.py、2026-10-25 持ち主「この動画と同じトレードがしたい銘柄を米株から」）。"""
+    import us_ict
+
+    rows = []
+    for i in range(40):
+        c = 80 + i * 0.4
+        rows.append((c - 0.2, c + 0.3 + (i % 3) * 0.05, c - 0.4, c))
+    for c in [100 + i * 0.5 for i in range(10)]:
+        rows.append((c - 0.2, c + 0.5, c - 0.5, c))
+    rows.append((105.5, 108.0, 105.0, 106.0))                                        # 戻り高値
+    rows += [(c + 0.5, c + 0.8, c - 0.3, c) for c in (104, 102, 100, 98, 96, 95)]   # 陰線で下げる（最後が箱）
+    rows += [(c - 2.5, c + 0.5, c - 2.8, c) for c in (98, 101, 104, 107, 110, 113)]  # 上げて 110 で上抜け
+    rows += [(c - 2.0, c + 1.0, c - 2.3, c) for c in (116, 119, 121, 122)]          # 高値 123
+    rows += [(c + 0.5, c + 0.8, c - 0.5, c) for c in (118, 114, 110, 106, 102, 99)]  # 戻り
+    rows += [(96.5, 96.8, 95.5, 96.0), (96.0, 96.4, 95.0, 95.6), (96.0, 101.0, 95.8, 100.5)]
+    df = pd.DataFrame(rows, columns=["Open", "High", "Low", "Close"], index=pd.bdate_range("2026-01-05", periods=len(rows)))
+    st = us_ict.state(df)
+    assert st and st["kind"] == "③" and st["box_lo"] == 94.7 and st["box_hi"] == 95.8 and st["target"] == 123.0, st
+    assert abs(st["stop"] - 95.0 * 0.998) < 1e-9 and st["rr"] >= 2, st
+    st2 = us_ict.state(df.iloc[:-2])                       # 箱に入っただけ（③はまだ）
+    assert st2 and st2["kind"] == "②" and abs(st2["stop"] - 94.7 * 0.998) < 1e-9, st2
+    broken = df.copy()
+    broken.iloc[-1] = [96.0, 96.2, 90.0, 90.5]             # レンジの安値を終値で割った → 形は終わり
+    assert us_ict.state(broken) is None
+    near = df.copy()
+    near.iloc[-1] = [96.0, 121.0, 95.8, 120.0]             # 利確まで近すぎる（利幅が損切り幅の2倍未満）→ 出さない
+    assert us_ict.state(near) is None
+    lines = us_ict.section_lines([{**st, "ticker": "TEST", "name": "Test Inc", "turnover": 1e9}])
+    text = "\n".join(lines)
+    assert "1. ③ TEST Test Inc" in text and "利幅は損切り幅の4.0倍" in text and "1.35 / 2.33 / 2.59 / 3.00" in text, text
+    for bad in ("おすすめ", "買い時", "必ず上がる"):
+        assert bad not in text, bad
+    assert "本日は該当なし。" in "\n".join(us_ict.section_lines([]))
+    src = Path("note_two_us.py").read_text(encoding="utf-8")
+    assert "us_ict.state(df.iloc[-260:])" in src and 'us_ict.section_lines(L.get("ict", []))' in src
+    print("self-test: 米株の押し目の箱 OK", flush=True)
 
 def _test_note_two_us() -> None:
     """米株の note 2本立て（note_two_us.py、2026-10-16 追加）。最後の足の高値更新・押し目・セリング

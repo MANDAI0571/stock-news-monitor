@@ -5,7 +5,8 @@
   (B) Claudeが$20,000運用（us_portfolio.save_us_portfolio_note が作る記事をそのまま使う。
       台帳との突き合わせは validate_us_notes が済ませている）
 
-日本株（note_two.py）と同じ4つの条件で、直前の米国営業日の終値で並べる。ただし印は付けない:
+日本株（note_two.py）と同じ4つの条件と、押し目の箱（us_ict.py、2026-10-25）で、直前の米国営業日の終値で並べる。
+高値更新などには印を付けない:
 日本株の印（高値更新の SS〜C、押し目の注意、セリングクライマックスの◎）を米株の5年
 （511銘柄、2026-10-16）で同じ決まりで確かめると、期間ごとの並びがそろわなかった
 （高値更新は 2022-23 年に C が最も良い 1.43 など）。米株だけで探しても、4期間でそろった差は
@@ -25,6 +26,7 @@ import numpy as np
 import pandas as pd
 
 import alert_rank_research as R
+import us_ict
 from note_legal import COMPLIANCE_LINES
 from note_two import body_html, write_outputs
 
@@ -81,7 +83,7 @@ def lists_for_day(day: dt.date, histories: dict[str, pd.DataFrame], names: dict[
     """day の終値で、4つの条件に当てはまった銘柄（それぞれ並べ済み）。最後の足が day でない銘柄は使わない。
     株価が取れなかった銘柄（空の表・列の欠け）は飛ばす（2026-10-20 に、取れなかった銘柄の空の表で
     KeyError: ['Close'] となり、米株の記事が1本も作れなかった）。stats には使えた銘柄の数を入れる。"""
-    hi52, swing, pb, sc = [], [], [], []
+    hi52, swing, pb, sc, ict = [], [], [], [], []
     used = 0
     for t, df in histories.items():
         if df is None or df.empty or any(c not in df.columns for c in COLUMNS):
@@ -126,6 +128,13 @@ def lists_for_day(day: dt.date, histories: dict[str, pd.DataFrame], names: dict[
                         kinds.append(f"{k}MA")
                 if kinds:
                     pb.append({**row, "kind": "・".join(kinds)})
+        # 押し目の箱（オーダーブロック）。2026-10-25 持ち主「この動画と同じトレードがしたい銘柄を米株から」（us_ict.py）
+        try:
+            st_ = us_ict.state(df.iloc[-260:])
+        except Exception:                                   # noqa: BLE001
+            st_ = None
+        if st_:
+            ict.append({**row, **st_})
         # セリングクライマックス（日本株のスクリーナーと同じ: 出来高が前日までの20日平均の2倍以上、
         # 現在値 < 25日線 < 75日線、25日線が5本前より低い）
         va20 = float(np.mean(vo[-21:-1]))
@@ -135,7 +144,7 @@ def lists_for_day(day: dt.date, histories: dict[str, pd.DataFrame], names: dict[
         stats.update(used=used, total=len(histories))
     by_turnover = lambda L: sorted(L, key=lambda x: -x["turnover"])  # noqa: E731
     return {"hi52": by_turnover(hi52), "swing": by_turnover(swing), "pullback": by_turnover(pb),
-            "climax": sorted(sc, key=lambda x: x["dev25"])}
+            "climax": sorted(sc, key=lambda x: x["dev25"]), "ict": ict}
 
 
 def ranking_lines(day: dt.date, L: dict[str, list[dict]], coverage: tuple[int, int] | None = None) -> tuple[str, list[str]]:
@@ -143,7 +152,7 @@ def ranking_lines(day: dt.date, L: dict[str, list[dict]], coverage: tuple[int, i
         out = [f"## {title} TOP10（全{len(rows)}件）", ""]
         out += [f"{i}. {x['ticker']} {x['name']}{extra(x)}" for i, x in enumerate(rows[:10], 1)]
         return out + ([] if rows else ["該当なし。"]) + [""]
-    lines = [f"{day}（米国時間）の終値で、S&P500 と NASDAQ の大型株から、4つの条件に当てはまった銘柄を機械的に並べた一覧です。",
+    lines = [f"{day}（米国時間）の終値で、S&P500 と NASDAQ の大型株から、5つの条件に当てはまった銘柄を機械的に並べた一覧です。",
              "**売買をすすめるものではありません。**", ""]
     if coverage and coverage[1] and coverage[0] < coverage[1] * 0.95:
         # 取れなかった銘柄を黙って落とさない（件数が少なく見えるのはそのため、と分かるように）
@@ -158,6 +167,7 @@ def ranking_lines(day: dt.date, L: dict[str, list[dict]], coverage: tuple[int, i
     lines += top10("25MA・200MA 押し目（売買代金の大きい順）", L["pullback"], lambda x: f"（{x['kind']}）")
     lines += top10("セリングクライマックス（下降中の出来高急増。25日線から深い順）", L["climax"],
                    lambda x: f"（25日線から{x['dev25']:+.1f}%・出来高{x['ratio']:.1f}倍）")
+    lines += us_ict.section_lines(L.get("ict", []))
     lines += ["## ランクを付けていない理由", "",
               "日本株の記事で使っている印（高値更新の SS〜C、押し目の注意、セリングクライマックスの◎）を、"
               "米株の過去5年（2022〜2026年）で同じ決まり（翌営業日の寄付で入り、終値で-5%か+12%、または15営業日で"
