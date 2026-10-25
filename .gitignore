@@ -25,3 +25,5 @@ volume_screener/out_asof/
 
 # 高値更新の銘柄の「注文の溜まり」の記録（liquidity_track.py、2026-10-25）。銘柄が入るのでコミットしない（Actions のキャッシュに置く）。
 liquidity_track/
+# 米株の押し目の箱のその後の記録（ict_track.py、2026-10-25）。銘柄が入るのでコミットしない（Actions のキャッシュ）。
+us_track/

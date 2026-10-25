@@ -50,7 +50,17 @@ jobs:
           # note の見出し画像の日本語の字体（IPAex ゴシック）。matplotlib は要らないので --no-deps（2026-10-22）
           pip install "pillow>=10,<12" >/dev/null && pip install --no-deps "japanize-matplotlib==1.1.3" >/dev/null || echo "::warning title=note 画像::字体を入れられませんでした（タグだけ送ります）"
 
+      - name: Restore ICT track
+        # 押し目の箱で記事に出した銘柄のその後の記録（ict_track.py、2026-10-25）。銘柄が入るのでコミットせずキャッシュに置く
+        continue-on-error: true
+        uses: actions/cache/restore@v4
+        with:
+          path: us_track
+          key: us-track-none-${{ github.run_id }}
+          restore-keys: us-track-
+
       - name: Run US daily
+        id: run
         env:
           GMAIL_USER: ${{ secrets.GMAIL_USER }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
@@ -58,7 +68,18 @@ jobs:
           # 5本目の cron（日本時間 11:00 予定。実際はもっと遅れる）が最後の回。前営業日の日足がまだ無ければ、
           # それより前の回は失敗にせず次の回に回し、最後の回だけ失敗にする（2026-10-22。10-23 に5本目へ）
           US_LAST_TRY: ${{ github.event.schedule == '0 2 * * 2-6' && '1' || '0' }}
-        run: python3 run_us_daily.py
+        run: |
+          rm -f us_track/.changed
+          python3 run_us_daily.py
+
+      - name: Keep ICT track
+        # 記録を書き換えた回（us_track/.changed がある）だけ残す。push（確認）の回は残さない
+        if: github.event_name != 'push' && steps.run.outcome == 'success' && hashFiles('us_track/.changed') != ''
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: us_track
+          key: us-track-${{ github.run_id }}
 
       - name: Show results
         if: always()

@@ -363,6 +363,18 @@ def main(argv=None) -> int:
             print(line, flush=True)
     except Exception as error:                                     # noqa: BLE001
         print(f"liquidity_track=failed reason={type(error).__name__}", flush=True)
+    # 押し目の箱で記事に出した銘柄のその後（ict_track.py。過去5年の検証と同じ決まりで、これからの成績を数える）
+    try:
+        import ict_track as IT
+
+        f18 = lambda t: fetch_price_history(t, period="18mo")  # noqa: E731
+        added = IT.record(day, "jp", ict, IT.TRACK_JP) if ict is not None else 0
+        judged = IT.evaluate(f18, IT.TRACK_JP, "jp")
+        print(f"ict_track_added={added} judged={judged}", flush=True)
+        for line in IT.summary_lines(IT.TRACK_JP, "jp"):
+            print(line, flush=True)
+    except Exception as error:                                     # noqa: BLE001
+        print(f"ict_track=failed reason={type(error).__name__}", flush=True)
     ledger = (ROOT / "docs" / "claude_300man_ledger.md").read_text(encoding="utf-8")
     t_b, l_b = portfolio_lines(day, journal, orders, ledger, closes)
     path = write_outputs(out, [("ranking", t_a, l_a), ("300man", t_b, l_b)])

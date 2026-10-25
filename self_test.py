@@ -3359,6 +3359,39 @@ def _test_us_ict() -> None:
     assert "us_ict.state(df.iloc[-260:])" in src and 'us_ict.section_lines(L.get("ict", []))' in src
     jsrc = Path("note_two.py").read_text(encoding="utf-8")
     assert "ict_rows(universe" in jsrc and 'us_ict.section_lines(ict, market="jp")' in jsrc and "note_two_ict=failed" in jsrc
+    # 記事に出した銘柄のその後（ict_track.py）
+    import datetime as dt
+    import tempfile
+
+    import ict_track as IT
+
+    days = pd.bdate_range("2026-10-01", periods=50)
+    flat = pd.DataFrame({"Open": [100.0] * 50, "High": [101.0] * 50, "Low": [99.0] * 50, "Close": [100.0] * 50}, index=days)
+    d0 = days[0].date()
+    rec = {"date": d0.isoformat(), "ticker": "X", "kind": "③", "stop": 95.0, "target": 115.0}
+    hit_t = flat.copy(); hit_t.iloc[3, hit_t.columns.get_loc("High")] = 116.0
+    r1 = IT.judge(rec, hit_t, "us")
+    assert r1["result"] == "利確" and r1["days"] == 3 and abs(r1["ret"] - (115 / 100 - 1 - 0.001)) < 1e-9, r1
+    hit_s = flat.copy(); hit_s.iloc[2, hit_s.columns.get_loc("Low")] = 94.0
+    hit_s.iloc[2, hit_s.columns.get_loc("High")] = 120.0                 # 同じ日に両方 → 損切り（不利な側）
+    assert IT.judge(rec, hit_s, "jp")["result"] == "損切り"
+    assert IT.judge(rec, flat, "us")["result"] == "時間切れ" and IT.judge(rec, flat.iloc[:10], "us")["final"] is False
+    gap = flat.copy(); gap.iloc[1, gap.columns.get_loc("Open")] = 112.0                # 寄付で利幅が2倍未満 → 見送り
+    assert IT.judge(rec, gap, "us")["result"] == "見送り"
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "t" / "ict_records.jsonl"
+        row = {**st, "ticker": "ZZZ", "name": "Zed"}
+        assert IT.record(d0, "us", [row], path) == 1 and IT.record(d0, "us", [row], path) == 0
+        assert (path.parent / ".changed").exists()
+        assert IT.evaluate(lambda t: hit_t if t == "ZZZ" else None, path, "us") == 1
+        lines = IT.summary_lines(path, "us")
+        assert lines[0].startswith("ict_track us records=1") and "ZZZ" not in " ".join(lines), lines
+    wf = Path(".github/workflows/us_screening_check.yml").read_text(encoding="utf-8")
+    assert "restore-keys: us-track-" in wf and "hashFiles('us_track/.changed')" in wf and "rm -f us_track/.changed" in wf
+    assert "us_track/" in Path(".gitignore").read_text(encoding="utf-8")
+    assert "IT.record(session, \"us\", L.get(\"ict\"), IT.TRACK_US)" in src
+    assert "IT.record(day, \"jp\", ict, IT.TRACK_JP)" in jsrc
+    assert "^(liquidity_track|ict_track)" in Path(".github/workflows/note_daily_drafts.yml").read_text(encoding="utf-8")
     print("self-test: 米株の押し目の箱 OK", flush=True)
 
 def _test_note_two_us() -> None:

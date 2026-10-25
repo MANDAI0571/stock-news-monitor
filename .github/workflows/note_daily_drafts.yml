@@ -128,7 +128,7 @@ jobs:
         run: |
           python3 note_two.py --day "${{ steps.day.outputs.day }}" --out "$OUT" > "$OUT/build.log" 2>&1 || { tail -25 "$OUT/build.log"; exit 1; }
           grep "^note_two" "$OUT/build.log"
-          grep "^liquidity_track" "$OUT/build.log" | while read -r l; do echo "::notice title=liquidity track::$l"; done || true
+          grep -E "^(liquidity_track|ict_track)" "$OUT/build.log" | while read -r l; do echo "::notice title=liquidity track::$l"; done || true
           test -f "$OUT/note_drafts_manifest.json"
 
       - name: Keep liquidity track

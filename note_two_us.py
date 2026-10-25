@@ -206,6 +206,17 @@ def build(session: dt.date, output_dir: Path, histories: dict[str, pd.DataFrame]
         # 半分も取れない日は、一覧として意味をなさないので作らない（呼び出し側が失敗として扱う）
         raise RuntimeError(f"株価が取れた銘柄が少ない（{used}/{total}）")
     t_a, l_a = ranking_lines(session, L, (used, total))
+    # 押し目の箱で記事に出した銘柄のその後（ict_track.py）。転んでも記事づくりは止めない
+    try:
+        import ict_track as IT
+
+        added = IT.record(session, "us", L.get("ict"), IT.TRACK_US)
+        judged = IT.evaluate(lambda t: histories.get(t), IT.TRACK_US, "us")
+        print(f"ict_track_added={added} judged={judged}", flush=True)
+        for line in IT.summary_lines(IT.TRACK_US, "us"):
+            print(f"::notice title=ict track::{line}", flush=True)
+    except Exception as error:                                     # noqa: BLE001
+        print(f"ict_track=failed reason={type(error).__name__}", flush=True)
     pmd = Path(output_dir) / "note_us_portfolio.md"
     ptitle = Path(output_dir) / "note_us_portfolio_title.txt"
     b_lines = [x for x in pmd.read_text(encoding="utf-8").splitlines() if not x.startswith("# ")]
