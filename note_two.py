@@ -157,7 +157,7 @@ def ranking_lines(day: dt.date, alerts: list, pullback: pd.DataFrame, climax: li
 
 
 def portfolio_lines(day: dt.date, journal: pd.DataFrame, orders: pd.DataFrame, ledger_text: str,
-                    closes: dict) -> tuple[str, list[str]]:
+                    closes: dict, ict: list[dict] | None = None) -> tuple[str, list[str]]:
     """(B) のタイトルと本文。保有の評価は day の終値（closes）。取れなければ台帳の値。"""
     def pick(key):
         for line in ledger_text.splitlines():
@@ -195,6 +195,11 @@ def portfolio_lines(day: dt.date, journal: pd.DataFrame, orders: pd.DataFrame, l
                      f"{r.code} {r.name} {r.shares}株：{status.get(r.status, r.status)}")
     if not (orders["decision_date"] == day.isoformat()).any():
         lines.append(f"- {day}の判定（次の営業日の売買）：この記事を作った時点では出ていません（夜に決まります）")
+    if ict is not None:
+        # 2026-10-26 持ち主「300万運用にICT手法の記事織り込んで」。運用の決まりは変えず、参考として上位5件
+        import us_ict
+
+        lines += [""] + us_ict.section_lines(ict, limit=5, market="jp", brief=True)
     lines += ["", "## ルール", "",
               "1銘柄あたり最大60万円。終値で判定し、翌営業日の寄付で売買します。損切りは-5%、利確は+12%、最長15営業日。"
               "売買コストと税金は入れていません（紙上運用のため）。", "", "---", "",
@@ -376,7 +381,7 @@ def main(argv=None) -> int:
     except Exception as error:                                     # noqa: BLE001
         print(f"ict_track=failed reason={type(error).__name__}", flush=True)
     ledger = (ROOT / "docs" / "claude_300man_ledger.md").read_text(encoding="utf-8")
-    t_b, l_b = portfolio_lines(day, journal, orders, ledger, closes)
+    t_b, l_b = portfolio_lines(day, journal, orders, ledger, closes, ict)
     path = write_outputs(out, [("ranking", t_a, l_a), ("300man", t_b, l_b)])
     # 公開リポジトリの実行ログなので、銘柄は出さず件数だけ出す
     print(f"note_two_built day={day} alerts={len(alerts)} pullback={len(pullback)} "

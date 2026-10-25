@@ -119,7 +119,7 @@ PF_JP = (1.16, 3.18, 2.05, 3.12)
 PF_JP_ANY = (0.74, 1.26, 0.97, 1.34)
 
 
-def section_lines(rows: list[dict], limit: int = 15, market: str = "us") -> list[str]:
+def section_lines(rows: list[dict], limit: int = 15, market: str = "us", brief: bool = False) -> list[str]:
     """一覧記事の節。rows は state() の結果に ticker / name / turnover を足したもの。
     market="jp" は日本株のランキング記事用（円で書き、日本株の過去の数字を出す。2026-10-25）。"""
     pf = lambda xs: " / ".join(f"{x:.2f}" for x in xs)  # noqa: E731
@@ -135,10 +135,18 @@ def section_lines(rows: list[dict], limit: int = 15, market: str = "us") -> list
         seen.add(key)
         uniq.append(x)
     rows = uniq
-    out = [f"## 押し目の箱（オーダーブロック）まで戻った銘柄（{len(rows)}件・③が先、その中は売買代金の大きい順）", "",
-           "上昇の節目（直前の戻り高値を終値で上抜け）のあと、上昇が始まる直前の最後の陰線（箱）まで戻ってきた銘柄です。"
-           "箱がレンジ（上昇の始まりの安値〜その後の高値）の真ん中より下にあるものだけを出しています。"
-           "③＝箱に入ったあと、直近3日の安値を一度割り、その後に直近3日の高値を終値で上抜いた。②＝箱の中で③待ち。", ""]
+    if brief:
+        # 運用の記事（日本株の300万円・米株の$20,000）に載せる短い節（2026-10-26 持ち主「300万運用にICT手法の記事織り込んで」）。
+        # 運用の売買の決まりは変えない（参考として載せるだけ）
+        where = "ランキングの記事" if market == "jp" else "一覧の記事"
+        out = [f"## 押し目の箱（ICT手法）の候補（{min(limit, len(rows))}件・参考）", "",
+               f"この運用の売買の決まりとは別に、参考として載せています（この運用はこの候補では売買していません）。全{len(rows)}件と考え方は{where}にあります。"
+               "③＝箱に入ったあと、直近3日の安値を一度割り、その後に直近3日の高値を終値で上抜いた。②＝箱の中で③待ち。", ""]
+    else:
+        out = [f"## 押し目の箱（オーダーブロック）まで戻った銘柄（{len(rows)}件・③が先、その中は売買代金の大きい順）", "",
+               "上昇の節目（直前の戻り高値を終値で上抜け）のあと、上昇が始まる直前の最後の陰線（箱）まで戻ってきた銘柄です。"
+               "箱がレンジ（上昇の始まりの安値〜その後の高値）の真ん中より下にあるものだけを出しています。"
+               "③＝箱に入ったあと、直近3日の安値を一度割り、その後に直近3日の高値を終値で上抜いた。②＝箱の中で③待ち。", ""]
     m = (lambda v: f"{v:,.1f}円") if market == "jp" else (lambda v: f"${v:,.2f}")  # noqa: E731
     for i, x in enumerate(rows[:limit], 1):
         out.append(f"{i}. {x['kind']} {x['ticker']} {x['name']}（終値{m(x['close'])} / 箱 {m(x['box_lo'])}〜{m(x['box_hi'])} / "

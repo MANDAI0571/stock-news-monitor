@@ -3304,6 +3304,19 @@ def _test_note_two() -> None:
     btext = "\n".join(b)
     assert "4,489円（+1.2%、+5,500円）" in btext and "窓が開いたため見送り" in btext and "Codex" not in btext
     assert all(x in b for x in COMPLIANCE_LINES)
+    assert "押し目の箱" not in btext                                  # 判定できなかった日（None）は節を出さない
+    # 2026-10-26 持ち主「300万運用にICT手法の記事織り込んで」: 運用の決まりは変えず、参考として上位5件
+    ict6 = [{"kind": "②", "close": 1000.0 + k, "box_lo": 950.0, "box_hi": 990.0, "stop": 948.0, "target": 1200.0,
+             "rr": 3.0, "ticker": str(1000 + k), "name": f"会社{k}", "turnover": 1e9 - k} for k in range(6)]
+    _, b2 = N.portfolio_lines(dt.date(2026, 10, 15), journal, orders, "- 現金残: 2,033,400円\n", {"9697": 4489.0}, ict6)
+    b2t = "\n".join(b2)
+    assert "## 押し目の箱（ICT手法）の候補（5件・参考）" in b2t and "この運用はこの候補では売買していません" in b2t
+    assert "全6件と考え方はランキングの記事にあります" in b2t and "5. ② 1004" in b2t and "1005" not in b2t
+    assert b2t.index("押し目の箱（ICT手法）") < b2t.index("## ルール") and "1.16 / 3.18 / 2.05 / 3.12" in b2t
+    import note_assets as NA
+    for k in ("ranking", "300man", "us_ranking", "us_20k"):
+        assert "ICT" in NA.TAGS[k] and "オーダーブロック" in NA.TAGS[k] and len(NA.TAGS[k]) <= 10, (k, NA.TAGS[k])
+    assert 'us_ict.section_lines(L.get("ict", []), limit=5, market="us", brief=True)' in Path("note_two_us.py").read_text(encoding="utf-8")
     html = N.body_html(lines)
     assert html.count("<h2>") >= 5 and "<ol>" in html and "<strong>" in html and "<h1>" not in html
     with tempfile.TemporaryDirectory() as tmp:

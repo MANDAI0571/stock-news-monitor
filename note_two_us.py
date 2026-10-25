@@ -220,6 +220,8 @@ def build(session: dt.date, output_dir: Path, histories: dict[str, pd.DataFrame]
     pmd = Path(output_dir) / "note_us_portfolio.md"
     ptitle = Path(output_dir) / "note_us_portfolio_title.txt"
     b_lines = [x for x in pmd.read_text(encoding="utf-8").splitlines() if not x.startswith("# ")]
+    # 2026-10-26 持ち主「米株も…ICT手法の記事織り込んで」。運用の決まりは変えず、参考として上位5件
+    b_lines += [""] + us_ict.section_lines(L.get("ict", []), limit=5, market="us", brief=True)
     b_lines += ["", "---", ""] + COMPLIANCE_LINES
     t_b = ptitle.read_text(encoding="utf-8").strip()
     out = Path(output_dir) / "note_two_us"
