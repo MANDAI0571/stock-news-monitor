@@ -3736,6 +3736,25 @@ def _test_intraday_alert_grade() -> None:
     for text in (body, html):
         assert "過去の成績ランク" in text and "売買をすすめるものではありません" in text
         assert "S: 2022-23 1.17" in text
+    # 2026-10-26 持ち主「リアルタイムメールで出た銘柄を一つずつコピペしてXなどに貼れるよう」: 投稿用の文と 𝕏 のボタン
+    from urllib.parse import unquote
+
+    import intraday_high_alert as IHA
+
+    pt = IHA.post_text(a)
+    assert IHA.x_length(pt) <= 280 and pt.startswith("【直近高値ブレイク】1234 テスト") and "売買をすすめるものではありません" in pt, pt
+    for bad in ("おすすめ", "買い時", "必ず上がる"):
+        assert bad not in pt
+    assert "x.com/intent/post?text=" in html and pt.split("\n")[0] in unquote(html.split("x.com/intent/post?text=")[1].split('"')[0])
+    assert IHA.x_length("あいう abc https://example.com/x") == 2 * 3 + 5 + 23
+    long_name = Alert(**{**a.__dict__, "name": "長" * 120})                       # 長すぎる銘柄名でも280字に収める
+    assert IHA.x_length(IHA.post_text(long_name)) <= 280 or "長" * 100 in IHA.post_text(long_name)
+    big = [Alert(**{**a.__dict__, "code": str(2000 + k), "reason": "理由" * 300}) for k in range(25)]
+    bh = build_html_body(big)                                                     # 大きいメールは上から入る分だけ
+    assert len(bh.encode("utf-8")) <= IHA.SHARE_HTML_BUDGET, len(bh.encode("utf-8"))
+    assert 0 < bh.count("x.com/intent/post") < 25 and "上から" in bh, (len(bh.encode()), bh.count("x.com/intent/post"))
+    small = build_html_body(big[:5])                                              # 小さいメールは全部に付く
+    assert small.count("x.com/intent/post") == 5 and "上から" not in small
     # 等級が無いアラートだけなら、末尾の説明は出さない
     b = Alert(**{**a.__dict__, "grade": "", "grade_score": 0, "grade_reasons": []})
     assert "過去の成績ランクについて" not in build_body([b])

@@ -841,10 +841,62 @@ ALERT_MAIL_CSS = (
     "border-radius:8px;}"
     # fix62(2026-09-13): 比較チャートのボタンは色を変えて、株価チャートと取り違えないようにする。
     ".cmp{background:#1d4ed8;}"
+    # 2026-10-26 持ち主「リアルタイムメールで出た銘柄を一つずつコピペしてXなどに貼れるよう」: 投稿用の文と 𝕏 のボタン
+    ".post{margin:8px 0 4px;padding:8px 10px;background:#f6f8fa;border:1px dashed #c9d1d9;border-radius:6px;"
+    "font-size:13px;color:#111111;line-height:1.6;}"
+    ".xpost{background:#111111;}"
 )
 
 
-def _alert_html_card(alert: Alert) -> str:
+SHARE_HTML_BUDGET = 95_000      # Gmail は HTML の本文がおよそ102KBを超えると途中で切る。投稿欄はこの中に収める
+
+
+def x_length(text: str) -> int:
+    """X（旧Twitter）の数え方での長さ。漢字・かなは2、英数字・記号は1、URL は23。"""
+    n = 0
+    for part in re.split(r"(https?://\S+)", text):
+        if part.startswith("http"):
+            n += 23
+            continue
+        for ch in part:
+            o = ord(ch)
+            n += 1 if (o <= 0x10FF or 0x2000 <= o <= 0x200D or 0x2010 <= o <= 0x201F or 0x2032 <= o <= 0x2037) else 2
+    return n
+
+
+def post_text(alert: Alert, limit: int = 280) -> str:
+    """1銘柄ぶんの投稿用の文（2026-10-26 持ち主「一つずつコピペしてXなどに貼れるよう」）。
+    X の280字に収める。長いときは ランク → 当日高値 → チャートのURL → タグ の順に外す。売買をすすめる言葉は入れない。"""
+    head = f"【{alert.alert_type}】{alert.code} {alert.name}"
+    price = f"現在値 {alert.current_price:,.1f}円"
+    high = f"（当日高値 {alert.today_high:,.1f}円）" if alert.today_high > 0 else ""
+    if alert.is_break:
+        line = f"{alert.line_label}ライン {alert.line_price:,.1f}円" + (
+            f"を +{alert.break_excess_pct:.2f}% 上抜け" if alert.break_excess_pct > 0 else "を更新")
+    else:
+        line = f"{alert.line_label}ライン {alert.line_price:,.1f}円まで あと{alert.dist_pct:.1f}%"
+    vol = f"出来高比 {alert.volume_ratio:.2f}倍"
+    rank = f"・過去の成績ランク {alert.grade}" if alert.grade else ""
+    tags = "#日本株 #株式投資 " + ("#52週高値" if alert.alert_type.startswith("52週") else "#高値更新")
+    url = chart_url(alert.code)
+    note = "※売買をすすめるものではありません"
+    for h, rk, u, tg in ((high, rank, url, tags), ("", rank, url, tags), ("", "", url, tags), ("", "", "", tags), ("", "", "", "")):
+        text = "\n".join([head, price + h, line, vol + rk] + ([u] if u else []) + ([tg] if tg else []) + [note])
+        if x_length(text) <= limit:
+            return text
+    return "\n".join([head, line, note])
+
+
+def _share_html(alert: Alert) -> str:
+    """投稿用の文（そのまま選んでコピーできる）と、𝕏 の投稿画面を文が入った状態で開くボタン。
+    Gmail はメールの中のプログラム（クリップボードへのコピー）を動かさないので、X は投稿画面へのリンクにする。"""
+    text = post_text(alert)
+    href = "https://x.com/intent/post?text=" + quote(text, safe="")
+    return (f'<div class="post">{escape(text).replace(chr(10), "<br>")}</div>'
+            f'<a class="chart xpost" href="{escape(href)}">𝕏に投稿（この文が入った画面を開く）</a>')
+
+
+def _alert_html_card(alert: Alert, share: bool = False) -> str:
     dist_text = _dist_text(alert)
     rows = [
         f"{escape(_price_text(alert))} / 種別:{escape(alert.alert_type)}",
@@ -868,6 +920,8 @@ def _alert_html_card(alert: Alert) -> str:
     if url:
         rows.append(f'👥 <a href="{escape(url)}">OpenWorkで社員クチコミを見る</a>')
     rows.append(f"理由:{escape(alert.reason)}")
+    if share:
+        rows.append(_share_html(alert))
     body = "".join(f'<div class="row">{row}</div>' for row in rows)
     return (
         '<div class="card">'
@@ -898,18 +952,32 @@ def build_html_body(new_alerts: list[Alert], max_items: int | None = None) -> st
     grouped: dict[str, list[Alert]] = {key: [] for key in order}
     for alert in shown:
         grouped.setdefault(alert.alert_type, []).append(alert)
+    in_order = [a for key in order for a in grouped.get(key, [])]
+    plain = {id(a): _alert_html_card(a) for a in in_order}
+    tail = []
+    if any(a.grade or a.grade_reasons for a in shown):
+        tail.append('<div class="dis">' + "<br>".join(escape(x) for x in alert_grade.footer_lines()) + "</div>")
+    tail.append(f'<div class="dis">{escape(DISCLAIMER)}</div>')
+    tail.append("</body></html>")
+    # 投稿欄（文と 𝕏 のボタン）は、Gmail が途中で切らない大きさに収まる分だけ、上から順に付ける
+    size = len("".join(parts + list(plain.values()) + tail).encode("utf-8")) + 400 + 60 * len(order)
+    shared = {}
+    for a in in_order:
+        card = _alert_html_card(a, share=True)
+        extra = len(card.encode("utf-8")) - len(plain[id(a)].encode("utf-8"))
+        if size + extra > SHARE_HTML_BUDGET:
+            break
+        shared[id(a)] = card
+        size += extra
+    if len(shared) < len(in_order):
+        parts.append(f'<p class="cut">※𝕏への投稿欄は、メールが途中で切れないよう上から{len(shared)}件だけに付けています。</p>')
     for key in order:
         group = grouped.get(key, [])
         if not group:
             continue
         parts.append(f'<div class="grp">■ {escape(key)}（{len(group)}件）</div>')
-        parts.extend(_alert_html_card(alert) for alert in group)
-
-    if any(a.grade or a.grade_reasons for a in shown):
-        parts.append('<div class="dis">' + "<br>".join(escape(x) for x in alert_grade.footer_lines())
-                     + "</div>")
-    parts.append(f'<div class="dis">{escape(DISCLAIMER)}</div>')
-    parts.append("</body></html>")
+        parts.extend(shared.get(id(a), plain[id(a)]) for a in group)
+    parts.extend(tail)
     return "".join(parts)
 
 
