@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<meta name="referrer" content="no-referrer">
+<title>コピー</title>
+<!--
+  1銘柄ずつコピーするためのページ（2026-10-26 持ち主「一銘柄一つずつコピペできるように」）。
+  Gmail はメールの中のプログラム（クリップボードへのコピー）を動かさないので、アラートメールの各銘柄の
+  「この銘柄の文をコピー」のボタンからこのページを開き、ここでコピーする。
+  文はメールのリンクの「#」より後ろ（フラグメント）で運ぶ。フラグメントはサーバーに送られないので、
+  このページにも、このリポジトリにも、銘柄は残らない。外部のスクリプトは読まず、どこにも何も送らない。
+-->
+<style>
+:root{--bg:#ffffff;--fg:#111111;--mute:#6b7280;--box:#f6f8fa;--line:#c9d1d9;--acc:#1f745f}
+@media (prefers-color-scheme:dark){:root{--bg:#16181b;--fg:#e8e8e8;--mute:#9aa3ad;--box:#202327;--line:#3a3f45;--acc:#4fbf9a}}
+body{margin:0;padding:16px;background:var(--bg);color:var(--fg);font:16px/1.7 -apple-system,'Hiragino Sans','Yu Gothic',sans-serif}
+.wrap{max-width:560px;margin:0 auto}
+h1{font-size:16px;color:var(--mute);font-weight:600;margin:0 0 10px}
+#text{white-space:pre-wrap;word-break:break-word;background:var(--box);border:1px dashed var(--line);border-radius:10px;padding:12px 14px;margin:0 0 14px}
+button,a.b{display:block;width:100%;box-sizing:border-box;text-align:center;padding:14px;margin:0 0 10px;border:0;border-radius:10px;
+  font-size:17px;font-weight:700;text-decoration:none;cursor:pointer}
+#copy{background:var(--acc);color:#fff}
+a.x{background:#111111;color:#fff}
+a.line{background:#06c755;color:#fff}
+a.th{background:#333333;color:#fff}
+#msg{min-height:1.7em;text-align:center;font-weight:700;color:var(--acc);margin:0 0 8px}
+.s{font-size:12px;color:var(--mute)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>この銘柄の文</h1>
+  <div id="text">（メールの「この銘柄の文をコピー」から開いてください）</div>
+  <div id="msg"></div>
+  <button id="copy" type="button">コピーする</button>
+  <a class="b x" id="x" href="#">𝕏に投稿</a>
+  <a class="b line" id="line" href="#">LINEで送る</a>
+  <a class="b th" id="th" href="#">Threadsに投稿</a>
+  <p class="s">売買をすすめるものではありません。投資の判断はご自身でお願いします。</p>
+</div>
+<script>
+(function () {
+  var h = location.hash || "";
+  var m = h.match(/[#&]t=([^&]*)/);
+  var text = "";
+  try { text = m ? decodeURIComponent(m[1]) : ""; } catch (e) { text = ""; }
+  var box = document.getElementById("text"), msg = document.getElementById("msg");
+  var btns = ["copy", "x", "line", "th"].map(function (id) { return document.getElementById(id); });
+  if (!text) { btns.forEach(function (b) { b.style.display = "none"; }); return; }
+  box.textContent = text;
+  var enc = encodeURIComponent(text);
+  document.getElementById("x").href = "https://x.com/intent/post?text=" + enc;
+  document.getElementById("line").href = "https://line.me/R/share?text=" + enc;
+  document.getElementById("th").href = "https://www.threads.net/intent/post?text=" + enc;
+  function done(ok) { msg.textContent = ok ? "コピーしました" : "コピーできませんでした。上の文を長押しして選んでください"; }
+  function fallback() {
+    var ta = document.createElement("textarea");
+    ta.value = text; ta.setAttribute("readonly", ""); ta.style.position = "fixed"; ta.style.top = "-1000px";
+    document.body.appendChild(ta); ta.select(); ta.setSelectionRange(0, text.length);
+    var ok = false;
+    try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+    document.body.removeChild(ta); done(ok);
+  }
+  document.getElementById("copy").addEventListener("click", function () {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { done(true); }, fallback);
+    } else { fallback(); }
+  });
+})();
+</script>
+</body>
+</html>

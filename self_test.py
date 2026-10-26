@@ -3746,6 +3746,15 @@ def _test_intraday_alert_grade() -> None:
     for bad in ("おすすめ", "買い時", "必ず上がる"):
         assert bad not in pt
     assert "x.com/intent/post?text=" in html and pt.split("\n")[0] in unquote(html.split("x.com/intent/post?text=")[1].split('"')[0])
+    # 1銘柄ずつのコピー（docs/clip.html を開き、そこでコピーする。文はリンクの # の後ろで運ぶ）
+    assert IHA.clip_url(pt).startswith("https://mandai0571.github.io/stock-news-monitor/clip.html#t=")
+    assert unquote(html.split("clip.html#t=")[1].split('"')[0].replace("&amp;", "&")) == pt and "この銘柄の文をコピー" in html
+    clip = Path("docs/clip.html").read_text(encoding="utf-8")
+    assert "navigator.clipboard" in clip and 'execCommand("copy")' in clip and "location.hash" in clip and "noindex" in clip
+    assert "x.com/intent/post" in clip and "line.me/R/share" in clip and "threads.net/intent/post" in clip
+    assert "<script src" not in clip and "fetch(" not in clip and "XMLHttpRequest" not in clip   # 外へ何も送らない
+    import re as _re
+    assert not _re.search(r"\d{4} [^\s<]+(株式会社|ホールディングス)", clip)                  # 銘柄は入れない
     assert IHA.x_length("あいう abc https://example.com/x") == 2 * 3 + 5 + 23
     long_name = Alert(**{**a.__dict__, "name": "長" * 120})                       # 長すぎる銘柄名でも280字に収める
     assert IHA.x_length(IHA.post_text(long_name)) <= 280 or "長" * 100 in IHA.post_text(long_name)

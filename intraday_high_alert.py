@@ -887,13 +887,24 @@ def post_text(alert: Alert, limit: int = 280) -> str:
     return "\n".join([head, line, note])
 
 
+# 1銘柄ずつコピーするページ（docs/clip.html。GitHub Pages）。文はリンクの「#」より後ろで運ぶので、サーバーにも
+# リポジトリにも銘柄は残らない（2026-10-26 持ち主「一銘柄一つずつコピペできるように」）
+CLIP_PAGE_URL = "https://mandai0571.github.io/stock-news-monitor/clip.html"
+
+
+def clip_url(text: str) -> str:
+    return CLIP_PAGE_URL + "#t=" + quote(text, safe="")
+
+
 def _share_html(alert: Alert) -> str:
-    """投稿用の文（そのまま選んでコピーできる）と、𝕏 の投稿画面を文が入った状態で開くボタン。
-    Gmail はメールの中のプログラム（クリップボードへのコピー）を動かさないので、X は投稿画面へのリンクにする。"""
+    """2つのボタン。Gmail はメールの中のプログラム（クリップボードへのコピー）を動かさないので、
+    「この銘柄の文をコピー」はコピー用のページ（clip.html）を開き、そこで1回押してコピーする。
+    「𝕏に投稿」は X の投稿画面を文が入った状態で開く。"""
     text = post_text(alert)
-    href = "https://x.com/intent/post?text=" + quote(text, safe="")
-    return (f'<div class="post">{escape(text).replace(chr(10), "<br>")}</div>'
-            f'<a class="chart xpost" href="{escape(href)}">𝕏に投稿（この文が入った画面を開く）</a>')
+    x_href = "https://x.com/intent/post?text=" + quote(text, safe="")
+    # 文そのものはコピー用のページに出す（メールに載せると大きくなり、Gmail が途中で切る銘柄が増えるため）
+    return (f'<a class="chart" href="{escape(clip_url(text))}">📋 この銘柄の文をコピー</a> '
+            f'<a class="chart xpost" href="{escape(x_href)}">𝕏に投稿</a>')
 
 
 def _alert_html_card(alert: Alert, share: bool = False) -> str:
@@ -970,7 +981,7 @@ def build_html_body(new_alerts: list[Alert], max_items: int | None = None) -> st
         shared[id(a)] = card
         size += extra
     if len(shared) < len(in_order):
-        parts.append(f'<p class="cut">※𝕏への投稿欄は、メールが途中で切れないよう上から{len(shared)}件だけに付けています。</p>')
+        parts.append(f'<p class="cut">※コピー・𝕏投稿の欄は、メールが途中で切れないよう上から{len(shared)}件だけに付けています。</p>')
     for key in order:
         group = grouped.get(key, [])
         if not group:
