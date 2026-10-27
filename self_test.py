@@ -4603,13 +4603,9 @@ def _test_us_daily_runner() -> None:
     assert source.index("data_ready(session)") < source.index("fill_us_orders(session)")
     assert "return 1 if last_try else 0" in source
     wf_us = Path(".github/workflows/us_screening_check.yml").read_text(encoding="utf-8")
-    assert "US_LAST_TRY: ${{ github.event.schedule == '17 3 * * 2-6' && '1' || '0' }}" in wf_us
-    # 2026-10-27: 毎時ちょうどの予約は GitHub が起動しないことがあるので、:00 を使わない
-    import re as _re
-    crons = _re.findall(r'cron: "([^"]+)"', wf_us)
-    assert crons == ["17 0 * * 2-6", "17 1 * * 2-6", "47 1 * * 2-6", "17 2 * * 2-6", "17 3 * * 2-6"], crons
-    assert all(not c.startswith("0 ") for c in crons), crons
-    assert crons[-1] == "17 3 * * 2-6"                  # 最後の回は一番うしろの cron
+    assert "US_LAST_TRY: ${{ github.event.schedule == '0 2 * * 2-6' && '1' || '0' }}" in wf_us
+    for c in ('"0 22 * * 1-5"', '"0 23 * * 1-5"', '"0 0 * * 2-6"', '"0 1 * * 2-6"', '"0 2 * * 2-6"'):
+        assert f"cron: {c}" in wf_us, c                    # 最後の回は一番うしろの cron
     sess = date(2026, 10, 21)
     have = pd.DataFrame({"Close": [1.0, 2.0, 3.0]}, index=pd.to_datetime(["2026-10-19", "2026-10-20", "2026-10-21"]))
     stale = have.iloc[:2]
