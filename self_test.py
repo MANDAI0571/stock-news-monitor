@@ -3564,6 +3564,66 @@ def _test_volume_screener_on_actions() -> None:
     # 法律の断り書き（2026-10-16「法律で守ってやってください」）。無料部分にも、最後にも入る
     assert "投資助言" in text.split(na.PAID_LINE)[0] and "個別のご相談・ご質問" in text.split(na.PAID_LINE)[0]
     assert "将来の結果を保証するものではありません" in text and "データの正確さは保証できません" in text
+    # 2026-10-27 持ち主「出来高急増のところに52週新高値を織り込んで、タイトルにも。25MAとかいくつか紹介。文字数に注意」
+    import datetime as _dt
+    spec3 = importlib.util.spec_from_file_location("vs_screener_h52", "volume_screener/screener.py")
+    vs = importlib.util.module_from_spec(spec3)
+    sys.path.insert(0, "volume_screener")
+    spec3.loader.exec_module(vs)
+    day0 = _dt.date(2025, 10, 1)
+    dd = [day0 + _dt.timedelta(days=k) for k in range(400)]
+    hi = [100.0 + k * 0.1 for k in range(400)]                      # 毎日少しずつ上げる
+    lo = [h - 2 for h in hi]
+    cl = [h - 1 for h in hi]
+    tgt = dd[-1]
+    f = vs.high52_facts(dd, cl, hi, lo, 130.0, 129.0, tgt)
+    assert f and f["kind"] == "new" and f["line"] == hi[-2] and f["line_date"] == dd[-2].isoformat(), f
+    assert vs.high52_facts(dd[-300:], cl[-300:], hi[-300:], lo[-300:], 130.0, 129.0, tgt) is None   # 1年に満たない
+    # 10本前に52週高値、本日は25日線まで押した
+    hi2 = hi[:-10] + [hi[-11] - 3 - k for k in range(10)]
+    lo2 = [h - 2 for h in hi2]
+    cl2 = [h - 1 for h in hi2]
+    ma = cl2[-1] - 0.5
+    g = vs.high52_facts(dd, cl2, hi2, lo2[:-1] + [ma * 1.005], ma, ma - 1, tgt)
+    assert g and g["kind"] == "ma25" and g["line"] == hi2[-11] and abs(g["dev25_pct"] - (cl2[-1] / ma - 1) * 100) < 1e-9, g
+    assert vs.high52_facts(dd, cl2, hi2, lo2[:-1] + [ma * 1.02], ma, ma - 1, tgt) is None      # 安値が25日線の+1%より上
+    assert vs.high52_facts(dd, cl2, hi2, lo2[:-1] + [ma * 1.005], ma, ma + 1, tgt) is None     # 25日線が下向き
+    assert vs.high52_facts(dd, cl2[:-1] + [ma * 0.97], hi2, lo2[:-1] + [ma * 0.96], ma, ma - 1, tgt) is None  # 25日線の-2%より下
+    hi3 = hi[:-30] + [hi[-31] - 3 - k * 0.1 for k in range(30)]                       # 高値が30本前（20営業日より前）
+    assert vs.high52_facts(dd, [h - 1 for h in hi3], hi3, [h - 2 for h in hi3[:-1]] + [ma * 1.005], ma, ma - 1, tgt) is None
+    # 直近高値: 52週高値（200本前）には届かないが、前日までの60本の高値を本日の高値で上抜け、25日線より上
+    hi4 = [200.0] + [120.0] * 339 + [110.0 + k * 0.1 for k in range(59)] + [125.0]
+    hi4 = hi4[:399] + [125.0]
+    cl4 = [h - 1 for h in hi4]
+    r4 = vs.high52_facts(dd, cl4, hi4, [h - 2 for h in hi4], 115.0, 114.0, tgt)
+    assert r4 and r4["kind"] == "recent" and r4["line"] == max(hi4[-61:-1]) and r4["from_high_pct"] < 0, r4
+    assert vs.high52_facts(dd, cl4, hi4, [h - 2 for h in hi4], 130.0, 129.0, tgt) is None          # 25日線より下なら出さない
+    sm = vs.high52_summary([dict(f, code="1", name="a", turnover20=1e9), dict(f, code="2", name="b", turnover20=5e9),
+                            dict(g, code="3", name="c", turnover20=2e9), dict(r4, code="4", name="d", turnover20=3e9)])
+    assert sm["n_new"] == 2 and [r["code"] for r in sm["new"]] == ["2", "1"] and sm["n_ma25"] == 1 and sm["n_recent"] == 1
+    src = Path("volume_screener/screener.py").read_text(encoding="utf-8")
+    assert src.index("high52_facts(dates, closes") < src.index('if not (ma25 < ma25_prev):')        # 下降の足切りより前に見る
+    assert '"high52": errors.get("high52")' in Path("volume_screener/daily_run.py").read_text(encoding="utf-8")
+    res52 = dict(res, high52=sm)
+    t52, l52 = na.article_lines(res52, "その後の文")
+    x52 = "\n".join(l52)
+    assert t52 == "52週新高値と出来高急増×下降トレンド｜2026-10-15 13:55時点 新高値2件・急増1件", t52
+    free = x52.split(na.PAID_LINE)[0]
+    assert "## 52週新高値・直近高値の銘柄" in free and "本日、52週高値を更新（全2件）" in free and "25日線まで押した（全1件）" in free
+    assert free.index("52週新高値・直近高値の銘柄") < free.index("出来高急増×下降トレンドの条件") and "7599" not in free
+    assert "当日高値で" in free and "上抜け" in free and "25日線から" in free
+    # 2026-10-27 持ち主「この銘柄は52週新高値とか25MAとか直近高値とかセリングクライマックスとか、わかるように」
+    assert "- 【52週新高値】2 b" in free and "- 【直近高値更新】4 d" in free and "- 【52週新高値→25日線押し目】3 c" in free
+    paid = x52.split(na.PAID_LINE)[1]
+    assert "【セリングクライマックス】7599" in paid and "【セリングクライマックス】＝" in paid
+    assert "【セリングクライマックス】" not in text                                         # 前の形の記録（52週なし）は今までどおり
+    big52 = {"n_new": 40, "n_ma25": 40, "new": [dict(f, code=str(k), name="長い名前の銘柄" * 2, turnover20=1e9) for k in range(10)],
+             "ma25": [dict(g, code=str(k), name="長い名前の銘柄" * 2, turnover20=1e9) for k in range(10)]}
+    _, lb = na.article_lines(dict(res, high52=big52), "その後の文")
+    assert sum(1 for x in lb if x.startswith("- ") and "52週高値" in x) == 10                     # 5件ずつまで
+    assert len("\n".join(lb)) < 4000, len("\n".join(lb))                                         # note が重くならない長さ
+    import note_assets as NAS
+    assert NAS.key_for_title(t52) == "volume" and "52週新高値" in NAS.tags_for("volume") and len(NAS.tags_for("volume")) <= 10
     print("self-test: 出来高急増スクリーナーの GitHub 版 OK")
 
 

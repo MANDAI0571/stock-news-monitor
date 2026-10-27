@@ -42,6 +42,59 @@ PROBE_CODES = ("7203", "6758", "8306", "9984", "8035")
 FUND_FAIL_STREAK = 5        # 株探も同じ（残りはキャッシュだけ）
 PREFILTER_SLACK = 1.02      # 概算段階では境界付近を落とさないよう少し緩める
 
+# 52週新高値（2026-10-27 持ち主「出来高急増のところに52週新高値を織り込んで…25MAとかいくつか紹介して」）。
+# 出来高急増とは別の一覧。段階Aで全銘柄の日足（1年分）を取るついでに見る（取りに行く量は増えない）。
+H52_MIN_DAYS = 350          # 日足の初日が判定日の350日以上前（上場1年未満は52週高値と呼べないので出さない）
+H52_PULLBACK_DAYS = 20      # 52週高値を付けてから20営業日以内
+H52_TOUCH_UP = 1.01         # 本日の安値が25日線の+1%以内まで下がった
+H52_TOUCH_DOWN = 0.98       # 現在値が25日線の-2%より上
+H52_RECENT_DAYS = 60        # 直近高値＝前日までの60営業日の高値（2026-10-27 持ち主「直近高値とか…わかるように」）
+H52_KEEP = 10               # 記録に残す件数（種類ごと、売買代金の大きい順）
+_H52: list = []
+_H52_LOCK = threading.Lock()
+
+
+def high52_facts(dates, closes, highs, lows, ma25, ma25_prev, target):
+    """高値の3つの形を見る（日足だけ。当日の足は取った時点までの値）。
+    new: 本日の高値が、前日までの1年の高値（52週高値）を上回った。
+    recent: 52週高値ではないが、本日の高値が前日までの60営業日の高値（直近高値）を上回り、現在値が25日線より上。
+    ma25: 直近20営業日のうちに52週高値を付け、本日の安値が25日線の+1%以内まで下がり、
+          現在値が25日線の-2%より上、25日線が上向き（5本前より高い）。
+    どれでもなければ None。"""
+    if len(highs) < 200 or len(highs) != len(dates) or (target - dates[0]).days < H52_MIN_DAYS:
+        return None
+    prior = highs[:-1]
+    line = max(prior)
+    k = len(prior) - 1 - prior[::-1].index(line)      # 52週高値を付けた日（同じ値なら新しい方）
+    price = closes[-1]
+    if not line > 0:
+        return None
+    if highs[-1] > line:
+        return {"kind": "new", "price": price, "line": line, "line_date": dates[k].isoformat(),
+                "today_high": highs[-1], "excess_pct": (highs[-1] / line - 1) * 100}
+    recent = prior[-H52_RECENT_DAYS:]
+    rline = max(recent)
+    if highs[-1] > rline > 0 and price > ma25:
+        rk = len(prior) - 1 - prior[::-1].index(rline)
+        return {"kind": "recent", "price": price, "line": rline, "line_date": dates[rk].isoformat(),
+                "today_high": highs[-1], "excess_pct": (highs[-1] / rline - 1) * 100,
+                "from_high_pct": (price / line - 1) * 100}
+    if (len(prior) - k <= H52_PULLBACK_DAYS and ma25 > ma25_prev
+            and lows[-1] <= ma25 * H52_TOUCH_UP and price >= ma25 * H52_TOUCH_DOWN):
+        return {"kind": "ma25", "price": price, "line": line, "line_date": dates[k].isoformat(),
+                "ma25": ma25, "dev25_pct": (price / ma25 - 1) * 100, "from_high_pct": (price / line - 1) * 100}
+    return None
+
+
+def high52_summary(found):
+    """種類ごとに売買代金の大きい順に並べ、件数と上位 H52_KEEP 件を返す。"""
+    out = {}
+    for kind in ("new", "recent", "ma25"):
+        rows = sorted((f for f in found if f["kind"] == kind), key=lambda f: -f["turnover20"])
+        out[f"n_{kind}"] = len(rows)
+        out[kind] = rows[:H52_KEEP]
+    return out
+
 
 def ma(xs, n):
     return statistics.fmean(xs[-n:]) if len(xs) >= n else None
@@ -235,6 +288,16 @@ def stage_a(code, name, target):
 
     if turnover20 < TURNOVER_MIN:
         return None, "売買代金が足りない"
+    # 52週新高値（出来高急増とは別の一覧）。下降トレンドの足切りより前に見る
+    ohlc = meta.get("ohlc") or {}
+    try:
+        h52 = high52_facts(dates, closes, list(ohlc.get("high") or [])[:i], list(ohlc.get("low") or [])[:i],
+                           ma25, ma25_prev, target)
+    except (ValueError, TypeError, ZeroDivisionError):
+        h52 = None
+    if h52:
+        with _H52_LOCK:
+            _H52.append(dict(h52, code=code, name=name, turnover20=turnover20))
     if not (ma25 < ma25_prev):
         return None, "25日線が下向きでない"
     if not (price < ma25 * PREFILTER_SLACK and ma25 < ma75):
@@ -462,6 +525,8 @@ def run(asof=None, cutoff=dt.time(14, 0), limit=None, workers=8, volmode="prevda
     errors = {"daily": 0, "fund": 0, "intraday": 0, "no_bar": 0, "universe": 0}
     notes = []
 
+    with _H52_LOCK:
+        _H52.clear()
     names, asof_list = F.prime_list()
     if limit:
         names = names[:limit]
@@ -525,6 +590,8 @@ def run(asof=None, cutoff=dt.time(14, 0), limit=None, workers=8, volmode="prevda
         elif why and why.startswith("ERR:"):
             errors["daily"] += 1
     notes.append(f"判定した日: {target}（日足の最終日がこの日でない銘柄は除外）")
+    with _H52_LOCK:
+        errors["high52"] = high52_summary(list(_H52))
     if errors.get("implausible"):
         notes.append(f"25日線からの乖離が現実的でない（-75%より深い・+200%より高い）"
                      f"ため除いた銘柄: {errors['implausible']}"

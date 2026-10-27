@@ -34,6 +34,55 @@ def _oku(v) -> str:
         return "-"
 
 
+H52_SHOW = 5    # 記事に載せる件数（種類ごと）。note は長い記事で編集画面が重くなるので、1銘柄1行で少しだけ
+
+
+def _yen(v) -> str:
+    v = float(v)
+    return f"{v:,.0f}円" if v >= 1000 else f"{v:,.1f}円"
+
+
+# 銘柄の行の先頭に付ける形の印（2026-10-27 持ち主「記事で銘柄紹介する時、この銘柄は52週新高値とか25MAとか
+# 直近高値とかセリングクライマックスとか、わかるようにして」）
+LABELS = {"new": "【52週新高値】", "recent": "【直近高値更新】", "ma25": "【52週新高値→25日線押し目】",
+          "climax": "【セリングクライマックス】"}
+
+
+def high52_lines(h: dict) -> list[str]:
+    """52週新高値の節（2026-10-27 持ち主「出来高急増のところに52週新高値を織り込んで…25MAとかいくつか紹介して。
+    文字数が多くなると note が落ちるので注意」）。無料の部分に、種類ごとに売買代金の大きい順に5件まで、1銘柄1行。"""
+    md = lambda d: f"{int(d[5:7])}/{int(d[8:10])}" if len(d or "") >= 10 else "-"  # noqa: E731
+    lines = ["## 52週新高値・直近高値の銘柄（売買代金の大きい順に5件まで）", "",
+             "同じ東証プライムの銘柄（20日平均の売買代金1億円以上）から、高値に関わる3つの形を機械的に拾いました。"
+             "行の先頭の【 】が形です。", ""]
+    heads = (("new", "本日、52週高値を更新"), ("recent", "本日、直近高値（60営業日の高値）を更新"),
+             ("ma25", "52週高値のあと、25日線まで押した"))
+    for kind, head in heads:
+        if f"n_{kind}" not in h:                      # 前の形の記録（直近高値なし）
+            continue
+        n, rows = int(h.get(f"n_{kind}") or 0), list(h.get(kind) or [])[:H52_SHOW]
+        lines += [f"### {head}（全{n}件）", ""]
+        if not rows:
+            lines += ["当てはまる銘柄はありませんでした。", ""]
+            continue
+        for r in rows:
+            head_ = f"- {LABELS[kind]}{r['code']} {r['name']}　現在 {_yen(r['price'])}"
+            if kind == "new":
+                lines.append(f"{head_}・52週高値 {_yen(r['line'])}（{md(r.get('line_date'))}）を当日高値で "
+                             f"{float(r['excess_pct']):+.1f}% 上抜け")
+            elif kind == "recent":
+                lines.append(f"{head_}・直近高値 {_yen(r['line'])}（{md(r.get('line_date'))}）を当日高値で "
+                             f"{float(r['excess_pct']):+.1f}% 上抜け")
+            else:
+                lines.append(f"{head_}・25日線から {float(r['dev25_pct']):+.1f}%"
+                             f"・52週高値 {_yen(r['line'])}（{md(r.get('line_date'))}）から {float(r['from_high_pct']):+.1f}%")
+        lines.append("")
+    lines += ["※ 直近高値更新＝52週高値ではないが、前日までの60営業日の高値を本日の高値で上抜け、現在値が25日線より上。"
+              "25日線押し目＝直近20営業日のうちに52週高値を付け、本日の安値が25日線の+1%以内まで下がり、"
+              "現在値が25日線の-2%より上、25日線が上向き。値は記事の時点のもので、売買をすすめるものではありません。", ""]
+    return lines
+
+
 def article_lines(result: dict, track_note: str = "", warning: str = "") -> tuple[str, list[str]]:
     """warning はメールの先頭の注意書き（データの欠け・疑い・調べられなかった銘柄）。あれば
     無料部分と一覧の両方に出す。0件の日に「該当なし」とだけ書いていた（2026-10-19 の見直し）。"""
@@ -44,16 +93,28 @@ def article_lines(result: dict, track_note: str = "", warning: str = "") -> tupl
                       if "ランク" in str(n) and not str(n).startswith("並び順")), "")
     ranked = rank_note.startswith("ランク:")
     n_mark = sum(1 for r in rows if r.get("mark") == "◎")
-    title = f"出来高急増×下降トレンド｜{when}時点 {len(rows)}件"
-    lines = [f"東証プライム全銘柄（約1,550銘柄）から、下降トレンドの途中で出来高が急に増えた銘柄を"
-             f"機械的に探した結果です（{when}時点の値）。",
-             "**売買をすすめるもの（投資助言）ではありません。** 個別のご相談・ご質問にはお答えしていません。", "",
-             "## 条件", "",
-             "- 出来高が過去20日平均の2倍以上（当日のその時刻までの出来高）",
-             "- 現在値 < 25日線 < 75日線、25日線が5本前より低い（下降トレンド）",
-             "- 20日平均の売買代金が1億円以上",
-             "- 並び順はランク（◎）の銘柄が先、その中は25日線から深い順", "",
-             f"## 本日の件数：{len(rows)}件" + (f"（うち ◎ {n_mark}件）" if ranked and rows else ""), ""]
+    h52 = result.get("high52") if isinstance(result.get("high52"), dict) else None
+    if h52:
+        # 2026-10-27 持ち主「タイトルも52週新高値の文字を織り込んで」
+        title = f"52週新高値と出来高急増×下降トレンド｜{when}時点 新高値{int(h52.get('n_new') or 0)}件・急増{len(rows)}件"
+        intro = (f"東証プライム全銘柄（約1,550銘柄）から、52週新高値の銘柄（無料の部分で一部を紹介）と、下降トレンドの途中で"
+                 f"出来高が急に増えた銘柄（有料の部分）を機械的に探した結果です（{when}時点の値）。")
+    else:
+        title = f"出来高急増×下降トレンド｜{when}時点 {len(rows)}件"
+        intro = (f"東証プライム全銘柄（約1,550銘柄）から、下降トレンドの途中で出来高が急に増えた銘柄を"
+                 f"機械的に探した結果です（{when}時点の値）。")
+    lines = [intro,
+             "**売買をすすめるもの（投資助言）ではありません。** 個別のご相談・ご質問にはお答えしていません。", ""]
+    # 52週新高値を先に（タイトルで来た人がすぐ読めるように）。そのあとが出来高急増×下降の説明
+    if h52:
+        lines += high52_lines(h52)
+    vs = "出来高急増×下降トレンドの" if h52 else ""
+    lines += [f"## {vs}条件", "",
+              "- 出来高が過去20日平均の2倍以上（当日のその時刻までの出来高）",
+              "- 現在値 < 25日線 < 75日線、25日線が5本前より低い（下降トレンド）",
+              "- 20日平均の売買代金が1億円以上",
+              "- 並び順はランク（◎）の銘柄が先、その中は25日線から深い順", "",
+              f"## {vs}本日の件数：{len(rows)}件" + (f"（うち ◎ {n_mark}件）" if ranked and rows else ""), ""]
     try:
         import rank as RK
 
@@ -66,14 +127,17 @@ def article_lines(result: dict, track_note: str = "", warning: str = "") -> tupl
         lines += [f"**※ 本日のデータについての注意：** {warning}", ""]
     if track_note:
         lines += ["## この一覧に出た銘柄のその後", "", track_note, ""]
-    lines += ["---", "", PAID_LINE, "", "## 銘柄の一覧", ""]
+    lines += ["---", "", PAID_LINE, "", "## 出来高急増×下降トレンドの銘柄の一覧" if h52 else "## 銘柄の一覧", ""]
+    if h52 and rows:
+        lines += ["【セリングクライマックス】＝下降トレンドの途中で出来高が急に増えた形（上の条件）。", ""]
     if not rows:
         lines.append("条件に当てはまった銘柄はありませんでした。" + (
             "ただし上の注意のとおり、データの欠け・疑いがあるため、見落としがあり得ます。" if warning else ""))
     elif warning:
         lines += ["※ 上の注意のとおり、データの欠け・疑いがあるため、この一覧には見落としがあり得ます。", ""]
     for i, r in enumerate(rows, 1):
-        lines.append(f"**{i}. {'◎ ' if r.get('mark') == '◎' else ''}{r['code']} {r['name']}**")
+        lines.append(f"**{i}. {'◎ ' if r.get('mark') == '◎' else ''}{LABELS['climax'] if h52 else ''}"
+                     f"{r['code']} {r['name']}**")
         if r.get("mark") == "◎":
             lines.append("- ランク ◎（業種の勢いがとても弱い）")
         lines.append(f"- {float(r['price']):,.1f}円（{'前日比' if not r.get('prev_gap') else '前回の足から'}"
