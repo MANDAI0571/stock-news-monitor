@@ -69,10 +69,10 @@ def high52_lines(h: dict) -> list[str]:
             head_ = f"- {LABELS[kind]}{r['code']} {r['name']}　現在 {_yen(r['price'])}"
             if kind == "new":
                 lines.append(f"{head_}・52週高値 {_yen(r['line'])}（{md(r.get('line_date'))}）を当日高値で "
-                             f"{float(r['excess_pct']):+.1f}% 上抜け")
+                             f"{float(r['excess_pct']):+.2f}% 上抜け")
             elif kind == "recent":
                 lines.append(f"{head_}・直近高値 {_yen(r['line'])}（{md(r.get('line_date'))}）を当日高値で "
-                             f"{float(r['excess_pct']):+.1f}% 上抜け")
+                             f"{float(r['excess_pct']):+.2f}% 上抜け")
             else:
                 lines.append(f"{head_}・25日線から {float(r['dev25_pct']):+.1f}%"
                              f"・52週高値 {_yen(r['line'])}（{md(r.get('line_date'))}）から {float(r['from_high_pct']):+.1f}%")
