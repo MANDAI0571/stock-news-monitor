@@ -3746,12 +3746,47 @@ def _test_intraday_alert_grade() -> None:
     for bad in ("おすすめ", "買い時", "必ず上がる"):
         assert bad not in pt
     assert "x.com/intent/post?text=" in html and pt.split("\n")[0] in unquote(html.split("x.com/intent/post?text=")[1].split('"')[0])
-    # 1銘柄ずつのコピー（docs/clip.html を開き、そこでコピーする。文はリンクの # の後ろで運ぶ）
-    assert IHA.clip_url(pt).startswith("https://mandai0571.github.io/stock-news-monitor/clip.html#t=")
-    assert unquote(html.split("clip.html#t=")[1].split('"')[0].replace("&amp;", "&")) == pt and "この銘柄の文をコピー" in html
+    # 2026-10-27 持ち主「コピペで note の URL を載せて」: 投稿の文に note のトップの URL
+    assert "📝 note https://note.com/breakout_scan" in pt and pt.index("note.com") > pt.index("finance.yahoo"), pt
+    # 1銘柄ずつのコピー（docs/clip.html を開き、そこでコピーする。文はリンクの # の後ろで運ぶ。b= は UTF-8 の base64url）
+    import base64 as _b64
+
+    def _clip_text(link: str) -> str:
+        b = link.split("#b=")[1].split("&")[0]
+        return _b64.urlsafe_b64decode(b + "=" * (-len(b) % 4)).decode("utf-8")
+
+    assert IHA.clip_url(pt).startswith("https://mandai0571.github.io/stock-news-monitor/clip.html#b=")
+    assert _clip_text(IHA.clip_url(pt)) == pt and "&c=" not in IHA.clip_url(pt)
+    assert _clip_text(html.split('clip.html')[1].split('"')[0].replace("&amp;", "&")) == pt and "この銘柄の文をコピー" in html
+    assert len(IHA.clip_url(pt)) < len("#t=" + __import__("urllib.parse").parse.quote(pt, safe="")) * 0.7   # 前の形より短い
+    # 2026-10-27 持ち主「チャートの画像を載せれる？」: 直近60本のローソク足を短い文字にして運び、clip.html で描く
+    idx60 = pd.bdate_range("2026-06-01", periods=80)
+    cc = np.linspace(1000, 1300, 80) + np.sin(np.arange(80)) * 20
+    hh = pd.DataFrame({"Open": cc - 5, "High": cc + 15, "Low": cc - 18, "Close": cc, "Volume": np.arange(80) * 1000.0}, index=idx60)
+    sp = IHA.chart_payload(hh, 1340.0)
+    rc = IHA.read_chart_payload(sp)
+    assert rc and len(rc["bars"]) == 60 and rc["d0"] == "20260629" and rc["d1"] == "20260918" and rc["line"] == 1340.0, sp[:80]
+    assert rc["hi"] == 1340.0 and abs(rc["lo"] - float(hh["Low"].tail(60).min())) < 0.01   # ラインも描ける範囲に入れる
+    for got, (o_, h_, l_, c_) in zip(rc["bars"], hh[["Open", "High", "Low", "Close"]].tail(60).itertuples(index=False, name=None)):
+        assert max(abs(got[0] - o_), abs(got[1] - h_), abs(got[2] - l_), abs(got[3] - c_)) < (rc["hi"] - rc["lo"]) / 4095 + 1e-6
+    assert rc["bars"][-1][4] == 1.0 and len(sp) < 620
+    assert IHA.chart_payload(hh.assign(Volume=0.0), 0).split(",")[3] == "0"           # 出来高0・ラインなしでも作れる
+    assert IHA.chart_payload(hh.head(3)) == "" and IHA.chart_payload(None) == "" and IHA.chart_payload(pd.DataFrame()) == ""
+    ac = Alert(**{**a.__dict__, "spark": sp})
+    hc = build_html_body([ac])
+    link = hc.split('clip.html')[1].split('"')[0].replace("&amp;", "&")
+    assert "&c=" + sp in link and _clip_text(link) == IHA.post_text(ac) and "この銘柄の文とチャート画像" in hc and "𝕏に投稿（文だけ）" in hc
+    built = IHA.build_alert("1234", "テスト", {"turnover_20d": 5e8, "current_price": 1300.0, "high_52w": 1310.0,
+                                             "dist_52w_high_pct": 0.5, "volume_ratio_5d_20d": 1.1},
+                            {"high_type": "52W_NEAR_HIGH"}, history=hh)
+    assert built is None or built.spark.startswith("1,"), built
     clip = Path("docs/clip.html").read_text(encoding="utf-8")
     assert "navigator.clipboard" in clip and 'execCommand("copy")' in clip and "location.hash" in clip and "noindex" in clip
     assert "x.com/intent/post" in clip and "line.me/R/share" in clip and "threads.net/intent/post" in clip
+    assert 'param("b")' in clip and 'param("t")' in clip and 'param("c")' in clip                 # 前の形（t=）のリンクも開ける
+    assert "navigator.share" in clip and "canShare" in clip and "ClipboardItem" in clip and "download" in clip
+    assert "note.com/breakout_scan" in clip and "売買をすすめるものではありません" in clip
+    assert 'B64 = "' + IHA._B64 + '"' in clip and "p[6].length % 9" in clip                     # 読み方は chart_payload と対
     assert "<script src" not in clip and "fetch(" not in clip and "XMLHttpRequest" not in clip   # 外へ何も送らない
     import re as _re
     assert not _re.search(r"\d{4} [^\s<]+(株式会社|ホールディングス)", clip)                  # 銘柄は入れない

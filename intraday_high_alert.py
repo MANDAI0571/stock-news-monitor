@@ -35,6 +35,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 from html import escape
@@ -200,6 +201,8 @@ class Alert:
     grade_score: int = 0
     grade_reasons: list = field(default_factory=list)
     market: str = ""                # 東証プライム / 東証スタンダード / 東証グロース（等級の表に使う）
+    # 2026-10-27: コピー用のページで描くローソク足（直近60本）を短い文字にしたもの（chart_payload）
+    spark: str = ""
 
     def dedup_key(self) -> str:
         return f"{self.code}|{self.alert_type}"
@@ -441,6 +444,12 @@ def build_alert(
         print(f"nikkei_compare=failed code={code} err={error}", flush=True)
         nikkei_rel = []
 
+    try:
+        spark = chart_payload(history, line_price) if history is not None else ""
+    except Exception as error:                        # noqa: BLE001 - 画像が無くてもアラートは出す
+        print(f"chart_payload=failed code={code} err={error}", flush=True)
+        spark = ""
+
     return Alert(
         code=code,
         name=name,
@@ -461,6 +470,7 @@ def build_alert(
         is_fresh_break=is_fresh_break,
         break_since=break_since,
         nikkei_rel=nikkei_rel,
+        spark=spark,
     )
 
 
@@ -710,6 +720,7 @@ def write_csv(alerts: list[Alert], new_keys: set[str], output_dir: Path) -> Path
     rows = []
     for alert in alerts:
         row = asdict(alert)
+        row.pop("spark", None)          # 画像用の文字。CSV には要らない
         row["is_new"] = alert.dedup_key() in new_keys
         rows.append(row)
     pd.DataFrame(rows).to_csv(path, index=False, encoding="utf-8-sig")
@@ -864,9 +875,14 @@ def x_length(text: str) -> int:
     return n
 
 
+# 投稿の文に載せる note（2026-10-27 持ち主「コピペで note の URL を載せて」）。記事ごとの URL は公開前に決まらないので、トップのページ
+NOTE_URL = "https://note.com/breakout_scan"
+
+
 def post_text(alert: Alert, limit: int = 280) -> str:
     """1銘柄ぶんの投稿用の文（2026-10-26 持ち主「一つずつコピペしてXなどに貼れるよう」）。
-    X の280字に収める。長いときは ランク → 当日高値 → チャートのURL → タグ の順に外す。売買をすすめる言葉は入れない。"""
+    X の280字に収める。長いときは ランク → 当日高値 → チャートのURL → タグ → note のURL の順に外す。
+    売買をすすめる言葉は入れない。"""
     head = f"【{alert.alert_type}】{alert.code} {alert.name}"
     price = f"現在値 {alert.current_price:,.1f}円"
     high = f"（当日高値 {alert.today_high:,.1f}円）" if alert.today_high > 0 else ""
@@ -879,9 +895,12 @@ def post_text(alert: Alert, limit: int = 280) -> str:
     rank = f"・過去の成績ランク {alert.grade}" if alert.grade else ""
     tags = "#日本株 #株式投資 " + ("#52週高値" if alert.alert_type.startswith("52週") else "#高値更新")
     url = chart_url(alert.code)
+    nt = f"📝 note {NOTE_URL}"
     note = "※売買をすすめるものではありません"
-    for h, rk, u, tg in ((high, rank, url, tags), ("", rank, url, tags), ("", "", url, tags), ("", "", "", tags), ("", "", "", "")):
-        text = "\n".join([head, price + h, line, vol + rk] + ([u] if u else []) + ([tg] if tg else []) + [note])
+    steps = ((high, rank, url, tags, nt), ("", rank, url, tags, nt), ("", "", url, tags, nt), ("", "", "", tags, nt),
+             ("", "", "", "", nt), ("", "", "", "", ""))
+    for h, rk, u, tg, n in steps:
+        text = "\n".join([head, price + h, line, vol + rk] + [x for x in (u, tg, n) if x] + [note])
         if x_length(text) <= limit:
             return text
     return "\n".join([head, line, note])
@@ -892,19 +911,76 @@ def post_text(alert: Alert, limit: int = 280) -> str:
 CLIP_PAGE_URL = "https://mandai0571.github.io/stock-news-monitor/clip.html"
 
 
-def clip_url(text: str) -> str:
-    return CLIP_PAGE_URL + "#t=" + quote(text, safe="")
+def clip_url(text: str, chart: str = "") -> str:
+    """コピー用のページのリンク。文は UTF-8 の base64url（# の後ろの b=。%XX にするより半分ほど短い）、
+    チャートは chart_payload の文字（c=）。どちらも # の後ろなのでサーバーには送られない。"""
+    b = base64.urlsafe_b64encode(text.encode("utf-8")).decode("ascii").rstrip("=")
+    return CLIP_PAGE_URL + "#b=" + b + (f"&c={chart}" if chart else "")
+
+
+# チャートの文字（clip.html の readChart と対になる）。2026-10-27 持ち主「コピペでチャートの画像を載せれる？」:
+# X の投稿リンクは画像を運べないので、コピー用のページでローソク足を描いて画像にし、共有・保存・コピーできるようにする。
+# 値は「期間の安値〜高値（ラインも含む）」を4096段に丸めて2文字ずつ（始値・高値・安値・終値）、出来高は64段で1文字。
+CHART_BARS = 60
+_B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+
+
+def _num(x: float) -> str:
+    return f"{x:.2f}".rstrip("0").rstrip(".")
+
+
+def chart_payload(history, line_price: float = 0.0, bars: int = CHART_BARS) -> str:
+    """直近 bars 本の日足を「1,安値,高値,ライン,初日,最終日,本体」の短い文字にする（作れなければ空）。"""
+    cols = ["Open", "High", "Low", "Close"]
+    if history is None or getattr(history, "empty", True) or any(c not in history.columns for c in cols):
+        return ""
+    df = history.dropna(subset=cols).tail(bars)
+    if len(df) < 5:
+        return ""
+    lo, hi = float(df["Low"].min()), float(df["High"].max())
+    if line_price > 0:
+        lo, hi = min(lo, line_price), max(hi, line_price)
+    if not hi > lo:
+        return ""
+
+    def q(p: float) -> str:
+        v = max(0, min(4095, int(round((float(p) - lo) / (hi - lo) * 4095))))
+        return _B64[v >> 6] + _B64[v & 63]
+
+    vol = df["Volume"].astype(float).fillna(0) if "Volume" in df.columns else pd.Series(0.0, index=df.index)
+    vmax = float(vol.max()) if len(vol) else 0.0
+    body = []
+    for (o, h, l, c), v in zip(df[cols].astype(float).itertuples(index=False, name=None), vol):
+        vq = max(0, min(63, int(round(v / vmax * 63)))) if vmax > 0 else 0
+        body.append(q(o) + q(h) + q(l) + q(c) + _B64[vq])
+    d0, d1 = (pd.Timestamp(df.index[i]).strftime("%Y%m%d") for i in (0, -1))
+    return ",".join(["1", _num(lo), _num(hi), _num(line_price if line_price > 0 else 0), d0, d1, "".join(body)])
+
+
+def read_chart_payload(payload: str) -> dict | None:
+    """chart_payload を読み戻す（self_test 用。clip.html の readChart と同じ読み方）。"""
+    parts = payload.split(",")
+    if len(parts) != 7 or parts[0] != "1" or len(parts[6]) % 9:
+        return None
+    lo, hi, line = (float(x) for x in parts[1:4])
+    val = lambda a, b: (_B64.index(a) * 64 + _B64.index(b)) / 4095 * (hi - lo) + lo  # noqa: E731
+    bars = []
+    for i in range(0, len(parts[6]), 9):
+        t = parts[6][i:i + 9]
+        bars.append((val(t[0], t[1]), val(t[2], t[3]), val(t[4], t[5]), val(t[6], t[7]), _B64.index(t[8]) / 63))
+    return {"lo": lo, "hi": hi, "line": line, "d0": parts[4], "d1": parts[5], "bars": bars}
 
 
 def _share_html(alert: Alert) -> str:
     """2つのボタン。Gmail はメールの中のプログラム（クリップボードへのコピー）を動かさないので、
-    「この銘柄の文をコピー」はコピー用のページ（clip.html）を開き、そこで1回押してコピーする。
-    「𝕏に投稿」は X の投稿画面を文が入った状態で開く。"""
+    「この銘柄の文とチャート画像」はコピー用のページ（clip.html）を開き、そこでコピー・画像の共有をする。
+    「𝕏に投稿」は X の投稿画面を文が入った状態で開く（X の投稿リンクは画像を運べないので、文だけ）。"""
     text = post_text(alert)
     x_href = "https://x.com/intent/post?text=" + quote(text, safe="")
     # 文そのものはコピー用のページに出す（メールに載せると大きくなり、Gmail が途中で切る銘柄が増えるため）
-    return (f'<a class="chart" href="{escape(clip_url(text))}">📋 この銘柄の文をコピー</a> '
-            f'<a class="chart xpost" href="{escape(x_href)}">𝕏に投稿</a>')
+    label = "📋 この銘柄の文とチャート画像" if alert.spark else "📋 この銘柄の文をコピー"
+    return (f'<a class="chart" href="{escape(clip_url(text, alert.spark))}">{label}</a> '
+            f'<a class="chart xpost" href="{escape(x_href)}">𝕏に投稿（文だけ）</a>')
 
 
 def _alert_html_card(alert: Alert, share: bool = False) -> str:

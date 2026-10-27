@@ -9,9 +9,13 @@
 <!--
   1銘柄ずつコピーするためのページ（2026-10-26 持ち主「一銘柄一つずつコピペできるように」）。
   Gmail はメールの中のプログラム（クリップボードへのコピー）を動かさないので、アラートメールの各銘柄の
-  「この銘柄の文をコピー」のボタンからこのページを開き、ここでコピーする。
-  文はメールのリンクの「#」より後ろ（フラグメント）で運ぶ。フラグメントはサーバーに送られないので、
-  このページにも、このリポジトリにも、銘柄は残らない。外部のスクリプトは読まず、どこにも何も送らない。
+  ボタンからこのページを開き、ここでコピーする。
+  2026-10-27 持ち主「コピペでチャートの画像を載せれる？」: X の投稿リンクは画像を運べないので、このページで
+  ローソク足（直近60本）を描いて画像にし、「画像と文を共有」（スマホの共有の画面から X などを選ぶ）・
+  画像のコピー・保存ができるようにした。
+  文とチャートの値はメールのリンクの「#」より後ろ（フラグメント）で運ぶ（b= 文の UTF-8 の base64url、
+  c= チャート、t= 前の形の文）。フラグメントはサーバーに送られないので、このページにも、このリポジトリにも、
+  銘柄は残らない。外部のスクリプトは読まず、どこにも何も送らない。
 -->
 <style>
 :root{--bg:#ffffff;--fg:#111111;--mute:#6b7280;--box:#f6f8fa;--line:#c9d1d9;--acc:#1f745f}
@@ -20,55 +24,184 @@ body{margin:0;padding:16px;background:var(--bg);color:var(--fg);font:16px/1.7 -a
 .wrap{max-width:560px;margin:0 auto}
 h1{font-size:16px;color:var(--mute);font-weight:600;margin:0 0 10px}
 #text{white-space:pre-wrap;word-break:break-word;background:var(--box);border:1px dashed var(--line);border-radius:10px;padding:12px 14px;margin:0 0 14px}
+#img{display:none;width:100%;height:auto;border-radius:10px;margin:0 0 12px;border:1px solid var(--line)}
 button,a.b{display:block;width:100%;box-sizing:border-box;text-align:center;padding:14px;margin:0 0 10px;border:0;border-radius:10px;
-  font-size:17px;font-weight:700;text-decoration:none;cursor:pointer}
+  font-size:17px;font-weight:700;text-decoration:none;cursor:pointer;font-family:inherit}
 #copy{background:var(--acc);color:#fff}
+#share{background:#1d4ed8;color:#fff}
+#copyimg,#save{background:var(--box);color:var(--fg);border:1px solid var(--line)}
 a.x{background:#111111;color:#fff}
 a.line{background:#06c755;color:#fff}
 a.th{background:#333333;color:#fff}
 #msg{min-height:1.7em;text-align:center;font-weight:700;color:var(--acc);margin:0 0 8px}
 .s{font-size:12px;color:var(--mute)}
+.hide{display:none!important}
 </style>
 </head>
 <body>
 <div class="wrap">
   <h1>この銘柄の文</h1>
-  <div id="text">（メールの「この銘柄の文をコピー」から開いてください）</div>
+  <div id="text">（メールの「この銘柄の文…」のボタンから開いてください）</div>
+  <img id="img" alt="チャートの画像">
   <div id="msg"></div>
-  <button id="copy" type="button">コピーする</button>
-  <a class="b x" id="x" href="#">𝕏に投稿</a>
-  <a class="b line" id="line" href="#">LINEで送る</a>
-  <a class="b th" id="th" href="#">Threadsに投稿</a>
+  <button id="copy" type="button">文をコピーする</button>
+  <button id="share" type="button" class="hide">画像と文を共有（𝕏・LINEなど）</button>
+  <button id="copyimg" type="button" class="hide">画像をコピー</button>
+  <a class="b hide" id="save" href="#" download="chart.png">画像を保存</a>
+  <a class="b x" id="x" href="#">𝕏に投稿（文だけ）</a>
+  <a class="b line" id="line" href="#">LINEで送る（文だけ）</a>
+  <a class="b th" id="th" href="#">Threadsに投稿（文だけ）</a>
+  <p class="s" id="hint"></p>
   <p class="s">売買をすすめるものではありません。投資の判断はご自身でお願いします。</p>
 </div>
 <script>
 (function () {
-  var h = location.hash || "";
-  var m = h.match(/[#&]t=([^&]*)/);
+  var B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+  function param(name) {
+    var m = (location.hash || "").match(new RegExp("[#&]" + name + "=([^&]*)"));
+    return m ? m[1] : "";
+  }
+  function fromB64url(s) {
+    s = s.replace(/-/g, "+").replace(/_/g, "/");
+    while (s.length % 4) s += "=";
+    var bin = atob(s), bytes = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return new TextDecoder("utf-8").decode(bytes);
+  }
   var text = "";
-  try { text = m ? decodeURIComponent(m[1]) : ""; } catch (e) { text = ""; }
+  try { text = param("b") ? fromB64url(param("b")) : decodeURIComponent(param("t")); } catch (e) { text = ""; }
   var box = document.getElementById("text"), msg = document.getElementById("msg");
-  var btns = ["copy", "x", "line", "th"].map(function (id) { return document.getElementById(id); });
-  if (!text) { btns.forEach(function (b) { b.style.display = "none"; }); return; }
+  function $(id) { return document.getElementById(id); }
+  if (!text) { ["copy", "x", "line", "th"].forEach(function (id) { $(id).style.display = "none"; }); return; }
   box.textContent = text;
   var enc = encodeURIComponent(text);
-  document.getElementById("x").href = "https://x.com/intent/post?text=" + enc;
-  document.getElementById("line").href = "https://line.me/R/share?text=" + enc;
-  document.getElementById("th").href = "https://www.threads.net/intent/post?text=" + enc;
-  function done(ok) { msg.textContent = ok ? "コピーしました" : "コピーできませんでした。上の文を長押しして選んでください"; }
+  $("x").href = "https://x.com/intent/post?text=" + enc;
+  $("line").href = "https://line.me/R/share?text=" + enc;
+  $("th").href = "https://www.threads.net/intent/post?text=" + enc;
+  function say(s) { msg.textContent = s; }
   function fallback() {
     var ta = document.createElement("textarea");
     ta.value = text; ta.setAttribute("readonly", ""); ta.style.position = "fixed"; ta.style.top = "-1000px";
     document.body.appendChild(ta); ta.select(); ta.setSelectionRange(0, text.length);
     var ok = false;
     try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
-    document.body.removeChild(ta); done(ok);
+    document.body.removeChild(ta);
+    say(ok ? "コピーしました" : "コピーできませんでした。上の文を長押しして選んでください");
   }
-  document.getElementById("copy").addEventListener("click", function () {
+  $("copy").addEventListener("click", function () {
     if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(text).then(function () { done(true); }, fallback);
+      navigator.clipboard.writeText(text).then(function () { say("コピーしました"); }, fallback);
     } else { fallback(); }
   });
+
+  // ---- チャート（intraday_high_alert.chart_payload と対） ----
+  function readChart(c) {
+    var p = decodeURIComponent(c || "").split(",");
+    if (p.length !== 7 || p[0] !== "1" || p[6].length % 9) return null;
+    var lo = parseFloat(p[1]), hi = parseFloat(p[2]), line = parseFloat(p[3]);
+    if (!(hi > lo)) return null;
+    function v(a, b) { return (B64.indexOf(a) * 64 + B64.indexOf(b)) / 4095 * (hi - lo) + lo; }
+    var bars = [];
+    for (var i = 0; i < p[6].length; i += 9) {
+      var t = p[6].substr(i, 9);
+      bars.push({o: v(t[0], t[1]), h: v(t[2], t[3]), l: v(t[4], t[5]), c: v(t[6], t[7]), vol: B64.indexOf(t[8]) / 63});
+    }
+    return {lo: lo, hi: hi, line: line, d0: p[4], d1: p[5], bars: bars};
+  }
+  function ymd(s) { return s.slice(0, 4) + "/" + s.slice(4, 6) + "/" + s.slice(6, 8); }
+  function yen(x) { return x >= 1000 ? Math.round(x).toLocaleString("ja-JP") : x.toFixed(1); }
+  var FONT = '"Hiragino Sans","Hiragino Kaku Gothic ProN","Yu Gothic","Noto Sans JP",sans-serif';
+  function fitText(ctx, s, size, weight, maxW) {
+    do { ctx.font = weight + " " + size + "px " + FONT; size -= 2; } while (ctx.measureText(s).width > maxW && size > 14);
+  }
+  function draw(ch) {
+    var W = 1200, H = 675, cv = document.createElement("canvas");
+    cv.width = W; cv.height = H;
+    var g = cv.getContext("2d");
+    var bg = g.createLinearGradient(0, 0, W, H); bg.addColorStop(0, "#0f1b2d"); bg.addColorStop(1, "#16304f");
+    g.fillStyle = bg; g.fillRect(0, 0, W, H);
+    var lines = text.split("\n");
+    g.textBaseline = "alphabetic"; g.fillStyle = "#ffffff";
+    fitText(g, lines[0] || "", 44, "700", W - 96); g.fillText(lines[0] || "", 48, 72);
+    g.fillStyle = "#cfd8e3";
+    var sub = (lines[1] || "") + (lines[2] ? "　" + lines[2] : "");
+    fitText(g, sub, 26, "400", W - 96); g.fillText(sub, 48, 114);
+    var L = 48, R = W - 130, T = 150, B = 520, VT = 532, VB = 596;
+    var lo = ch.lo, hi = ch.hi, pad = (hi - lo) * 0.04; lo -= pad; hi += pad;
+    function y(p) { return B - (p - lo) / (hi - lo) * (B - T); }
+    g.strokeStyle = "rgba(255,255,255,0.10)"; g.lineWidth = 1; g.fillStyle = "#9fb0c3"; g.font = "20px " + FONT;
+    for (var k = 0; k <= 4; k++) {
+      var pv = ch.lo + (ch.hi - ch.lo) * k / 4, yy = Math.round(y(pv)) + 0.5;
+      g.beginPath(); g.moveTo(L, yy); g.lineTo(R, yy); g.stroke();
+      g.fillText(yen(pv), R + 12, yy + 7);
+    }
+    var n = ch.bars.length, slot = (R - L) / n, bw = Math.max(2, slot * 0.62);
+    ch.bars.forEach(function (b, i) {
+      var cx = L + slot * (i + 0.5), up = b.c >= b.o;
+      g.strokeStyle = g.fillStyle = up ? "#ff6b6b" : "#4dabf7";
+      g.lineWidth = Math.max(1, slot * 0.12);
+      g.beginPath(); g.moveTo(cx, y(b.h)); g.lineTo(cx, y(b.l)); g.stroke();
+      var top = y(Math.max(b.o, b.c)), h = Math.max(1.5, Math.abs(y(b.o) - y(b.c)));
+      g.fillRect(cx - bw / 2, top, bw, h);
+      g.fillStyle = up ? "rgba(255,107,107,0.45)" : "rgba(77,171,247,0.45)";
+      var vh = b.vol * (VB - VT); g.fillRect(cx - bw / 2, VB - vh, bw, vh);
+    });
+    if (ch.line > 0) {
+      var ly = Math.round(y(ch.line)) + 0.5;
+      g.strokeStyle = "#ffd43b"; g.lineWidth = 2; g.setLineDash([10, 8]);
+      g.beginPath(); g.moveTo(L, ly); g.lineTo(R, ly); g.stroke(); g.setLineDash([]);
+      var m = text.match(/(\S+ライン [\d,.]+円)/), label = m ? m[1] : "ライン " + yen(ch.line) + "円";
+      g.font = "700 22px " + FONT;
+      var tw = g.measureText(label).width, lx = L + 8, ty = ly < T + 40 ? ly + 30 : ly - 10;
+      g.fillStyle = "rgba(15,27,45,0.85)"; g.fillRect(lx - 6, ty - 22, tw + 12, 30);
+      g.fillStyle = "#ffd43b"; g.fillText(label, lx, ty);
+    }
+    g.fillStyle = "#9fb0c3"; g.font = "20px " + FONT;
+    g.fillText(ymd(ch.d0), L, 624);
+    var right = ymd(ch.d1) + "（日足" + n + "本）"; g.fillText(right, R - g.measureText(right).width, 624);
+    g.fillStyle = "#7f8ea3"; g.font = "18px " + FONT;
+    g.fillText("※売買をすすめるものではありません", L, 658);
+    g.fillStyle = "#e6edf5"; g.font = "700 22px " + FONT;
+    var brand = "note.com/breakout_scan"; g.fillText(brand, W - 48 - g.measureText(brand).width, 658);
+    return cv;
+  }
+  var ch = null;
+  try { ch = readChart(param("c")); } catch (e) { ch = null; }
+  if (!ch) return;
+  var cv = draw(ch), img = $("img");
+  img.src = cv.toDataURL("image/png"); img.style.display = "block";
+  document.querySelector("h1").textContent = "この銘柄の文とチャート";
+  var code = ((text.split("\n")[0] || "").match(/】\s*(\w+)/) || [])[1] || "chart";
+  cv.toBlob(function (blob) {
+    if (!blob) return;
+    var name = "chart_" + code + ".png", file = null;
+    try { file = new File([blob], name, {type: "image/png"}); } catch (e) { file = null; }
+    var url = URL.createObjectURL(blob), save = $("save");
+    save.href = url; save.setAttribute("download", name); save.classList.remove("hide");
+    if (file && navigator.canShare && navigator.share) {
+      var ok = false;
+      try { ok = navigator.canShare({files: [file]}); } catch (e) { ok = false; }
+      if (ok) {
+        $("share").classList.remove("hide");
+        $("share").addEventListener("click", function () {
+          navigator.share({files: [file], text: text}).then(function () { say("共有の画面に渡しました"); }, function (e) {
+            if (e && e.name === "AbortError") return;
+            say("共有できませんでした。画像を保存して、投稿の画面で添付してください");
+          });
+        });
+      }
+    }
+    if (navigator.clipboard && navigator.clipboard.write && window.ClipboardItem) {
+      $("copyimg").classList.remove("hide");
+      $("copyimg").addEventListener("click", function () {
+        navigator.clipboard.write([new ClipboardItem({"image/png": blob})]).then(function () {
+          say("画像をコピーしました（投稿の画面に貼り付けられます）");
+        }, function () { say("画像をコピーできませんでした。画像を長押しして保存・コピーしてください"); });
+      });
+    }
+    $("hint").textContent = "𝕏に画像を付けるには「画像と文を共有」で𝕏を選ぶか、画像を保存（またはコピー）して投稿の画面で添付してください。"
+      + "画像は長押しでも保存・コピーできます。共有先によっては文が入らないので、そのときは先に「文をコピーする」を押して貼り付けてください。";
+  }, "image/png");
 })();
 </script>
 </body>
