@@ -223,6 +223,9 @@ def body_html(lines: list[str]) -> str:
     for line in lines:
         if line.startswith("## "):
             close(); out.append(f"<h2>{inline(line[3:])}</h2>")
+        elif line.startswith("### "):
+            # 小見出し（出来高急増の記事の52週新高値の節、2026-10-27）。<p> のままだと note に「###」が文字で残った
+            close(); out.append(f"<h3>{inline(line[4:])}</h3>")
         elif re.match(r"^\d+\. ", line):
             if lst != "ol":
                 close(); out.append("<ol>"); lst = "ol"

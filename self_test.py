@@ -3319,6 +3319,8 @@ def _test_note_two() -> None:
     assert 'us_ict.section_lines(L.get("ict", []), limit=5, market="us", brief=True)' in Path("note_two_us.py").read_text(encoding="utf-8")
     html = N.body_html(lines)
     assert html.count("<h2>") >= 5 and "<ol>" in html and "<strong>" in html and "<h1>" not in html
+    h3 = N.body_html(["### 本日、52週高値を更新（全2件）", "- 行"])
+    assert "<h3>本日、52週高値を更新（全2件）</h3>" in h3 and "###" not in h3, h3
     with tempfile.TemporaryDirectory() as tmp:
         m = N.write_outputs(Path(tmp), [("ranking", title, lines), ("300man", "t", b)])
         entries = json.loads(m.read_text(encoding="utf-8"))
