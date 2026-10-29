@@ -1,43 +1,43 @@
 {
  "since": "2026-10-13",
- "updated": "2026-10-29 00:14",
- "recorded": 1207,
+ "updated": "2026-10-30 00:19",
+ "recorded": 1255,
  "no_data": 0,
  "grades": {
   "SS": {
-   "done": 21,
-   "pending": 114,
-   "pf": 0.31,
-   "win": 0.143,
-   "avg_pct": -3.69
+   "done": 25,
+   "pending": 119,
+   "pf": 0.57,
+   "win": 0.24,
+   "avg_pct": -2.07
   },
   "S": {
-   "done": 33,
-   "pending": 177,
-   "pf": 0.12,
-   "win": 0.03,
-   "avg_pct": -5.39
+   "done": 35,
+   "pending": 186,
+   "pf": 0.11,
+   "win": 0.029,
+   "avg_pct": -5.48
   },
   "A": {
-   "done": 57,
-   "pending": 218,
-   "pf": 1.13,
-   "win": 0.263,
-   "avg_pct": 0.64
+   "done": 60,
+   "pending": 225,
+   "pf": 1.22,
+   "win": 0.283,
+   "avg_pct": 1.04
   },
   "B": {
-   "done": 100,
-   "pending": 398,
-   "pf": 0.86,
-   "win": 0.22,
-   "avg_pct": -0.83
+   "done": 105,
+   "pending": 401,
+   "pf": 0.84,
+   "win": 0.219,
+   "avg_pct": -0.95
   },
   "C": {
-   "done": 20,
-   "pending": 69,
-   "pf": 0.07,
-   "win": 0.1,
-   "avg_pct": -6.07
+   "done": 23,
+   "pending": 76,
+   "pf": 0.06,
+   "win": 0.087,
+   "avg_pct": -6.13
   }
  }
 }
