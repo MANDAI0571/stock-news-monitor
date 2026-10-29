@@ -19,5 +19,5 @@
 | INFO | open_share_balance | PASS | all | 0 keys matched |
 | INFO | journal_arithmetic | PASS | journal | 5 rows matched |
 | INFO | cash_balance | PASS | paper_cash | cash_jpy=2876500 |
-| INFO | open_position_limits | PASS | portfolio | open=0 max=3 |
+| INFO | open_position_limits | PASS | portfolio | open=0 max=5 |
 | INFO | pending_rule_compatibility | PASS | pending_orders | count=2 |

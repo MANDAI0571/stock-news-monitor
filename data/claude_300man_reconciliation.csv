@@ -8,5 +8,5 @@
 2026-10-29,INFO,open_share_balance,PASS,all,0 keys matched
 2026-10-29,INFO,journal_arithmetic,PASS,journal,5 rows matched
 2026-10-29,INFO,cash_balance,PASS,paper_cash,cash_jpy=2876500
-2026-10-29,INFO,open_position_limits,PASS,portfolio,open=0 max=3
+2026-10-29,INFO,open_position_limits,PASS,portfolio,open=0 max=5
 2026-10-29,INFO,pending_rule_compatibility,PASS,pending_orders,count=2
