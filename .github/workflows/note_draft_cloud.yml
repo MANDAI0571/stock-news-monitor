@@ -69,7 +69,8 @@ jobs:
       # （表示対象の銘柄のみ・失敗しても記事生成は止めない・取得できない項目は未取得表示）
       NOTE_FETCH_FUNDAMENTALS: "1"
       NOTE_FETCH_EARNINGS: "1"
-      SEND_CLOUD_DIGEST: "true"
+      # User preference: keep generating the note draft, but never email its digest.
+      SEND_CLOUD_DIGEST: "false"
  
     steps:
       - name: Checkout
