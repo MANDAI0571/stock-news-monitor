@@ -11,7 +11,7 @@ import pandas as pd
 
 from claude_300man_shadow import SHADOW_COLUMNS, SHADOW_PATH
 from claude_shadow_exits import EXIT_VARIANTS
-from dual_300man_config import CONFIG, JOURNAL_COLUMNS, ORDER_COLUMNS, ROOT
+from dual_300man_config import CONFIG, JOURNAL_COLUMNS, ORDER_COLUMNS, ROOT, order_compatibility
 from dual_300man_fill import business_days_between, cash_balance, read_csv
 
 
@@ -231,7 +231,13 @@ def build_review(
     exits = closed.get("exit_type", pd.Series(dtype=str)).astype(str)
     stops = closed[exits.str.startswith("STOP_LOSS")]
     stop_returns = _numbers(stops, "exit_return_pct")
-    stop_in_band = int(stop_returns.between(-7, -5).sum())
+    # 想定どおりの損切りか: 2.x（終値判定→翌寄付）は -5〜-7%。3.0.0 の逆指値（理由が「逆指値」で始まる）は
+    # 逆指値ちょうど〜窓を開けて下に寄った分として、逆指値から -2% まで
+    standing = stops.get("exit_reason", pd.Series("", index=stops.index)).astype(str).str.startswith("逆指値")
+    stop_in_band = int(
+        stop_returns[~standing].between(-7, -5).sum()
+        + stop_returns[standing].between(CONFIG.stop_loss_pct - 2, CONFIG.stop_loss_pct + 0.05).sum()
+    )
     stop_below_ten = int((stop_returns < -10).sum())
     take_profit = int(exits.eq("TAKE_PROFIT").sum())
     trailing = int(exits.eq("TRAILING_STOP").sum())
@@ -268,8 +274,7 @@ def build_review(
     if open_rows.get("code", pd.Series(dtype=str)).duplicated().any():
         alerts.append(("CRITICAL", "DUPLICATE_OPEN", "同一銘柄の重複保有を検出"))
     incompatible = pending[
-        ~pending["strategy_version"].eq(CONFIG.strategy_version)
-        | ~pending["rule_hash"].eq(CONFIG.rule_hash)
+        [not order_compatibility(row)[0] for _, row in pending.iterrows()]
     ] if not pending.empty else pending
     if len(incompatible):
         alerts.append(("CRITICAL", "RULE_MISMATCH", f"現行ルールと不一致のDECLARED注文 {len(incompatible)}件"))
@@ -278,7 +283,7 @@ def build_review(
     if stale_mark_count:
         alerts.append(("WATCH", "STALE_MARK", f"2営業日以上更新されていない保有価格 {stale_mark_count}件"))
     if len(stops) >= 3 and stop_in_band / len(stops) < 0.80:
-        alerts.append(("WATCH", "STOP_CONTAINMENT", f"損切り-5〜-7%収容率 {stop_in_band}/{len(stops)}"))
+        alerts.append(("WATCH", "STOP_CONTAINMENT", f"損切りが想定の幅に収まった割合 {stop_in_band}/{len(stops)}"))
     if len(closed) >= 5 and timeout_share is not None and timeout_share > 70:
         alerts.append(("WATCH", "TIMEOUT_HEAVY", f"タイムアウト比率 {timeout_share:.1f}%"))
     consecutive_losses = _trailing_loss_count(returns)
@@ -361,7 +366,8 @@ def write_report(
         f"- 実現損益: {_display(snapshot['realized_pnl_jpy'], '円')} / 含み損益: {_display(snapshot['unrealized_pnl_jpy'], '円')}",
         f"- 勝率: {_display(snapshot['win_rate_pct'], '%')} / 平均勝ち {_display(snapshot['avg_win_pct'], '%')} / 平均負け {_display(snapshot['avg_loss_pct'], '%')}",
         f"- 損益比: {_display(snapshot['payoff_ratio'])} / PF {_display(snapshot['profit_factor'])} / 1取引期待値 {_display(snapshot['expectancy_pct'], '%')}",
-        f"- 損切り: {snapshot['stop_count']}回、-5〜-7% {snapshot['stop_in_minus_5_to_7_count']}回、-10%超 {snapshot['stop_below_minus_10_count']}回",
+        f"- 損切り: {snapshot['stop_count']}回、想定の幅（2.x は-5〜-7%、3.0.0 の逆指値は{CONFIG.stop_loss_pct:.0f}〜{CONFIG.stop_loss_pct - 2:.0f}%）"
+        f" {snapshot['stop_in_minus_5_to_7_count']}回、-10%超 {snapshot['stop_below_minus_10_count']}回",
         f"- 出口: 利確 {snapshot['take_profit_count']} / 追随 {snapshot['trailing_count']} / 時間切れ {snapshot['timeout_count']}",
         "", "## 改善候補ゲート", "",
         f"40決済・同一入口40組・現行比+{MIN_AVG_EDGE_PCT:.2f}%・PF改善・最悪損失非悪化・-10%超非増加・"

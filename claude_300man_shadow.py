@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
-from claude_shadow_exits import EXIT_VARIANTS, simulate_exit
+from claude_shadow_exits import EXIT_VARIANTS, LEGACY_STOP_LOSS_PCT, LEGACY_TAKE_PROFIT_PCT, LEGACY_TIMEOUT_DAYS, simulate_exit
 from dual_300man_config import CONFIG, JOURNAL_COLUMNS, ROOT
 from dual_300man_fill import read_csv
 from dual_300man_metrics import fetch_metrics_history
@@ -96,9 +96,9 @@ def build_shadow(
                 entry_date=entry_day,
                 entry_price=entry_price,
                 variant=variant,
-                stop_loss_pct=CONFIG.stop_loss_pct,
-                take_profit_pct=CONFIG.take_profit_pct,
-                timeout_days=variant.timeout_business_days or CONFIG.timeout_days,
+                stop_loss_pct=LEGACY_STOP_LOSS_PCT,
+                take_profit_pct=LEGACY_TAKE_PROFIT_PCT,
+                timeout_days=variant.timeout_business_days or LEGACY_TIMEOUT_DAYS,
                 roundtrip_cost_pct=0.30,
                 as_of=as_of,
             )

@@ -661,12 +661,15 @@ def _test_discipline_normal_and_stop() -> None:
             {"code": "2222", "ticker": "2222.T", "name": "B", "rank": "A", "score": 80, "current_price": 1000, "dist_52w_high_pct": 2},
         ]
     )
+    from dual_300man_config import CONFIG
+
+    # 枠の数は設定ファイル（2026-10-30 の 3.0.0 から5）
     normal = build_discipline_portfolio(screening, Regime("NORMAL", "test"))
-    assert len(normal) == 3
+    assert len(normal) == CONFIG.max_positions
     assert normal.iloc[0]["action"] == "BUY"
-    assert (normal["action"] == "CASH").sum() == 2
+    assert (normal["action"] == "CASH").sum() == CONFIG.max_positions - 1
     stopped = build_discipline_portfolio(screening, Regime("STOP", "test"))
-    assert len(stopped) == 3
+    assert len(stopped) == CONFIG.max_positions
     assert stopped["action"].eq("CASH").all()
 
 
@@ -3300,11 +3303,29 @@ def _test_note_two() -> None:
                            ).assign(exit_date="", realized_pnl="", exit_return_pct="", exit_reason="")
     orders = pd.DataFrame([{"decision_date": "2026-10-14", "execution_date": "2026-10-15", "side": "BUY", "code": "8366",
                             "name": "滋賀銀行", "shares": "200", "status": "CANCELLED_GAP"}])
-    _, b = N.portfolio_lines(dt.date(2026, 10, 15), journal, orders, "- 現金残: 2,033,400円\n", {"9697": 4489.0})
+    tb, b = N.portfolio_lines(dt.date(2026, 10, 15), journal, orders, "- 現金残: 2,033,400円\n", {"9697": 4489.0})
     btext = "\n".join(b)
     assert "4,489円（+1.2%、+5,500円）" in btext and "窓が開いたため見送り" in btext and "Codex" not in btext
     assert all(x in b for x in COMPLIANCE_LINES)
     assert "押し目の箱" not in btext                                  # 判定できなかった日（None）は節を出さない
+    # 2026-10-30 持ち主「300万運用は…読者を惹きつけるように…記事の内容で惹きつけても良い」（ルール 3.0.0）:
+    # 持ち株ごとに出しておく注文、タイトルに評価額、今夜の候補、本日の売り、ルールを変えた理由（負けている点も）
+    assert "出しておく注文：逆指値 4,124円（-7%）・指値 5,099円（+15%）・期限 " in btext, btext
+    assert tb.startswith("Claudeが300万円運用｜運用状況 2026-10-15 評価額248.2万円（-17.3%）"), tb
+    assert "## ルールを変えました" not in btext and "## 今夜の判定の買い候補" not in btext
+    from claude_300man_exits import ExitEvent
+    cand = pd.DataFrame([{"code": "3333", "name": "候補", "_candidate_strategy": "claude_pullback_combo_v1",
+                          "turnover_20d": "2500000000", "dist_52w_high_pct": "5.2", "current_price": "2850"}])
+    sold = {"9697": ExitEvent(dt.date(2026, 10, 30), 4123.62, 4123.62, "STOP_LOSS", "逆指値 4,123.6円（-7%）に日中の安値 4,100.0円が届いた", 18)}
+    tc, c = N.portfolio_lines(dt.date(2026, 10, 30), journal, orders, "- 現金残: 2,033,400円\n", {}, None,
+                              today_exits=sold, candidates=cand, bench=(3000.0, 3090.0))
+    ctext = "\n".join(c)
+    assert tc.endswith("・本日1銘柄売り") and "## ルールを変えました（2026-10-30から）" in ctext
+    assert "**どちらのルールもこれを下回りました。**" in ctext and "約+116%" in ctext
+    assert "## 本日、出しておいた注文に届いた売り" in ctext and "4,434円 → 4,124円（-7.0%、-31,038円）" in ctext, ctext
+    assert "1. 3333 候補（押し目・売買代金 20日平均25.0億円・52週高値から-5.2%・終値 2,850円）" in ctext
+    assert "空いている枠は5つです" in ctext and "TOPIX連動ETF（1306）は同じ期間（9/28の始値から） +3.0%" in ctext
+    assert ctext.index("## 今夜の判定の買い候補") < ctext.index("## ルール\n")
     # 2026-10-26 持ち主「300万運用にICT手法の記事織り込んで」: 運用の決まりは変えず、参考として上位5件
     ict6 = [{"kind": "②", "close": 1000.0 + k, "box_lo": 950.0, "box_hi": 990.0, "stop": 948.0, "target": 1200.0,
              "rr": 3.0, "ticker": str(1000 + k), "name": f"会社{k}", "turnover": 1e9 - k} for k in range(6)]
@@ -4994,6 +5015,94 @@ def _test_upstream_outage_judgement() -> None:
     print("self-test: 通信エラーの切り分け OK")
 
 
+def _test_claude_300man_standing_exits() -> None:
+    """3.0.0 の売り（逆指値-7%・指値+15%・20営業日目の大引け）を日足で判定して台帳に付ける（claude_300man_exits.py）。"""
+    import tempfile
+    from datetime import date
+
+    import claude_300man_exits as X
+    import dual_300man_fill as fill
+    from dual_300man_config import CONFIG, JOURNAL_COLUMNS, ORDER_COLUMNS, order_metadata
+
+    def bars(rows: dict) -> pd.DataFrame:
+        frame = pd.DataFrame(rows).astype(float)
+        frame.index = pd.to_datetime(frame.index)
+        return frame.assign(Volume=1000.0)
+
+    entry = date(2026, 11, 2)
+    # 買った日（寄付で買い）は寄付のあとだけ見る。安値が逆指値に届いたら逆指値の値段で売り
+    hit = X.find_exit(bars({"Open": {"2026-11-02": 100}, "High": {"2026-11-02": 101},
+                            "Low": {"2026-11-02": 92.9}, "Close": {"2026-11-02": 95}}), entry, 100, entry)
+    assert hit and hit.exit_type == "STOP_LOSS" and hit.price == 93.0 and hit.day == entry, hit
+    # 同じ日に高値が指値・安値が逆指値の両方に届いたら、損切りを先にする（安全側）
+    both = X.find_exit(bars({"Open": {"2026-11-02": 100}, "High": {"2026-11-02": 116},
+                             "Low": {"2026-11-02": 92}, "Close": {"2026-11-02": 100}}), entry, 100, entry)
+    assert both.exit_type == "STOP_LOSS", both
+    # 次の日以降に逆指値より下で寄り付いたら始値。11/3 は休場なので 11/4 の足
+    gap = X.find_exit(bars({"Open": {"2026-11-02": 100, "2026-11-04": 90}, "High": {"2026-11-02": 101, "2026-11-04": 91},
+                            "Low": {"2026-11-02": 99, "2026-11-04": 88}, "Close": {"2026-11-02": 100, "2026-11-04": 89}}),
+                      entry, 100, date(2026, 11, 4))
+    assert gap.price == 90.0 and gap.trigger == 93.0 and "寄り付いた" in gap.reason, gap
+    take = X.find_exit(bars({"Open": {"2026-11-02": 100, "2026-11-04": 110}, "High": {"2026-11-02": 101, "2026-11-04": 115.5},
+                             "Low": {"2026-11-02": 99, "2026-11-04": 108}, "Close": {"2026-11-02": 100, "2026-11-04": 114}}),
+                       entry, 100, date(2026, 11, 4))
+    assert take.exit_type == "TAKE_PROFIT" and round(take.price, 2) == 115.0, take
+    flat_days = [d for d in pd.bdate_range("2026-11-02", periods=30) if d.date() != date(2026, 11, 3)]
+    flat = pd.DataFrame({"Open": 100.0, "High": 101.0, "Low": 99.0, "Close": 100.5, "Volume": 1000.0}, index=flat_days)
+    timeout = X.find_exit(flat, entry, 100, date(2026, 12, 15))
+    assert timeout.exit_type == "TIMEOUT" and timeout.day == X.deadline(entry) == date(2026, 12, 2), timeout
+    assert timeout.price == 100.5 and timeout.held_days == 20
+    # 直近の足がまだ来ていない日は判定を待つ（推測で埋めない）。出来高0の足（配信遅れ）も使わない
+    assert X.find_exit(flat.loc[:"2026-11-05"], entry, 100, date(2026, 11, 6)) is None
+    stale = flat.loc[:"2026-11-06"].copy()
+    stale.loc["2026-11-06", ["Low", "Volume"]] = [80.0, 0.0]
+    assert X.find_exit(stale, entry, 100, date(2026, 11, 6)) is None
+    # 古い足の欠け（売買停止など）は飛ばして、その先で判定する
+    halted = flat.loc[:"2026-11-12"].drop(pd.Timestamp("2026-11-05")).copy()
+    halted.loc["2026-11-12", "Low"] = 92.0
+    assert X.find_exit(halted, entry, 100, date(2026, 11, 12)).day == date(2026, 11, 12)
+
+    saved = (fill.account_paths, fill.write_ledger)
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            orders_path, journal_path = root / "orders.csv", root / "journal.csv"
+            fill.account_paths = lambda _account: (orders_path, journal_path, root / "ledger.md")
+            fill.write_ledger = lambda *_args, **_kwargs: None
+            pd.DataFrame([{**order_metadata(), "decision_date": "2026-10-30", "execution_date": "2026-11-02",
+                           "side": "BUY", "code": "1111", "ticker": "1111.T", "name": "テスト", "sector": "機械",
+                           "shares": "100", "decision_price": "100", "status": "FILLED", "fill_date": "2026-11-02",
+                           "fill_price": "100"}]).reindex(columns=ORDER_COLUMNS).fillna("").to_csv(
+                orders_path, index=False, encoding="utf-8-sig")
+            pd.DataFrame([{"phase_id": CONFIG.phase_id, "entry_date": "2026-11-02", "status": "OPEN", "code": "1111",
+                           "ticker": "1111.T", "name": "テスト", "sector": "機械", "entry_price": "100.00",
+                           "shares": "100", "position_value": "10000", "source_order_date": "2026-10-30"}]
+                         ).reindex(columns=JOURNAL_COLUMNS).fillna("").to_csv(journal_path, index=False, encoding="utf-8-sig")
+            path = halted
+            assert X.settle(date(2026, 11, 12), fetcher=lambda _ticker: path) == 1
+            assert X.settle(date(2026, 11, 12), fetcher=lambda _ticker: path) == 0      # 二重に付けない
+            got_orders = pd.read_csv(orders_path, dtype=str).fillna("")
+            sell = got_orders[got_orders["side"].eq("SELL")].iloc[0]
+            assert sell["status"] == "FILLED" and sell["fill_date"] == sell["decision_date"] == "2026-11-12"
+            assert sell["fill_price"] == "93.00" and sell["exit_type"] == "STOP_LOSS" and sell["reason"].startswith("逆指値")
+            got_journal = pd.read_csv(journal_path, dtype=str).fillna("")
+            row = got_journal.iloc[0]
+            assert row["status"] == "CLOSED" and row["exit_date"] == "2026-11-12" and row["exit_return_pct"] == "-7.00"
+            assert row["exit_order_date"] == "2026-11-12" and row["realized_pnl"] == "-700"
+            import claude_300man_reconcile as reconcile
+
+            checked = reconcile.reconcile(got_orders, got_journal, as_of=date(2026, 11, 12))
+            assert not ((checked["severity"] == "CRITICAL") & (checked["status"] == "FAIL")).any(), \
+                checked[checked["status"] == "FAIL"]
+    finally:
+        fill.account_paths, fill.write_ledger = saved
+    fill_src = Path("claude_300man_fill.py").read_text(encoding="utf-8")
+    assert "settle_standing_exits(previous)" in fill_src
+    declare_src = Path("claude_300man_declare.py").read_text(encoding="utf-8")
+    assert declare_src.index("settle_standing_exits(today)") < declare_src.index("orders = _read(ORDERS_PATH")
+    print("self-test: 300万円運用 3.0.0 の逆指値・指値・期限 OK")
+
+
 def _test_dual_300man_phase2_controls() -> None:
     """第2期の期ガード・遅延約定・計測列をオフラインで確認する。"""
     import tempfile
@@ -5011,16 +5120,25 @@ def _test_dual_300man_phase2_controls() -> None:
     from dual_300man_config import CONFIG, JOURNAL_COLUMNS, ORDER_COLUMNS, order_metadata
 
     assert CONFIG.restart_date.isoformat() == "2026-09-28"
-    assert CONFIG.slot_yen == 600_000
-    assert CONFIG.stop_loss_pct == -5
-    assert CONFIG.take_profit_pct == 12
-    assert CONFIG.timeout_days == 15
-    assert CONFIG.strategy_version == "2.1.0"
+    # 2026-10-30 持ち主「もう少しアクティブに運用し…利益を出し損を減らす」で 3.0.0 に変えた
+    assert CONFIG.strategy_version == "3.0.0"
+    assert CONFIG.max_positions == 5 and CONFIG.slot_yen == 550_000
+    assert CONFIG.stop_loss_pct == -7 and CONFIG.take_profit_pct == 15 and CONFIG.timeout_days == 20
+    assert CONFIG.standing_exit_orders and CONFIG.peak_drawdown_reduce_pct == -8
+    assert CONFIG.circuit_stop_pct is None                       # -10%で新規をやめる（戻らない）は外した
+    assert claude_declare.REGIME_SLOTS == {"NORMAL": 5, "CAUTION": 2, "RISK": 0, "STOP": 0}
     assert CONFIG.strategy_rules["claude"]["reentry_cooldown_business_days"] == 5
     assert len(CONFIG.rule_hash) == 12
-    assert claude_declare._exit_reason(100, 94.9, 1)[0] == "STOP_LOSS"
-    assert claude_declare._exit_reason(100, 112.0, 1)[0] == "TAKE_PROFIT"
-    assert claude_declare._exit_reason(100, 105.0, 15)[0] == "TIMEOUT"
+    # 切り替えの前に宣言済みだった 2.1.0 の注文だけは約定させる（それ以外の旧版は取り消し）
+    from dual_300man_config import order_compatibility
+    old_rule = {"phase_id": CONFIG.phase_id, "execution_date": "2026-10-30"}
+    assert order_compatibility({**old_rule, "strategy_version": "2.1.0", "rule_hash": "73ec747f8431"}) == (True, "")
+    assert order_compatibility({**old_rule, "strategy_version": "2.1.0", "rule_hash": "000000000000"})[0] is False
+    assert order_compatibility({**old_rule, "strategy_version": "2.0.0", "rule_hash": "753eb2644c04"})[0] is False
+    assert claude_declare._exit_reason(100, 92.9, 1)[0] == "STOP_LOSS"
+    assert claude_declare._exit_reason(100, 115.0, 1)[0] == "TAKE_PROFIT"
+    assert claude_declare._exit_reason(100, 105.0, 20)[0] == "TIMEOUT"
+    _test_claude_300man_standing_exits()
 
     screening = pd.DataFrame([
         {
@@ -5050,6 +5168,12 @@ def _test_dual_300man_phase2_controls() -> None:
     ])
     candidates = claude_declare._claude_candidates(screening)
     assert candidates["code"].tolist() == ["2222", "1111"], candidates[["code", "_candidate_strategy"]]
+    # 3.0.0 の並び: 同じ組（押し目）の中は、売買代金の順位+52週高値からの距離の順位が大きい順（スコアより先）
+    same_group = pd.concat([screening.iloc[[1]].assign(code="4444", score="200", turnover_20d="200000000",
+                                                       dist_52w_high_pct="1", sector="食料品"),
+                            screening.iloc[[1]].assign(code="5555", score="81", turnover_20d="900000000",
+                                                       dist_52w_high_pct="6.5", sector="小売業")], ignore_index=True)
+    assert claude_declare._claude_candidates(same_group)["code"].tolist() == ["5555", "4444"]
     assert candidates.iloc[0]["_candidate_strategy"] == "claude_pullback_combo_v1"
     assert "検証済み押し目Aランク" in claude_declare._candidate_reason(candidates.iloc[0])
     entry_selections = entry_shadow.select_candidates(screening)
@@ -5255,7 +5379,7 @@ def _test_dual_300man_phase2_controls() -> None:
         "side": "BUY", "code": "9999", "status": "DECLARED",
     }]).reindex(columns=ORDER_COLUMNS).fillna("")
     monitor_journal_rows = []
-    for number in range(4):
+    for number in range(CONFIG.max_positions + 1):              # 上限を1つ超える保有
         monitor_journal_rows.append({
             **{column: "" for column in JOURNAL_COLUMNS},
             "phase_id": CONFIG.phase_id, "entry_date": "2026-10-01", "status": "OPEN",
@@ -5293,7 +5417,7 @@ def _test_dual_300man_phase2_controls() -> None:
     assert 'cron: "5 11 * * 1-5"' in declare_workflow
     assert "daily_discipline_run.py --include-rejected --max-candidates 0" in declare_workflow
     assert 'claude_300man_declare.py --date "${{ steps.guard.outputs.date }}"' in declare_workflow
-    assert "git add data/claude_300man_orders.csv" in declare_workflow
+    assert "git add data/claude_300man_orders.csv data/claude_300man_journal.csv docs/claude_300man_ledger.md" in declare_workflow
     assert "permissions:\n  contents: write" in declare_workflow
     assert "notify_workflow_failure.py" in declare_workflow
     assert "declaration_lost_" in declare_workflow

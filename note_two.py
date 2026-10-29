@@ -156,30 +156,131 @@ def ranking_lines(day: dt.date, alerts: list, pullback: pd.DataFrame, climax: li
     return f"高値更新・押し目・セリングクライマックス ランキング｜{day}", lines
 
 
+# 2026-10-30 持ち主「300万運用はもう少しアクティブに運用し読者を惹きつけるように利益を出し損を減らすのも重要だ
+# 記事の内容で惹きつけても良い」。ルールを 3.0.0 に変え、記事に「出しておく注文の値段」「次の候補」「市場との比較」
+# 「ルールを変えた理由と、過去の値動きで試した結果（負けている点も）」を足した。
+RULE_CHANGE_DAY = dt.date(2026, 10, 30)
+RULE_CHANGE_SHOW_DAYS = 14          # ルール変更の節を出す日数（暦日）
+CANDIDATE_SHOW = 5
+EXIT_WORDS = {"STOP_LOSS": "損切り", "TAKE_PROFIT": "利確", "TIMEOUT": "期限"}
+ORDER_STATUS = {"FILLED": "約定", "CANCELLED_GAP": "寄り付きで窓が開いたため見送り", "PENDING": "約定待ち",
+                "DECLARED": "約定待ち", "CANCELLED_CAPITAL": "現金が足りず見送り",
+                "CANCELLED_EXPIRED": "値段が取れないまま期限切れ", "CANCELLED_OPEN_UNAVAILABLE": "始値が取れず見送り",
+                "CANCELLED_STRATEGY_VERSION_MISMATCH": "ルールの切り替えで取り消し",
+                "CANCELLED_RULE_HASH_MISMATCH": "ルールの切り替えで取り消し"}
+
+
+def _yen_num(text: str) -> float | None:
+    try:
+        return float(str(text).replace(",", "").replace("円", "").strip())
+    except ValueError:
+        return None
+
+
+def _field(r, key: str, default=""):
+    value = getattr(r, key, default)
+    return default if value is None or (isinstance(value, float) and value != value) else value
+
+
+def rule_change_lines() -> list[str]:
+    """3.0.0 に変えた理由と、過去の値動きで試した結果（2026-10-30 に調べた数字。stock-volume-screener/review/STATUS.md）。"""
+    return ["## ルールを変えました（2026-10-30から）", "",
+            "これまでの損切りは「終値で-5%を下回ったら、翌朝の寄付で売る」形でした。そのため、9月末からの損切り3回は、"
+            "どれも-5%では止まらず-7〜-8%で売っていました。もっと動かし、利益を伸ばし、損を決めた幅で止めるために、次のように変えました。", "",
+            "- 枠：最大3銘柄（1枠60万円）→ **最大5銘柄（1枠55万円）**",
+            "- 損切り：終値で-5%を判定して翌朝売る → **逆指値-7%を買った日から出しておく（日中に約定）**",
+            "- 利確：終値で+12%を判定して翌朝売る → **指値+15%を買った日から出しておく（日中に約定）**",
+            "- 期限：15営業日 → **20営業日（その日の大引けで売る）**",
+            "- 候補の順番：スコアの順 → **売買代金の大きさと、52週高値からの距離（押し目の深さ）の順位の合計**",
+            "- ブレーキ：口座が-5%で新規1銘柄、-10%で新規をやめる（戻らない）→ **評価額が最高値から-8%のあいだは、1日の新規を半分**", "",
+            "東証プライムの過去4年（2022年10月〜2026年10月）の日足で、同じ形の銘柄を選ぶ代わりの条件を使って試しました"
+            "（売買コスト片道0.1%、候補の順番の偶然を20通り変えた真ん中の値）。",
+            "- 損益：旧ルール +25% → 新ルール +45%（前半2年 +2% → +13%、後半2年 +20% → +37%）",
+            "- 月の売買：約4.6回 → 約5.9回。いちばん大きい下落：どちらも-13%前後",
+            "- 損切り1回の平均：-6.6%（悪い方の5%は-11%）→ -7.3%（悪い方の5%は-9%）",
+            "ただし、同じ4年間に東証プライムの全銘柄を同じ金額ずつ買って持ち続けた場合は約+116%"
+            "（いまある銘柄だけで計算したので高めに出ます）で、**どちらのルールもこれを下回りました。**"
+            "株を持っている割合が平均で旧ルール約5割・新ルール約6割で、残りは現金だったことも差の理由です。"
+            "代わりの条件での試算で、これからの成績を示すものではありません。", ""]
+
+
 def portfolio_lines(day: dt.date, journal: pd.DataFrame, orders: pd.DataFrame, ledger_text: str,
-                    closes: dict, ict: list[dict] | None = None) -> tuple[str, list[str]]:
-    """(B) のタイトルと本文。保有の評価は day の終値（closes）。取れなければ台帳の値。"""
+                    closes: dict, ict: list[dict] | None = None, *, today_exits: dict | None = None,
+                    candidates: pd.DataFrame | None = None, bench: tuple[float, float] | None = None
+                    ) -> tuple[str, list[str]]:
+    """(B) のタイトルと本文。保有の評価は day の終値（closes）。取れなければ台帳の値。
+
+    today_exits: 本日、逆指値・指値・期限に届いた保有（code → claude_300man_exits.ExitEvent）。台帳には夜の処理で付く。
+    candidates : 今夜の判定の買い候補（claude_300man_declare._claude_candidates の並び）。None なら節を出さない。
+    bench      : TOPIX連動ETF（1306）の（運用開始日の始値, day の終値）。
+    """
+    from claude_300man_exits import deadline, exit_levels
+    from dual_300man_config import CONFIG
+    from dual_300man_fill import business_days_between
+
     def pick(key):
         for line in ledger_text.splitlines():
             if line.startswith(f"- {key}:"):
                 return line.split(":", 1)[1].strip()
         return "-"
+    today_exits = today_exits or {}
     op = journal[journal["status"] == "OPEN"]
     cl = journal[journal["status"] == "CLOSED"]
-    rows, unreal = [], 0.0
+    rows, sold, unreal, held_value, sold_value, sold_pnl = [], [], 0.0, 0.0, 0.0, 0.0
     for r in op.itertuples():
-        px = closes.get(str(r.code))
+        code, shares, entry = str(r.code), int(float(r.shares)), float(r.entry_price)
+        ev = today_exits.get(code)
+        if ev is not None:
+            pnl = (ev.price - entry) * shares
+            sold_value += ev.price * shares
+            sold_pnl += pnl
+            when_sold = "" if ev.day == day else f"{ev.day}に"
+            sold.append(f"- {code} {r.name}：{when_sold}{EXIT_WORDS.get(ev.exit_type, ev.exit_type)}。{ev.reason}。"
+                        f"{entry:,.0f}円 → {ev.price:,.0f}円（{(ev.price / entry - 1) * 100:+.1f}%、{pnl:+,.0f}円）")
+            continue
+        px = closes.get(code)
         when = f"{day}終値" if px else f"{r.last_mark_date}終値"
         px = px or float(r.mark_price or r.entry_price)
-        pnl = (px - float(r.entry_price)) * int(float(r.shares))
+        pnl = (px - entry) * shares
         unreal += pnl
-        rows.append(f"- {r.code} {r.name}：{int(float(r.shares))}株、{r.entry_date}に{float(r.entry_price):,.0f}円で買い → "
-                    f"{when} {px:,.0f}円（{(px / float(r.entry_price) - 1) * 100:+.1f}%、{pnl:+,.0f}円）")
+        held_value += px * shares
+        line = (f"- {code} {r.name}：{shares}株、{r.entry_date}に{entry:,.0f}円で買い → "
+                f"{when} {px:,.0f}円（{(px / entry - 1) * 100:+.1f}%、{pnl:+,.0f}円）")
+        if CONFIG.standing_exit_orders:
+            stop, take = exit_levels(entry)
+            try:
+                end = deadline(dt.date.fromisoformat(str(r.entry_date)))
+                left = business_days_between(day, end)
+                line += (f"｜出しておく注文：逆指値 {stop:,.0f}円（{CONFIG.stop_loss_pct:+.0f}%）・"
+                         f"指値 {take:,.0f}円（{CONFIG.take_profit_pct:+.0f}%）・期限 {end.month}/{end.day}の大引け（あと{left}営業日）")
+            except ValueError:
+                pass
+        rows.append(line)
+    cash = _yen_num(pick("現金残"))
+    equity = (cash + sold_value + held_value) if cash is not None else None
+    n_hold = len(op) - len(sold)
+    title = f"Claudeが300万円運用｜運用状況 {day}"
+    if equity is not None:
+        title += f" 評価額{equity / 1e4:,.1f}万円（{(equity / 3_000_000 - 1) * 100:+.1f}%）"
+    if sold:
+        title += f"・本日{len(sold)}銘柄売り"
     lines = [f"Claude（AI）が、300万円の紙上運用（実際のお金は使っていません）を決まったルールで続けている記録です。{day}の終値時点。",
-             "**売買をすすめるものではありません。**", "", "## 運用の状況", "",
-             f"- 初期資金 3,000,000円 → 現金 {pick('現金残')}",
-             f"- 保有 {len(op)}銘柄（含み損益 {unreal:+,.0f}円）",
-             f"- 実現損益（累計）{pick('実現損益（累計）')}（{len(cl)}回の決済）", "", "## 保有銘柄", ""]
+             "**売買をすすめるものではありません。**", "", "## 運用の状況", ""]
+    if equity is not None:
+        lines.append(f"- 評価額 {equity:,.0f}円（初めの3,000,000円から {equity - 3_000_000:+,.0f}円、"
+                     f"{(equity / 3_000_000 - 1) * 100:+.1f}%）")
+    if bench and bench[0] > 0:
+        lines.append(f"- くらべる物差し：TOPIX連動ETF（1306）は同じ期間（{CONFIG.restart_date.month}/{CONFIG.restart_date.day}の始値から）"
+                     f" {(bench[1] / bench[0] - 1) * 100:+.1f}%")
+    lines += [f"- 初期資金 3,000,000円 → 現金 {pick('現金残')}" + (f"（本日の売り {sold_value:,.0f}円は夜に入ります）" if sold else ""),
+              f"- 保有 {n_hold}銘柄／最大{CONFIG.max_positions}銘柄（含み損益 {unreal:+,.0f}円）",
+              f"- 実現損益（累計）{pick('実現損益（累計）')}（{len(cl)}回の決済）"
+              + (f"、本日の売りで {sold_pnl:+,.0f}円" if sold else ""), ""]
+    if day >= RULE_CHANGE_DAY and (day - RULE_CHANGE_DAY).days <= RULE_CHANGE_SHOW_DAYS and CONFIG.standing_exit_orders:
+        lines += rule_change_lines()
+    if sold:
+        lines += ["## 本日、出しておいた注文に届いた売り", ""] + sold + [""]
+    lines += ["## 保有銘柄と、出しておく注文", ""]
     lines += rows or ["- なし（現金のみ）"]
     lines += ["", "## これまでの決済", ""]
     for r in cl.sort_values("exit_date").itertuples():
@@ -187,24 +288,107 @@ def portfolio_lines(day: dt.date, journal: pd.DataFrame, orders: pd.DataFrame, l
                      f"（{float(r.exit_return_pct):+.1f}%、{r.exit_reason}）")
     if not len(cl):
         lines.append("- まだありません")
-    status = {"FILLED": "約定", "CANCELLED_GAP": "寄り付きで窓が開いたため見送り", "PENDING": "約定待ち"}
+    else:
+        rets = pd.to_numeric(cl["exit_return_pct"], errors="coerce").dropna()
+        wins, losses = rets[rets > 0], rets[rets <= 0]
+        lines.append(f"- まとめ：{len(rets)}回で 勝ち{len(wins)}回・負け{len(losses)}回"
+                     + (f"、勝ちの平均 {wins.mean():+.1f}%" if len(wins) else "")
+                     + (f"、負けの平均 {losses.mean():+.1f}%" if len(losses) else ""))
     recent = orders[(orders["execution_date"] >= (day - dt.timedelta(days=7)).isoformat())]
     lines += ["", "## 直近の売買の予定と結果", ""]
     for r in recent.sort_values("execution_date").itertuples():
-        lines.append(f"- {r.decision_date}に判定 → {r.execution_date} {'買い' if r.side == 'BUY' else '売り'} "
-                     f"{r.code} {r.name} {r.shares}株：{status.get(r.status, r.status)}")
+        side = "買い" if r.side == "BUY" else "売り"
+        word = EXIT_WORDS.get(str(_field(r, "exit_type")), "")
+        if r.side != "BUY" and r.decision_date == r.execution_date and word:
+            lines.append(f"- {r.execution_date} 売り（{word}・出しておいた注文） {r.code} {r.name} {r.shares}株：{ORDER_STATUS.get(r.status, r.status)}")
+            continue
+        lines.append(f"- {r.decision_date}に判定 → {r.execution_date} {side} "
+                     f"{r.code} {r.name} {r.shares}株：{ORDER_STATUS.get(r.status, r.status)}")
     if not (orders["decision_date"] == day.isoformat()).any():
-        lines.append(f"- {day}の判定（次の営業日の売買）：この記事を作った時点では出ていません（夜に決まります）")
+        lines.append(f"- {day}の判定（次の営業日の買い）：この記事を作った時点では出ていません（夜に決まります）")
+    if candidates is not None:
+        free = max(0, CONFIG.max_positions - n_hold)
+        lines += ["", f"## 今夜の判定の買い候補（順番の上から{CANDIDATE_SHOW}件まで）", ""]
+        shown = candidates.head(CANDIDATE_SHOW)
+        num = lambda v: pd.to_numeric(pd.Series([v]), errors="coerce").iloc[0]  # noqa: E731
+        # 列名が _ で始まる（_candidate_strategy）ので itertuples ではなく iterrows で読む
+        for i, (_, r) in enumerate(shown.iterrows(), 1):
+            kind = "押し目" if str(r.get("_candidate_strategy", "")) == "claude_pullback_combo_v1" else "順張り"
+            to, dist, px = num(r.get("turnover_20d")), num(r.get("dist_52w_high_pct")), num(r.get("current_price"))
+            facts = [kind]
+            if to == to:
+                facts.append(f"売買代金 20日平均{to / 1e8:,.1f}億円")
+            if dist == dist:
+                facts.append(f"52週高値から-{dist:.1f}%")
+            if px == px:
+                facts.append(f"終値 {px:,.0f}円")
+            lines.append(f"{i}. {r.get('code', '')} {r.get('name', '')}（{'・'.join(facts)}）")
+        if not len(shown):
+            lines.append("条件に当てはまる銘柄はありませんでした（今夜は買いをお休みする見込み）。")
+        lines += ["", f"空いている枠は{free}つです。今夜（18:45ごろ）の判定で、この順に空き枠の数まで買いを決めます。"
+                  "悪材料のニュース・現金・同じ業種の重なりで飛ばすことがあり、翌朝の寄付が判定の値段から±3%を超えたら見送ります。"
+                  "買えた銘柄には、その日から逆指値と指値を出しておきます。"]
     if ict is not None:
         # 2026-10-26 持ち主「300万運用にICT手法の記事織り込んで」。運用の決まりは変えず、参考として上位5件
         import us_ict
 
         lines += [""] + us_ict.section_lines(ict, limit=5, market="jp", brief=True)
-    lines += ["", "## ルール", "",
-              "1銘柄あたり最大60万円。終値で判定し、翌営業日の寄付で売買します。損切りは-5%、利確は+12%、最長15営業日。"
-              "売買コストと税金は入れていません（紙上運用のため）。", "", "---", "",
-              "紙上運用の記録です。実際のお金での売買ではありません。", ""] + COMPLIANCE_LINES
-    return f"Claudeが300万円運用｜運用状況 {day}", lines
+    if CONFIG.standing_exit_orders:
+        rule = (f"1銘柄あたり最大{CONFIG.slot_yen // 10_000}万円・最大{CONFIG.max_positions}銘柄。買いは終値で判定し、翌営業日の寄付で買います。"
+                f"売りは買った日から逆指値{CONFIG.stop_loss_pct:+.0f}%と指値{CONFIG.take_profit_pct:+.0f}%を出しておき（日中に約定）、"
+                f"{CONFIG.timeout_days}営業日目は大引けで売ります。")
+        if CONFIG.peak_drawdown_reduce_pct is not None:
+            rule += f"評価額が最高値から{CONFIG.peak_drawdown_reduce_pct:.0f}%以下のあいだは、1日の新規を半分にします。"
+    else:
+        rule = (f"1銘柄あたり最大{CONFIG.slot_yen // 10_000}万円。終値で判定し、翌営業日の寄付で売買します。"
+                f"損切りは{CONFIG.stop_loss_pct:.0f}%、利確は+{CONFIG.take_profit_pct:.0f}%、最長{CONFIG.timeout_days}営業日。")
+    lines += ["", "## ルール", "", rule + "売買コストと税金は入れていません（紙上運用のため）。値段は Yahoo Finance の日足です。",
+              "", "---", "", "紙上運用の記録です。実際のお金での売買ではありません。", ""] + COMPLIANCE_LINES
+    return title, lines
+
+
+def portfolio_extras(day: dt.date, journal: pd.DataFrame, out: Path, fetch):
+    """(B) に足す3つ: 本日の逆指値・指値・期限の売り（夜に台帳へ付く前の速報）、今夜の買い候補、市場の物差し。
+    どれも取れなければ None / 空にして、記事づくりは止めない。公開リポジトリのログなので銘柄は出さない。"""
+    today_exits, candidates, bench = {}, None, None
+    try:
+        import claude_300man_exits as X
+        from dual_300man_config import CONFIG
+
+        if CONFIG.standing_exit_orders:
+            for r in journal[journal["status"] == "OPEN"].itertuples():
+                ticker = str(getattr(r, "ticker", "") or f"{r.code}.T")
+                ev = X.find_exit(fetch(ticker), dt.date.fromisoformat(str(r.entry_date)), float(r.entry_price), day)
+                if ev is not None:                 # 夜の処理がまだ付けていない売り（ふつうは本日の分）
+                    today_exits[str(r.code)] = ev
+    except Exception as error:                                     # noqa: BLE001
+        print(f"note_two_exits=failed reason={type(error).__name__}", flush=True)
+    try:
+        import claude_300man_declare as D
+
+        screening = D.load_screening(out, day)
+        if not screening.empty:
+            ranked = D._claude_candidates(screening)
+            held = set(journal.loc[journal["status"] == "OPEN", "code"].astype(str))
+            recent = D._recent_entry_codes(journal, day, D.REENTRY_COOLDOWN_DAYS)
+            candidates = ranked[~ranked["code"].astype(str).isin(held | recent)]
+    except Exception as error:                                     # noqa: BLE001
+        print(f"note_two_candidates=failed reason={type(error).__name__}", flush=True)
+    try:
+        from dual_300man_config import CONFIG
+
+        etf = fetch("1306.T").copy()
+        index = pd.to_datetime(etf.index)
+        etf.index = index.tz_localize(None) if index.tz is not None else index
+        base = etf.loc[etf.index.date >= CONFIG.restart_date, "Open"].dropna()
+        last = etf.loc[etf.index.date == day, "Close"].dropna()
+        if len(base) and len(last):
+            bench = (float(base.iloc[0]), float(last.iloc[-1]))
+    except Exception as error:                                     # noqa: BLE001
+        print(f"note_two_bench=failed reason={type(error).__name__}", flush=True)
+    print(f"note_two_300man_extras exits={len(today_exits)} "
+          f"candidates={'-' if candidates is None else len(candidates)} bench={'ok' if bench else '-'}", flush=True)
+    return today_exits, candidates, bench
 
 
 def body_html(lines: list[str]) -> str:
@@ -384,7 +568,9 @@ def main(argv=None) -> int:
     except Exception as error:                                     # noqa: BLE001
         print(f"ict_track=failed reason={type(error).__name__}", flush=True)
     ledger = (ROOT / "docs" / "claude_300man_ledger.md").read_text(encoding="utf-8")
-    t_b, l_b = portfolio_lines(day, journal, orders, ledger, closes, ict)
+    today_exits, candidates, bench = portfolio_extras(day, journal, out, lambda t: fetch_price_history(t, period="18mo"))
+    t_b, l_b = portfolio_lines(day, journal, orders, ledger, closes, ict,
+                               today_exits=today_exits, candidates=candidates, bench=bench)
     path = write_outputs(out, [("ranking", t_a, l_a), ("300man", t_b, l_b)])
     # 公開リポジトリの実行ログなので、銘柄は出さず件数だけ出す
     print(f"note_two_built day={day} alerts={len(alerts)} pullback={len(pullback)} "

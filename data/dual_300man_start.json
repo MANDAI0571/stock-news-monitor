@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "phase_id": "claude-codex-phase2-2026-09-28",
-  "strategy_version": "2.1.0",
+  "strategy_version": "3.0.0",
   "restart_date": "2026-09-28",
   "mode": "paper",
   "accounts": {
@@ -11,10 +11,10 @@
     },
     "claude": {
       "starting_capital_jpy": 3000000,
-      "strategy": "出来高を伴うSランク上昇トレンド"
+      "strategy": "52週高値の近くまで押した上昇トレンドの銘柄（押し目を優先し、順張りで補う）"
     }
   },
-  "execution": "当日大引け後に宣言し、次の東証営業日寄り付きでペーパー約定",
+  "execution": "買いは当日大引け後に宣言し、次の東証営業日の寄り付きでペーパー約定。売りは買った日から逆指値（損切り）と指値（利確）を出しておく形で日中に約定し、期限の営業日は大引けで売る",
   "strategy_rules": {
     "claude": {
       "entry_priority": [
@@ -43,23 +43,48 @@
           "25MA_PULLBACK",
           "52W_PULLBACK"
         ]
-      }
+      },
+      "candidate_order": "turnover_and_distance_rank",
+      "candidate_order_note": "押し目→順張りの順。同じ組の中は、売買代金の順位と52週高値からの距離の順位の合計が大きい順（過去4年の日足で、どちらも前半・後半の両方で大きい方が成績が上だった）"
     }
   },
   "shared_risk_rules": {
-    "max_positions": 3,
-    "slot_capital_jpy": 600000,
-    "stop_loss_pct": -5,
-    "take_profit_pct": 12,
-    "timeout_business_days": 15,
+    "max_positions": 5,
+    "slot_capital_jpy": 550000,
+    "stop_loss_pct": -7,
+    "take_profit_pct": 15,
+    "timeout_business_days": 20,
     "max_entry_gap_pct": 3,
-    "drawdown_reduce_pct": -5,
-    "drawdown_stop_pct": -10,
     "pending_expiry_business_days": 3,
     "execution_costs_jpy": 0,
     "trailing_stop": {
       "enabled": false,
       "note": "数値ルール未定義。exit_typeとMFE/利益捕捉率を記録し、定義後に有効化する"
+    },
+    "exit_execution": "standing_orders",
+    "exit_execution_note": "逆指値・指値は日足の安値・高値で判定。寄り付きで超えていたら始値。同じ日に両方届いたら損切りを先にする（安全側）",
+    "regime_slots": {
+      "NORMAL": 5,
+      "CAUTION": 2,
+      "RISK": 0,
+      "STOP": 0
+    },
+    "peak_drawdown_reduce_pct": -8,
+    "peak_drawdown_note": "口座の評価額が最高値から-8%以下のあいだは新規の枠を半分（最低1）にする。旧ルールの-10%で永久停止はやめた"
+  },
+  "previous_rules_accepted": [
+    {
+      "strategy_version": "2.1.0",
+      "rule_hash": "73ec747f8431",
+      "note": "2026-10-30 の切り替え前に宣言済みの注文だけを約定させるため"
     }
-  }
+  ],
+  "rule_change_log": [
+    {
+      "date": "2026-10-30",
+      "from": "2.1.0",
+      "to": "3.0.0",
+      "reason": "持ち主「300万運用はもう少しアクティブに運用し、利益を出し損を減らす」。旧ルールの損切りは終値で判定して翌寄付で売るため、決めた-5%を超えて-7〜-8%で売っていた（3回とも）"
+    }
+  ]
 }

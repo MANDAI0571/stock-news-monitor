@@ -22,6 +22,12 @@ class ExitVariant:
         return self.trailing_activation_pct is not None and self.trailing_drawdown_pct is not None
 
 
+# 比較の物差し（2.x の本番の出口）。本番を 3.0.0（逆指値-7%/指値+15%/20営業日）に変えた 2026-10-30 以降も、
+# 比較を続けるためにこの値のまま使う（本番の設定ファイルの値は読まない）。
+LEGACY_STOP_LOSS_PCT = -5.0
+LEGACY_TAKE_PROFIT_PCT = 12.0
+LEGACY_TIMEOUT_DAYS = 15
+
 # 比較開始後に都合よく条件を増やさない。変更時はkeyを変えて別実験にする。
 EXIT_VARIANTS = (
     ExitVariant("current_close_5_tp12_t15", "現行: 終値-5% / +12% / 15日"),

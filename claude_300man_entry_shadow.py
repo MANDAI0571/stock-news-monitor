@@ -15,7 +15,14 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 
 from claude_300man_declare import _claude_candidates, next_business_day
-from claude_shadow_exits import EXIT_VARIANTS, normalize_history, simulate_exit
+from claude_shadow_exits import (
+    EXIT_VARIANTS,
+    LEGACY_STOP_LOSS_PCT,
+    LEGACY_TAKE_PROFIT_PCT,
+    LEGACY_TIMEOUT_DAYS,
+    normalize_history,
+    simulate_exit,
+)
 from dual_300man_config import CONFIG, ROOT
 from scanner.prices import fetch_price_history
 
@@ -204,9 +211,9 @@ def update_rows(
             entry_date=execution,
             entry_price=entry_price,
             variant=CURRENT_EXIT,
-            stop_loss_pct=CONFIG.stop_loss_pct,
-            take_profit_pct=CONFIG.take_profit_pct,
-            timeout_days=CONFIG.timeout_days,
+            stop_loss_pct=LEGACY_STOP_LOSS_PCT,
+            take_profit_pct=LEGACY_TAKE_PROFIT_PCT,
+            timeout_days=LEGACY_TIMEOUT_DAYS,
             roundtrip_cost_pct=ROUNDTRIP_COST_PCT,
             as_of=as_of,
         )
@@ -228,7 +235,7 @@ def write_report(data: pd.DataFrame, *, as_of: date) -> None:
         "同じ当日スクリーニングから入口構成だけを変える前向きペーパー比較です。正本の注文・資金・株数は変更しません。", "",
         f"- 更新基準日: {as_of.isoformat()}",
         "- 約定: 翌JPX営業日の寄付（本番同様、判定価格から±3%超のギャップは見送り）",
-        "- 出口: 現行の終値-5% / +12% / 15営業日",
+        "- 出口: 比較の物差しとして 2.x の終値-5% / +12% / 15営業日のまま（本番は 2026-10-30 から逆指値-7% / 指値+15% / 20営業日）",
         f"- コスト: 往復{ROUNDTRIP_COST_PCT:.2f}%控除",
         "- 注意: ニュースゲート・実口座の保有枠は再現しない価格/候補比較",
         "- 採用条件: 40決済以上かつ十分な同日比較が揃ってから人がレビュー。自動採用しない", "",

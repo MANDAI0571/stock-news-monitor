@@ -4,11 +4,15 @@
 これまでは買い候補が毎日出ていても注文台帳に入る仕組みが無く、
 2026-07-21の1件（良品計画）以外は1件も約定していなかった。
 
-ルール（data/dual_300man_start.json が正本）:
-  - 新規は検証済みAランク押し目を優先し、空き枠を厳格Sランクで補完
-  - 1枠60万円・100株単位・現金の範囲内
-  - 保有は最大3銘柄。すでに持っている銘柄は買い増ししない
-  - 手仕舞い: 損切 -5% / 利確 +12% / 15営業日タイムアウト
+ルール（data/dual_300man_start.json が正本。2026-10-30 から 3.0.0）:
+  - 新規は検証済みAランク押し目を優先し、空き枠を厳格Sランクで補完。
+    同じ組の中は、売買代金の順位と52週高値からの距離の順位の合計が大きい順
+  - 1枠55万円・100株単位・現金の範囲内
+  - 保有は最大5銘柄。すでに持っている銘柄は買い増ししない
+  - 手仕舞い: 逆指値 -7% / 指値 +15%（どちらも日中）/ 20営業日目の大引け（claude_300man_exits.py）
+  - 口座の評価額が最高値から -8% 以下のあいだは、1日の新規を半分（最低1）にする
+  2.x（〜2026-10-29）は 1枠60万円・最大3銘柄・終値で -5% / +12% / 15営業日を判定して翌寄付で売り、
+  口座 -5% で新規1、-10% で新規0（戻らない）だった。設定ファイルが 2.x のときは、その動きのまま。
 
 実データ（outputs/screening_result*.csv・regime.txt・台帳CSV）だけで判断する。
 値段が取れないものは見送る。推測では埋めない。
@@ -30,6 +34,7 @@ from jptime import is_jpx_business_day
 from jpx_calendar import fetch_close_price_yfinance
 from market_regime import fetch_regime
 from adverse_news_gate import live_news_gate
+from claude_300man_exits import settle as settle_standing_exits
 from dual_300man_config import (
     CONFIG,
     JOURNAL_COLUMNS,
@@ -63,8 +68,9 @@ REENTRY_COOLDOWN_DAYS = int(CLAUDE_RULES["reentry_cooldown_business_days"])
 CIRCUIT_REDUCE_PCT = CONFIG.circuit_reduce_pct
 CIRCUIT_STOP_PCT = CONFIG.circuit_stop_pct
 
-# 地合いごとの新規建て上限
-REGIME_SLOTS = {"NORMAL": 3, "CAUTION": 1, "RISK": 0, "STOP": 0}
+# 地合いごとの、1日の新規建ての上限（設定ファイルの regime_slots。無ければ 2.x の値）
+REGIME_SLOTS = dict(CONFIG.regime_slots or {"NORMAL": 3, "CAUTION": 1, "RISK": 0, "STOP": 0})
+DAILY_MONITOR_PATH = PROJECT_ROOT / "data" / "claude_300man_daily_monitor.csv"
 
 
 def _read(path: Path, columns: list[str]) -> pd.DataFrame:
@@ -244,6 +250,21 @@ def _portfolio_return_pct(journal: pd.DataFrame, prices: dict[str, float]) -> fl
     return (cash + market_value - INITIAL_CASH) / INITIAL_CASH * 100
 
 
+def _peak_total_assets(current: float) -> float:
+    """口座の評価額の最高値（初期資金・日次監視の記録・今の値のうち最大）。"""
+    peak = max(float(INITIAL_CASH), float(current))
+    try:
+        history = pd.read_csv(DAILY_MONITOR_PATH, dtype=str).fillna("")
+    except (OSError, ValueError):
+        return peak
+    if history.empty or "total_assets_jpy" not in history.columns:
+        return peak
+    if "phase_id" in history.columns:
+        history = history[history["phase_id"].eq(CONFIG.phase_id)]
+    values = pd.to_numeric(history["total_assets_jpy"], errors="coerce").dropna()
+    return max(peak, float(values.max())) if len(values) else peak
+
+
 def _float(row: pd.Series, key: str) -> float | None:
     try:
         value = float(str(row.get(key, "")).strip())
@@ -321,10 +342,26 @@ def _claude_candidates(screening: pd.DataFrame) -> pd.DataFrame:
     ranked["_candidate_strategy"] = "claude_momentum"
     ranked.loc[pullback.loc[ranked.index], "_candidate_priority"] = 0
     ranked.loc[pullback.loc[ranked.index], "_candidate_strategy"] = "claude_pullback_combo_v1"
+    ranked["_order_score"] = _order_score(ranked)
     return ranked.sort_values(
-        ["_candidate_priority", "_score", "_volume_ratio"],
-        ascending=[True, False, False],
+        ["_candidate_priority", "_order_score", "_score", "_volume_ratio"],
+        ascending=[True, False, False, False],
     )
+
+
+def _order_score(ranked: pd.DataFrame) -> pd.Series:
+    """3.0.0 の並び: 売買代金の順位 + 52週高値からの距離の順位（どちらも大きいほど上。0〜2）。
+
+    過去4年（2022-10〜2026-10）の日足で、売買代金が大きいほど・高値から離れているほど
+    （押し目の範囲の中で）成績が上だった。前半と後半の両方でそろったのはこの2つだけ（2026-10-30 調べ）。
+    出来高比・25日線からの距離は、前半と後半で向きがそろわなかった。
+    """
+    if CLAUDE_RULES.get("candidate_order") != "turnover_and_distance_rank" or len(ranked) < 2:
+        return pd.Series(0.0, index=ranked.index)
+    span = len(ranked) - 1
+    turnover = (ranked["_turnover"].rank(method="average") - 1) / span
+    distance = (ranked["_dist_52w_high"].rank(method="average") - 1) / span
+    return (turnover.fillna(0) + distance.fillna(0)).round(6)
 
 
 def _candidate_reason(row: pd.Series) -> str:
@@ -434,6 +471,9 @@ def declare(
     """翌営業日ぶんの注文を宣告する。宣告した件数を返す。"""
     today = today or datetime.now(JST).date()
     execution_date = next_business_day(today)
+    if CONFIG.standing_exit_orders:
+        # 3.0.0: 今日までに逆指値・指値・期限で売れたものを先に台帳へ付ける（空いた枠と現金を今夜の買いに使う）
+        settle_standing_exits(today)
     orders = _read(ORDERS_PATH, ORDER_COLUMNS)
     journal = _read(JOURNAL_PATH, JOURNAL_COLUMNS)
     orders_changed = _cancel_incompatible_pending(orders, today)
@@ -454,6 +494,8 @@ def declare(
     selling = _pending_sell_codes(pending, held_codes)
     for _, row in open_rows.iterrows():
         code = str(row.get("code", "")).strip()
+        if CONFIG.standing_exit_orders:
+            break                                 # 3.0.0 の売りは claude_300man_exits.py（上で済ませた）
         if not code or code in pending_codes:
             continue
         try:
@@ -514,10 +556,17 @@ def declare(
     # --- 新規建て -----------------------------------------------------------
     slots_by_regime = REGIME_SLOTS.get(regime, 1)
     account_return = _portfolio_return_pct(journal, prices)
-    if account_return <= CIRCUIT_STOP_PCT:
+    if CONFIG.peak_drawdown_reduce_pct is not None:
+        equity = INITIAL_CASH * (1 + account_return / 100)
+        peak = _peak_total_assets(equity)
+        drawdown = (equity / peak - 1) * 100
+        if drawdown <= CONFIG.peak_drawdown_reduce_pct:
+            slots_by_regime = min(slots_by_regime, max(1, MAX_POSITIONS // 2))
+            print(f"claude_300man_declare=peak_drawdown_reduce drawdown={drawdown:.2f}% slots={slots_by_regime}")
+    elif CIRCUIT_STOP_PCT is not None and account_return <= CIRCUIT_STOP_PCT:
         slots_by_regime = 0
         print(f"claude_300man_declare=circuit_stop return={account_return:.2f}%")
-    elif account_return <= CIRCUIT_REDUCE_PCT:
+    elif CIRCUIT_REDUCE_PCT is not None and account_return <= CIRCUIT_REDUCE_PCT:
         slots_by_regime = min(slots_by_regime, 1)
         print(f"claude_300man_declare=circuit_reduce return={account_return:.2f}%")
     used_slots = len(held_codes) - len(selling) + len(pending_buy)
@@ -634,7 +683,9 @@ def push_orders() -> bool:
             return False
         run("git", "config", "user.name", "github-actions[bot]")
         run("git", "config", "user.email", "github-actions[bot]@users.noreply.github.com")
-        if run("git", "add", str(ORDERS_PATH.relative_to(PROJECT_ROOT))).returncode != 0:
+        ledger_files = [ORDERS_PATH, JOURNAL_PATH, PROJECT_ROOT / "docs" / "claude_300man_ledger.md"]
+        paths = [str(path.relative_to(PROJECT_ROOT)) for path in ledger_files if path.exists()]
+        if run("git", "add", *paths).returncode != 0:
             print("claude_300man_declare=push_failed step=add")
             return False
         if run("git", "diff", "--cached", "--quiet").returncode == 0:

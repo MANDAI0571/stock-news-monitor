@@ -18,6 +18,7 @@ HIGH_REVIEW_PATHS = {
     "dual_300man_fill.py",
     "claude_300man_declare.py",
     "claude_300man_fill.py",
+    "claude_300man_exits.py",
 }
 MAX_CHANGED_FILES = 12
 

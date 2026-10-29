@@ -57,11 +57,21 @@ class StrategyConfig:
     take_profit_pct: float
     timeout_days: int
     max_entry_gap_pct: float
-    circuit_reduce_pct: float
-    circuit_stop_pct: float
+    circuit_reduce_pct: float | None
+    circuit_stop_pct: float | None
     pending_expiry_business_days: int
     strategy_rules: Mapping[str, object]
     rule_hash: str
+    # 3.0.0（2026-10-30）から。旧ルールの設定ファイルでは既定値（終値判定・翌寄付）のまま
+    exit_execution: str = "next_open"
+    regime_slots: Mapping[str, int] | None = None
+    peak_drawdown_reduce_pct: float | None = None
+    previous_rules_accepted: tuple[tuple[str, str], ...] = ()
+
+    @property
+    def standing_exit_orders(self) -> bool:
+        """売りを逆指値・指値（日中）と期限の大引けで行うか。False なら終値で判定して翌寄付で売る（2.x）。"""
+        return self.exit_execution == "standing_orders"
 
 
 def _canonical_payload(raw: dict) -> bytes:
@@ -77,6 +87,10 @@ def _canonical_payload(raw: dict) -> bytes:
         "strategy_rules": raw.get("strategy_rules"),
     }
     return json.dumps(tracked, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def _optional_float(value: object) -> float | None:
+    return None if value is None or str(value).strip() == "" else float(value)
 
 
 def load_strategy_config(path: Path = CONFIG_PATH) -> StrategyConfig:
@@ -99,12 +113,23 @@ def load_strategy_config(path: Path = CONFIG_PATH) -> StrategyConfig:
         take_profit_pct=float(rules["take_profit_pct"]),
         timeout_days=int(rules["timeout_business_days"]),
         max_entry_gap_pct=float(rules["max_entry_gap_pct"]),
-        circuit_reduce_pct=float(rules["drawdown_reduce_pct"]),
-        circuit_stop_pct=float(rules["drawdown_stop_pct"]),
+        circuit_reduce_pct=_optional_float(rules.get("drawdown_reduce_pct")),
+        circuit_stop_pct=_optional_float(rules.get("drawdown_stop_pct")),
         pending_expiry_business_days=int(rules.get("pending_expiry_business_days", 3)),
         strategy_rules=raw.get("strategy_rules", {}),
         rule_hash=hashlib.sha256(_canonical_payload(raw)).hexdigest()[:12],
+        exit_execution=str(rules.get("exit_execution", "next_open")),
+        regime_slots={str(k): int(v) for k, v in rules["regime_slots"].items()} if rules.get("regime_slots") else None,
+        peak_drawdown_reduce_pct=_optional_float(rules.get("peak_drawdown_reduce_pct")),
+        previous_rules_accepted=tuple(
+            (str(item["strategy_version"]), str(item["rule_hash"]))
+            for item in raw.get("previous_rules_accepted", [])
+        ),
     )
+    if config.exit_execution not in {"next_open", "standing_orders"}:
+        raise ValueError(f"unknown exit_execution: {config.exit_execution}")
+    if config.circuit_reduce_pct is None and config.peak_drawdown_reduce_pct is None:
+        raise ValueError("300man config needs drawdown_reduce_pct or peak_drawdown_reduce_pct")
     if config.stop_loss_pct >= 0 or config.take_profit_pct <= 0:
         raise ValueError("stop_loss_pct must be negative and take_profit_pct positive")
     if config.slot_yen <= 0 or config.initial_cash <= 0 or config.max_positions <= 0:
@@ -141,10 +166,14 @@ def order_metadata() -> dict[str, str]:
 def order_compatibility(row: Mapping[str, object]) -> tuple[bool, str]:
     if str(row.get("phase_id", "")).strip() != CONFIG.phase_id:
         return False, "PHASE_MISMATCH"
-    if str(row.get("strategy_version", "")).strip() != CONFIG.strategy_version:
-        return False, "STRATEGY_VERSION_MISMATCH"
-    if str(row.get("rule_hash", "")).strip() != CONFIG.rule_hash:
-        return False, "RULE_HASH_MISMATCH"
+    version = str(row.get("strategy_version", "")).strip()
+    rule_hash = str(row.get("rule_hash", "")).strip()
+    # ルールを切り替えた日に宣言済みだった注文は、設定ファイルに書いた旧版だけ通す（2026-10-30 の 2.1.0 → 3.0.0）
+    if (version, rule_hash) not in CONFIG.previous_rules_accepted:
+        if version != CONFIG.strategy_version:
+            return False, "STRATEGY_VERSION_MISMATCH"
+        if rule_hash != CONFIG.rule_hash:
+            return False, "RULE_HASH_MISMATCH"
     try:
         execution_date = date.fromisoformat(str(row.get("execution_date", "")))
     except ValueError:
@@ -160,6 +189,7 @@ CRITICAL_RULE_PATHS = (
     "claude_300man_declare.py",
     "dual_300man_fill.py",
     "claude_300man_fill.py",
+    "claude_300man_exits.py",
 )
 
 

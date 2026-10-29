@@ -219,7 +219,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data/claude_300man_orders.csv data/claude_300man_shadow.csv docs/claude_300man_shadow.md data/claude_300man_entry_shadow.csv docs/claude_300man_entry_shadow.md data/claude_300man_reconciliation.csv docs/claude_300man_reconciliation.md data/claude_300man_daily_monitor.csv data/claude_300man_improvement_candidates.csv docs/claude_300man_daily_monitor.md
+          git add data/claude_300man_orders.csv data/claude_300man_journal.csv docs/claude_300man_ledger.md data/claude_300man_shadow.csv docs/claude_300man_shadow.md data/claude_300man_entry_shadow.csv docs/claude_300man_entry_shadow.md data/claude_300man_reconciliation.csv docs/claude_300man_reconciliation.md data/claude_300man_daily_monitor.csv data/claude_300man_improvement_candidates.csv docs/claude_300man_daily_monitor.md
           if git diff --cached --quiet; then
             echo "claude_300man_declare=no_order_change"
             exit 0
@@ -235,6 +235,7 @@ jobs:
           name: claude-300man-close-declare
           path: |
             data/claude_300man_orders.csv
+            data/claude_300man_journal.csv
             data/claude_300man_shadow.csv
             docs/claude_300man_shadow.md
             data/claude_300man_entry_shadow.csv

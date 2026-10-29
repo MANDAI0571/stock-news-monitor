@@ -252,7 +252,12 @@ def write_ledger(account: str, orders: pd.DataFrame, journal: pd.DataFrame) -> N
             f"| {row['decision_date']} | {row['execution_date']} | {row['side']} | {row['code']} | {row['name']} | "
             f"{int(float(row['shares']))}株 | {row['status']} | {row.get('phase_id') or '-'} / {row.get('rule_hash') or '-'} |"
         )
-    lines.extend(["", "売買価格は宣告した次の東証営業日の始値をYahoo Financeから取得します。"
+    exits_note = (
+        f"売りは逆指値（{CONFIG.stop_loss_pct:+.0f}%）・指値（{CONFIG.take_profit_pct:+.0f}%）を日足の安値・高値で判定し、"
+        f"{CONFIG.timeout_days}営業日目は大引けで売ります（ルール {CONFIG.strategy_version}、claude_300man_exits.py）。"
+        if CONFIG.standing_exit_orders else ""
+    )
+    lines.extend(["", "買いの価格は宣告した次の東証営業日の始値をYahoo Financeから取得します。" + exits_note +
         "未実行日があった場合は同じ予定日の始値で自動補完し、取得不能が続く注文は期限切れにします。", ""])
     ledger_path.parent.mkdir(parents=True, exist_ok=True)
     ledger_path.write_text("\n".join(lines), encoding="utf-8")
