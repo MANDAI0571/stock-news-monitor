@@ -223,6 +223,14 @@ CHART_NOTE = (
     "カードが0件になります（Gmailは長すぎるメールを途中で切るため）。チャートは、4桁の銘柄コードは"
     "株探、優先株など4桁でないものはYahooファイナンスです。"
     "銘柄コードで株探やYahooファイナンスを引けば同じチャートが見られます。"
+    "「📋 この銘柄の文とチャート画像」は、その銘柄の投稿用の文（Xの280字に収めたもの）と"
+    "直近60本の日足の画像（黄色い点線はその日の25日線の値）をコピー用のページで開きます。"
+    "そのページで、文のコピー、画像の保存・コピー・共有、X・LINE・Threadsへの投稿の画面を開くことが"
+    "できます（Xの投稿リンクは画像を運べないので、画像は保存してから添付します）。"
+    "文とチャートはリンクの「#」より後ろに入れて運ぶので、ページのサーバーには送られず、"
+    "どこにも残りません。このボタンは、載せた銘柄すべてに付けることを優先し（そのためにカードを"
+    "5件まで減らすことがあります）、件数が多くて入りきらない日は上位の銘柄から付けます（少なくとも上位3件。"
+    "そのために短い形の行を減らすことがあります）。ボタンはHTML表示のときだけ出ます。"
 )
 
 
@@ -244,6 +252,47 @@ def _chart_html(r):
             f'日足チャートを開く &rsaquo;</a></div>')
 
 
+def _share_link(r):
+    """(コピー用のページのリンク, チャート画像があるか)。作れなければ None
+    （このボタンが作れなくても、メールそのものは止めない）。"""
+    try:
+        import share as SH
+
+        clip, _, has_chart = SH.links(r, _chart_url(r["code"]))
+        return clip, has_chart
+    except Exception as e:                             # noqa: BLE001
+        import sys
+        print(f"投稿用のボタンを作れなかった: {type(e).__name__}", file=sys.stderr)
+        return None
+
+
+def _share_html(r):
+    """カードの中のボタン（2026-10-30 持ち主「出来高急増急落銘柄もコピペできるようにして」）。
+    Gmail はメールの中のプログラム（クリップボードへのコピー）を動かさないので、コピー用のページ（clip.html）を
+    開き、そこで文のコピー・画像の保存や共有・X や LINE への投稿をする。リアルタイムの高値メールにある
+    「𝕏に投稿（文だけ）」は付けない（1件あたり約1KB増え、13件の日にボタンが3件にしか付かなかった。
+    X への投稿はコピー用のページからできる）。"""
+    got = _share_link(r)
+    if not got:
+        return ""
+    clip, has_chart = got
+    label = "📋 この銘柄の文とチャート画像" if has_chart else "📋 この銘柄の文をコピー"
+    return (f'<div style="padding:8px 0 0 0;"><a href="{H.escape(clip)}" '
+            f'style="display:block;text-align:center;text-decoration:none;border-radius:8px;'
+            f'padding:11px 8px;font-size:14px;font-weight:bold;color:#ffffff;background:#1f745f;">'
+            f'{label}</a></div>')
+
+
+def _share_brief(r):
+    """短い形の行に付けるリンク。"""
+    got = _share_link(r)
+    if not got:
+        return ""
+    clip, has_chart = got
+    label = "📋 文とチャート画像" if has_chart else "📋 文をコピー"
+    return f' ／ <a href="{H.escape(clip)}" style="color:#1f745f;font-weight:bold;">{label}</a>'
+
+
 def _split_html(r):
     note = _split_note(r)
     if not note:
@@ -260,7 +309,7 @@ def _rank_html(r):
             'ランク ◎（業種の勢いがとても弱い。過去5年でこの形は成績が良かった。下の「ランク（◎）について」）</div>')
 
 
-def card(i, r):
+def card(i, r, share=False):
     f = r["fund"]
     chg = r["chg_pct"]
     color = "#c0392b" if chg < 0 else "#1e7a45"
@@ -271,7 +320,7 @@ def card(i, r):
 {_rank_html(r)}
   <div style="{s['big']}">{r['price']:,.1f}円 <span style="color:{color};">({_chg_label(r)} {chg:+.2f}%)</span></div>
   <div style="{s['sub']}">{r['asof_label']}時点</div>
-{_split_html(r)}{_chart_html(r)}
+{_split_html(r)}{_chart_html(r)}{_share_html(r) if share else ''}
   <div style="{s['sec']}">{_rows([
       ("出来高倍率", f"{r['ratio']:.2f}倍", True),
       ("当日の出来高", f"{r['vol_today']:,.0f}株", False),
@@ -340,7 +389,7 @@ def _fund_age(r):
     return f"（業績は{age:.0f}日前の数字）" if age is not None else ""
 
 
-def _brief(i, r):
+def _brief(i, r, share=False):
     """カードに入りきらないぶんを1行で出す。"""
     s = _S
     code = H.escape(str(r["code"]))
@@ -354,7 +403,8 @@ def _brief(i, r):
             f'{_own_time(r)}／ '
             f'業績の参考条件 {_fund_state(r)}{_fund_age(r)}<br>'
             f'<a href="{H.escape(_chart_url(r["code"]))}" '
-            f'style="color:#1a4f8a;">日足チャートを開く &rsaquo;</a></div>')
+            f'style="color:#1a4f8a;">日足チャートを開く &rsaquo;</a>'
+            f'{_share_brief(r) if share else ""}</div>')
 
 
 def _section(title, lead, rows, start_no, plan):
@@ -367,11 +417,12 @@ def _section(title, lead, rows, start_no, plan):
                        'border-radius:10px;padding:18px 16px;text-align:center;'
                        'font-size:14px;color:#777777;">該当なし</div>')
     total = len(rows)
-    n_card, n_brief, n_list = plan
+    n_card, n_brief, n_list = plan[:3]
+    n_share = plan[3] if len(plan) > 3 else 0        # 上から何件に投稿用のボタンを付けるか（カード→短い形の順）
     listed = rows[:n_list]
     dropped = total - len(listed)
-    cards = [card(start_no + i, r) for i, r in enumerate(listed[:n_card])]
-    briefs = [_brief(start_no + n_card + i, r)
+    cards = [card(start_no + i, r, share=i < n_share) for i, r in enumerate(listed[:n_card])]
+    briefs = [_brief(start_no + n_card + i, r, share=n_card + i < n_share)
               for i, r in enumerate(listed[n_card:n_card + n_brief])]
     tinies = [_tiny(start_no + n_card + n_brief + i, r)
               for i, r in enumerate(listed[n_card + n_brief:])]
@@ -407,7 +458,7 @@ def _text_block(title, rows, start_no, plan):
     if not rows:
         return f"── {title} ──\n該当なし\n"
     total = len(rows)
-    n_card, n_brief, n_list = plan
+    n_card, n_brief, n_list = plan[:3]
     listed = rows[:n_list]
     dropped = total - len(listed)
     out = [f"── {title} ──"]
@@ -485,12 +536,17 @@ def _mime_size(html, text):
     return len(base64.b64encode(html.encode())) + len(base64.b64encode(text.encode()))
 
 
+SHARE_MIN_CARDS = 5     # 全件にボタンを付けるために減らしてよいカードの下限
+SHARE_MIN_BIG = 3       # 全件に付かない日でも、上位この件数には付ける
+
+
 def _fit(rows):
     """収まる組み合わせを探す。
 
     まずカードと短縮行を減らし、それでも収まらなければ掲載件数を
     二分探索で詰める。以前は(320,240,160,80,40)と飛び飛びに落として
     いたため、収まるのに30件以上を落としていた（2026-10-05の実測）。
+    plan は (カード, 短い形, 載せる件数[, 投稿用のボタンを付ける件数])。
     """
     n = len(rows)
 
@@ -499,11 +555,31 @@ def _fit(rows):
         text = _text_block(SEC_TITLE, rows, 1, plan)
         return body, text, _mime_size(body, text)
 
-    for n_card in (12, 8, 5, 3, 2, 1, 0):
-        for n_brief in (60, 40, 20, 10, 0):
-            body, text, size = made((n_card, n_brief, n))
+    combos = [(c, b) for c in (12, 8, 5, 3, 2, 1, 0) for b in (60, 40, 20, 10, 0)]
+    # 投稿用のボタン（2026-10-30 持ち主「出来高急増急落銘柄もコピペできるようにして」）。
+    # 全件をカードか短い形で出せる日は、全件にボタンが付く組み合わせを先に探す。そのためにカードを減らすのは
+    # 5件まで（ボタン1件で約1.4KB。13件の日の試算で、前のカード8件のままでは全件に付かなかった）
+    for n_card, n_brief in combos:
+        if n_card + n_brief >= n and n_card >= min(n, SHARE_MIN_CARDS):
+            body, text, size = made((n_card, n_brief, n, n))
             if size <= MIME_LIMIT:
                 return body, text
+
+    for n_card, n_brief in combos:
+        # 入りきらない日は、上位 SHARE_MIN_BIG 件以上にボタンが付く組み合わせの中で、前と同じ順
+        # （カードの多い方、短い形の多い方）に選び、収まる範囲で上からボタンを付ける
+        shown = min(n, n_card + n_brief)
+        body, text, size = made((n_card, n_brief, n, min(shown, SHARE_MIN_BIG)))
+        if size <= MIME_LIMIT:
+            lo, hi, best = min(shown, SHARE_MIN_BIG) + 1, shown, (body, text)
+            while lo <= hi:
+                mid = (lo + hi) // 2
+                b2, t2, s2 = made((n_card, n_brief, n, mid))
+                if s2 <= MIME_LIMIT:
+                    best = (b2, t2); lo = mid + 1
+                else:
+                    hi = mid - 1
+            return best
 
     # 全件は入らない。カード0・短縮行0で、収まる最大の件数を探す。
     lo, hi, best = 1, n, None

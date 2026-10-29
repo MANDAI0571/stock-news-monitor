@@ -158,6 +158,7 @@ def main() -> None:
     _test_intraday_relay_contract()
     _test_volume_screener_on_actions()
     _test_volume_rank()
+    _test_volume_share()
     _test_note_two()
     _test_liquidity_track()
     _test_note_two_us()
@@ -3783,6 +3784,101 @@ def _test_volume_rank() -> None:
     assert "◎ 1件" in TRK.mark_line(sm) and "ランク別" in TRK.note(sm)
     assert TRK.mark_line(TRK.summary({"since": "x", "done": {"c": {"ret": 0.02}}}, 0)) == ""
     print("self-test: 出来高急増のランク（◎）OK")
+
+
+def _test_volume_share() -> None:
+    """出来高急増×下降のメールにも1銘柄ずつの投稿用のボタン（2026-10-30 持ち主「出来高急増急落銘柄もコピペできるようにして」）。
+    文とチャートは docs/clip.html を開くリンクの # の後ろで運ぶ。リアルタイムの高値メールと同じ読み方。"""
+    import base64 as _b64
+    import datetime as dt
+    import importlib.util
+    import math
+    import os as _os
+    import re as _re
+    import sys
+
+    sys.path.insert(0, "volume_screener")
+    import share as SH
+
+    import intraday_high_alert as IHA
+
+    def row(k, n=120):
+        d0 = dt.date(2026, 5, 1)
+        dates = [d0 + dt.timedelta(days=i) for i in range(n)]
+        c = [1000 - i * 2 + 30 * math.sin(i / 3) for i in range(n)]
+        return {"code": str(1300 + k), "name": f"テスト{k}", "dates": dates, "closes": c,
+                "vols": [1e5 + 1e3 * i for i in range(n)],
+                "ohlc": {"open": [x + 3 for x in c], "high": [x + 12 for x in c], "low": [x - 15 for x in c]},
+                "price": c[-1] - 30, "chg_pct": -5.23, "dev25_pct": -12.3, "ratio": 3.21, "base_label": "前日の同時刻まで",
+                "ma25": c[-1] * 1.12, "ma75": c[-1] * 1.25, "ma25_prev": c[-1] * 1.15, "turnover20": 3.2e9,
+                "vol_today": 5e5, "vol_base": 1.5e5, "vol_prev_daily": 2e5, "fund": {}, "fund_ok": False,
+                "asof_label": "2026-10-30 13:50", "mark": "◎" if k % 3 == 0 else "", "prev_gap": 0}
+
+    r = row(1)
+    pt = SH.post_text(r, "https://kabutan.jp/stock/chart?code=1301")
+    assert SH.x_length(pt) <= 280 and SH.x_length(pt) == IHA.x_length(pt), pt
+    assert pt.startswith("【出来高急増×下降】1301 テスト1\n現在値 ") and "10/30 13:50時点" in pt, pt
+    assert pt.endswith("※売買をすすめるものではありません") and "📝 note https://note.com/breakout_scan" in pt
+    for bad in ("おすすめ", "買い時", "必ず上がる", "買い", "売り時"):
+        assert bad not in pt, bad
+    # 画像の黄色い点線の見出し（clip.html の正規表現と同じ形）
+    clip_page = Path("docs/clip.html").read_text(encoding="utf-8")
+    assert "|\\d+日線 [\\d,.]+円)/)" in clip_page
+    assert _re.search(r"\d+日線 [\d,.]+円", pt).group(0) == f"25日線 {r['ma25']:,.1f}円"
+    # ランク（◎）は長いときに最初に外す。前回の足が前営業日でなければ「前日比」と言わない
+    assert SH.x_length(SH.post_text({**r, "name": "長" * 80, "mark": "◎"})) <= 280
+    assert "前回の足から" in SH.post_text({**r, "prev_gap": 1}) and "前日比" not in SH.post_text({**r, "prev_gap": 1})
+    # チャート: 直近60本。最後の足の終値はメールの現在値、ラインは25日線。読み方は高値メールと同じ
+    cp = SH.chart_payload(r)
+    a, b = SH.read_chart_payload(cp), IHA.read_chart_payload(cp)
+    assert a == b and len(a["bars"]) == 60 and a["d1"] == "20260828" and a["d0"] == "20260630", cp[:60]
+    assert abs(a["line"] - round(r["ma25"], 2)) < 1e-9 and a["hi"] >= r["ma25"] and len(cp) < 620
+    step = (a["hi"] - a["lo"]) / 4095 + 1e-6
+    assert abs(a["bars"][-1][3] - r["price"]) < step and a["bars"][-1][2] <= r["price"] + step
+    for got, k in zip(a["bars"], range(60, 120)):
+        if k < 119:
+            assert abs(got[0] - r["ohlc"]["open"][k]) < step and abs(got[3] - r["closes"][k]) < step
+    # 過去日を指定した実行では ohlc が日付より長い（先頭からそろっている）。日付の本数で切る
+    longer = {**r, "dates": r["dates"][:100], "closes": r["closes"][:100], "vols": r["vols"][:100]}
+    assert SH.read_chart_payload(SH.chart_payload(longer))["d1"] == r["dates"][99].strftime("%Y%m%d")
+    assert SH.chart_payload({**r, "ohlc": None}) == "" and SH.chart_payload({**r, "dates": []}) == ""
+    clip, xpost, has_chart = SH.links(r)
+    b64 = clip.split("#b=")[1].split("&")[0]
+    assert clip.startswith(SH.CLIP_PAGE_URL + "#b=") and SH.CLIP_PAGE_URL == IHA.CLIP_PAGE_URL and has_chart
+    assert _b64.urlsafe_b64decode(b64 + "=" * (-len(b64) % 4)).decode("utf-8") == SH.post_text(r) and "&c=" + cp in clip
+    assert "import pandas" not in Path("volume_screener/share.py").read_text(encoding="utf-8")    # Mac の控えでも動く
+    # メール: 載せた銘柄すべてにボタン（カードは5件まで減らす）。Gmail が切る長さは超えない
+    spec = importlib.util.spec_from_file_location("vs_report_share", "volume_screener/report.py")
+    vr = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(vr)
+    saved = _os.environ.get("VS_NO_FUNDAMENTALS")
+    try:
+        _os.environ["VS_NO_FUNDAMENTALS"] = "1"
+        for n, want in ((1, 1), (5, 5), (13, 13)):
+            rows = [row(k) for k in range(n)]
+            body, text = vr._fit(rows)
+            assert body.count("clip.html#b=") == want and vr._mime_size(body, text) <= vr.MIME_LIMIT, (n, body.count("clip.html#b="))
+            assert body.count("border-radius:11px") >= min(n, vr.SHARE_MIN_CARDS) and "clip.html" not in text
+            link = body.split('clip.html')[1].split('"')[0].replace("&amp;", "&")
+            b1 = link.split("#b=")[1].split("&")[0]
+            assert _b64.urlsafe_b64decode(b1 + "=" * (-len(b1) % 4)).decode("utf-8").startswith("【出来高急増×下降】1300 テスト0")
+        assert "📋 この銘柄の文とチャート画像" in body and "📋 文とチャート画像" in body
+        for n in (80, 300):                                                            # 多い日は上から入る分だけ
+            rows = [row(k) for k in range(n)]
+            body, text = vr._fit(rows)
+            shown = body.count("border-radius:11px") + body.count("padding:9px 2px")
+            assert vr._mime_size(body, text) <= vr.MIME_LIMIT and body.count("clip.html#b=") >= min(shown, vr.SHARE_MIN_BIG) >= 2
+        subject, html_doc, text_doc = vr.build([row(k) for k in range(3)], ["n"], "2026-10-30", "13:50")
+        assert html_doc.count("clip.html#b=") == 3 and "どこにも残りません" in html_doc and "売買をすすめるものではありません" in html_doc
+        # チャートの数字が無くても文のボタンは出す。ボタンが作れなくてもメールは止めない
+        assert "📋 この銘柄の文をコピー" in vr.card(1, {**row(0), "ohlc": None}, share=True)
+        assert vr._share_html({"code": "1"}) == "" and "日足チャートを開く" in vr.card(1, row(0))
+    finally:
+        if saved is None:
+            _os.environ.pop("VS_NO_FUNDAMENTALS", None)
+        else:
+            _os.environ["VS_NO_FUNDAMENTALS"] = saved
+    print("self-test: 出来高急増の投稿用ボタン OK")
 
 
 def _test_intraday_alert_grade() -> None:
