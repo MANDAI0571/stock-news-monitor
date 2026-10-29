@@ -3210,11 +3210,14 @@ def _test_intraday_relay_contract() -> None:
     # 金曜の引け後 → 16:00 に note の2本立てを起こす（2026-10-16 追加）
     wait, event, target = plan(2026, 10, 9, 15, 31)
     assert (event, target.strftime("%a %H:%M")) == ("note_daily", "Fri 16:00"), (event, target)
-    # 16:00 を過ぎたら中継を継いで、月曜 08:50 を狙う
+    # 16:00 を過ぎたら 18:45 に Claude 300万円の注文を起こす（2026-10-30 追加）
     wait, event, target = plan(2026, 10, 9, 16, 4)
+    assert (event, target.strftime("%a %H:%M")) == ("claude_300man_declare", "Fri 18:45"), (event, target)
+    # 18:45 を過ぎたら中継を継いで、月曜 08:50 を狙う
+    wait, event, target = plan(2026, 10, 9, 18, 49)
     assert (event, target.strftime("%a %H:%M")) == ("intraday_relay", "Mon 08:50"), (event, target)
     # 祝日の月曜は飛ばす
-    wait, event, target = plan(2026, 10, 9, 16, 4, holidays={dt.date(2026, 10, 12)})
+    wait, event, target = plan(2026, 10, 9, 18, 49, holidays={dt.date(2026, 10, 12)})
     assert target.date() == dt.date(2026, 10, 13), target
     # 朝 08:50 の5時間40分以内なら、巡回を起こす
     wait, event, target = plan(2026, 10, 13, 3, 15)
@@ -3226,11 +3229,14 @@ def _test_intraday_relay_contract() -> None:
     # 時刻を少し過ぎて起き直しても、その立会を飛ばさない（すぐ起こす）
     wait, event, target = plan(2026, 10, 13, 8, 52)
     assert event == "intraday_tick" and wait == 0 and target.strftime("%H:%M") == "08:50"
-    # ただし猶予は短い（すぐ失敗する巡回を起こし直し続けないため）
+    # ただし猶予は短い（すぐ失敗する巡回を起こし直し続けないため）。次は 09:40 の約定（2026-10-30 追加）
     wait, event, target = plan(2026, 10, 13, 8, 54)
-    assert target.strftime("%H:%M") == "12:25", target
+    assert (event, target.strftime("%H:%M")) == ("claude_300man_fill", "09:40"), (event, target)
+    now = dt.datetime(2026, 10, 13, 9, 40, 10, tzinfo=J)
+    wait, event, target = R.plan(now, R.is_business_day, after=dt.datetime(2026, 10, 13, 9, 40, tzinfo=J))
+    assert (event, target.strftime("%H:%M")) == ("intraday_tick", "12:25"), (event, target)
     # 年末年始は休み
-    wait, event, target = plan(2026, 12, 30, 16, 4)
+    wait, event, target = plan(2026, 12, 30, 18, 49)
     assert target.date() == dt.date(2027, 1, 4), target
     # 14:05 に出来高急増スクリーナーを起こす（2026-10-12 追加）。12:25 に巡回を起こした
     # 直後の起こし直し（after=12:25）は 14:05 を狙い、同じ 12:25 をもう一度起こさない
@@ -3245,7 +3251,15 @@ def _test_intraday_relay_contract() -> None:
     assert (event, target.strftime("%m-%d %H:%M")) == ("note_daily", "10-13 16:00"), (event, target)
     now = dt.datetime(2026, 10, 13, 16, 0, 10, tzinfo=J)
     wait, event, target = R.plan(now, R.is_business_day, after=dt.datetime(2026, 10, 13, 16, 0, tzinfo=J))
+    assert (event, target.strftime("%m-%d %H:%M")) == ("claude_300man_declare", "10-13 18:45"), target
+    now = dt.datetime(2026, 10, 13, 18, 45, 10, tzinfo=J)
+    wait, event, target = R.plan(now, R.is_business_day, after=dt.datetime(2026, 10, 13, 18, 45, tzinfo=J))
     assert target.strftime("%m-%d %H:%M") == "10-14 08:50", target
+    # 起こされる側が repository_dispatch を受け付ける（受け付けないと黙って何も起きない）
+    for wf, ev in (("claude_300man_fill.yml", "claude_300man_fill"), ("claude_300man_declare.yml", "claude_300man_declare")):
+        assert f"types: [{ev}]" in Path(".github/workflows/" + wf).read_text(encoding="utf-8"), wf
+    assert {ev for _, ev in R.SLOTS} == {"intraday_tick", "claude_300man_fill", "volume_screener", "note_daily",
+                                         "claude_300man_declare"}
     assert "client_payload" in relay and "after" in relay and "${TARGET}" in relay, "起こし直しに after が無い"
     print("self-test: ザラ場の中継（cronに頼らない起動） OK")
 

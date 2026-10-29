@@ -27,10 +27,16 @@ JST = dt.timezone(dt.timedelta(hours=9))
 # 14:05 は出来高急増スクリーナー（volume_screener.yml、2026-10-12 追加）。もとは
 # Mac の定期タスクで14:10に動かしていた。cron は数時間遅れて届くので中継で起こす。
 # 16:00 は note の2本立て（note_daily_drafts.yml、2026-10-16 追加）。
+# 09:40 と 18:45 は Claude 300万円運用の約定と注文（claude_300man_fill.yml / claude_300man_declare.yml、
+# 2026-10-30 追加）。cron では 18:45 の注文が夜中の 0:30〜2:20 に、09:40 の約定が 14:00〜16:00 に
+# 動いていた（Actions の履歴で実測）。持ち主「300万運用でXでリアルタイム情報流します」のため時刻どおりに起こす。
+# cron は予備として残す（どちらも同じ日・同じ注文は二重にならない）。
 SLOTS = ((dt.time(8, 50), "intraday_tick"),
+         (dt.time(9, 40), "claude_300man_fill"),
          (dt.time(12, 25), "intraday_tick"),
          (dt.time(14, 5), "volume_screener"),
-         (dt.time(16, 0), "note_daily"))
+         (dt.time(16, 0), "note_daily"),
+         (dt.time(18, 45), "claude_300man_declare"))
 
 # 1回の待ちの上限（分）。ジョブの timeout-minutes 355 と、GitHub の上限
 # 360分の内側に、準備と送信のぶんを残す。

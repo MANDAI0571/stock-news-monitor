@@ -7,6 +7,9 @@ on:
         description: "約定対象日 YYYY-MM-DD（空欄はJST当日）"
         required: false
         type: string
+  # 2026-10-30: cron は数時間遅れて届くので、中継（intraday_relay.py の SLOTS）が時刻どおりに起こす。cron は予備
+  repository_dispatch:
+    types: [claude_300man_fill]
   schedule:
     - cron: "40 0 * * 1-5"
     # GitHub cronの取りこぼし対策。処理は冪等で、同じ注文は二重約定しない。
