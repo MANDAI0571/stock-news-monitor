@@ -27,3 +27,4 @@ volume_screener/out_asof/
 liquidity_track/
 # 米株の押し目の箱のその後の記録（ict_track.py、2026-10-25）。銘柄が入るのでコミットしない（Actions のキャッシュ）。
 us_track/
+x_posts_state/

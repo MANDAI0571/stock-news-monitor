@@ -204,6 +204,16 @@ def rule_change_lines() -> list[str]:
             "代わりの条件での試算で、これからの成績を示すものではありません。", ""]
 
 
+# 2026-10-30 持ち主「300万運用でXでリアルタイム情報流しますと言ってXのフォローを増やすよう考えて」。
+# X は note のプロフィールにつながっている @Breakout_Scan（note API の socials で確認）。投稿の文は
+# claude_300man_x_posts.py が持ち主にメールで届け、持ち主が投稿する（このリポジトリから X には何も送らない）
+X_PROFILE_URL = "https://x.com/Breakout_Scan"
+X_CTA = ("📣 **買いの注文は前の晩、約定は朝、出しておいた注文に届いた売りはその日の夜に、X（@Breakout_Scan）で"
+         f"リアルタイムに流しています。** 注文は寄付の前に出すので、後から都合よく書き換えられません。→ {X_PROFILE_URL}")
+X_CTA_END = ("この記事は1日1回のまとめです。注文・約定・売りは、そのつど X（@Breakout_Scan）で先に流しています。"
+             f"負けた売買もそのまま出します。フォローしておくと、この記事より先に届きます。→ {X_PROFILE_URL}")
+
+
 def portfolio_lines(day: dt.date, journal: pd.DataFrame, orders: pd.DataFrame, ledger_text: str,
                     closes: dict, ict: list[dict] | None = None, *, today_exits: dict | None = None,
                     candidates: pd.DataFrame | None = None, bench: tuple[float, float] | None = None
@@ -265,7 +275,7 @@ def portfolio_lines(day: dt.date, journal: pd.DataFrame, orders: pd.DataFrame, l
     if sold:
         title += f"・本日{len(sold)}銘柄売り"
     lines = [f"Claude（AI）が、300万円の紙上運用（実際のお金は使っていません）を決まったルールで続けている記録です。{day}の終値時点。",
-             "**売買をすすめるものではありません。**", "", "## 運用の状況", ""]
+             "**売買をすすめるものではありません。**", "", X_CTA, "", "## 運用の状況", ""]
     if equity is not None:
         lines.append(f"- 評価額 {equity:,.0f}円（初めの3,000,000円から {equity - 3_000_000:+,.0f}円、"
                      f"{(equity / 3_000_000 - 1) * 100:+.1f}%）")
@@ -343,6 +353,7 @@ def portfolio_lines(day: dt.date, journal: pd.DataFrame, orders: pd.DataFrame, l
         rule = (f"1銘柄あたり最大{CONFIG.slot_yen // 10_000}万円。終値で判定し、翌営業日の寄付で売買します。"
                 f"損切りは{CONFIG.stop_loss_pct:.0f}%、利確は+{CONFIG.take_profit_pct:.0f}%、最長{CONFIG.timeout_days}営業日。")
     lines += ["", "## ルール", "", rule + "売買コストと税金は入れていません（紙上運用のため）。値段は Yahoo Finance の日足です。",
+              "", "## Xでリアルタイムに流しています", "", X_CTA_END,
               "", "---", "", "紙上運用の記録です。実際のお金での売買ではありません。", ""] + COMPLIANCE_LINES
     return title, lines
 

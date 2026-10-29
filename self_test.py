@@ -159,6 +159,7 @@ def main() -> None:
     _test_volume_screener_on_actions()
     _test_volume_rank()
     _test_volume_share()
+    _test_claude_x_posts()
     _test_note_two()
     _test_liquidity_track()
     _test_note_two_us()
@@ -3800,6 +3801,101 @@ def _test_volume_rank() -> None:
     print("self-test: 出来高急増のランク（◎）OK")
 
 
+def _test_claude_x_posts() -> None:
+    """Claude 300万円の X 投稿用の文（claude_300man_x_posts.py、2026-10-30 持ち主「300万運用でXでリアルタイム情報流します」）。
+    X には何も送らない。持ち主（MAIL_TO の1つ目）だけにメールで届け、同じ投稿は二度送らない。"""
+    import base64 as _b64
+    import datetime as dt
+    import tempfile
+
+    import claude_300man_x_posts as XP
+    import dual_300man_fill as F
+    from dual_300man_config import CONFIG, JOURNAL_COLUMNS, ORDER_COLUMNS
+    from intraday_high_alert import x_length
+
+    def frame(rows, cols):
+        return pd.DataFrame([{**{c: "" for c in cols}, **r} for r in rows], columns=cols)
+
+    day = dt.date(2026, 11, 4)                                  # 水曜。前の営業日は 11/2（11/3 は祝日）
+    assert XP.previous_business_day(day) == dt.date(2026, 11, 2)
+    journal = frame([
+        {"status": "OPEN", "code": "1111", "ticker": "1111.T", "name": "テスト甲", "entry_date": "2026-11-04",
+         "entry_price": "1000", "shares": "500", "mark_price": "1000"},
+        {"status": "OPEN", "code": "2222", "ticker": "2222.T", "name": "テスト乙", "entry_date": "2026-10-20",
+         "entry_price": "2000", "shares": "200", "mark_price": "2100"},
+        {"status": "CLOSED", "code": "3333", "ticker": "3333.T", "name": "テスト丙", "entry_date": "2026-10-15",
+         "entry_price": "3000", "shares": "100", "exit_date": "2026-11-04", "exit_price": "2790", "realized_pnl": "-21000",
+         "exit_return_pct": "-7.00", "exit_type": "STOP_LOSS", "holding_business_days": "13"},
+        {"status": "CLOSED", "code": "4444", "ticker": "4444.T", "name": "テスト丁", "entry_date": "2026-10-01",
+         "entry_price": "500", "shares": "1000", "exit_date": "2026-10-20", "exit_price": "575", "realized_pnl": "75000",
+         "exit_return_pct": "15.00", "exit_type": "TAKE_PROFIT", "holding_business_days": "13"},
+    ], JOURNAL_COLUMNS)
+    orders = frame([
+        {"decision_date": "2026-11-04", "execution_date": "2026-11-05", "side": "BUY", "code": "5555", "ticker": "5555.T",
+         "name": "テスト戊", "shares": "300", "decision_price": "1800", "status": "DECLARED"},
+        {"decision_date": "2026-11-02", "execution_date": "2026-11-04", "side": "BUY", "code": "1111", "ticker": "1111.T",
+         "name": "テスト甲", "shares": "500", "decision_price": "990", "status": "FILLED"},
+    ], ORDER_COLUMNS)
+    ev = XP.build_posts("evening", day, orders, journal, None)
+    assert [p["kind"] for p in ev] == ["sell", "order", "summary"], [p["kind"] for p in ev]   # 古い売り（10/20）は出さない
+    mo = XP.build_posts("morning", day, orders, journal, None)
+    assert [p["kind"] for p in mo] == ["sell", "fill"], [p["kind"] for p in mo]
+    for p in ev + mo:
+        assert x_length(p["text"]) <= 280, p["text"]
+        assert p["text"].endswith("※架空の300万円の記録です。売買をすすめるものではありません"), p["text"]
+        for bad in ("おすすめ", "買い時", "必ず上がる", "儲かる", "推奨"):
+            assert bad not in p["text"], bad
+    sell, order, summary = (p["text"] for p in ev)
+    fill = mo[1]["text"]
+    assert "🔴" in sell and "損切りで売り" in sell and "-7.0%・-21,000円" in sell and "保有13営業日" in sell, sell
+    assert order.startswith("【Claude×300万円 注文】11/5の寄付で買います") and "11/4の終値 1,800.0円で約54万円" in order, order
+    stop, take = (1000 * (1 + CONFIG.stop_loss_pct / 100), 1000 * (1 + CONFIG.take_profit_pct / 100))
+    assert f"逆指値ライン {stop:,.1f}円" in fill and f"指値 {take:,.1f}円" in fill and "11/4の寄付で 1,000.0円×500株" in fill, fill
+    assert mo[1]["line"] == stop and ev[0]["line"] == 3000.0                  # 画像の点線: 約定は逆指値、売りは買値
+    assert "|買値 [\\d,.]+円)/)" in Path("docs/clip.html").read_text(encoding="utf-8") and "買値 3,000.0円" in sell
+    cash = F.cash_balance(journal)
+    assert f"評価額 {cash + 500 * 1000 + 200 * 2100:,.0f}円" in summary and "保有2銘柄" in summary and "売り1件" in summary, summary
+    # 名前がとても長くても280字に収める（任意の行から外す）
+    long = frame([{**journal.iloc[2].to_dict(), "name": "長" * 60}], JOURNAL_COLUMNS)
+    lp = XP.build_posts("evening", day, orders.iloc[1:], long, None)[0]["text"]
+    assert x_length(lp) <= 280 and lp.endswith("売買をすすめるものではありません") and "-7.0%" in lp, lp
+    # メール: 投稿ごとに 📋 と 𝕏 のボタン。📋 のリンクの # の後ろは投稿の文そのもの
+    subject, text, html_doc = XP.build_mail("evening", day, ev, None)
+    assert subject.startswith("【X投稿用】Claude 300万円 11/4 夜") and "売り1件" in subject and "注文1件" in subject, subject
+    assert html_doc.count("clip.html#b=") == 3 and html_doc.count("x.com/intent/post?text=") == 3 and "どこにも残りません" in html_doc
+    b = html_doc.split("clip.html#b=")[1].split('"')[0].split("&amp;")[0]
+    assert _b64.urlsafe_b64decode(b + "=" * (-len(b) % 4)).decode("utf-8") == sell and sell in text
+    # 二度送らない。送らない（dry-run）ときは印を残さない
+    tmp = Path(tempfile.mkdtemp())
+    (tmp / "o.csv").write_text(orders.to_csv(index=False), encoding="utf-8")
+    (tmp / "j.csv").write_text(journal.to_csv(index=False), encoding="utf-8")
+    saved_paths = F.account_paths
+    try:
+        F.account_paths = lambda account: (tmp / "o.csv", tmp / "j.csv", tmp / "l.md")
+        st = tmp / "state" / "sent.json"
+        assert XP.run("evening", day, send=False, state_path=st) == 3 and not st.exists()
+        XP.save_state({XP._hash(p["key"]) for p in ev[:2]}, st)
+        assert XP.run("evening", day, send=False, state_path=st) == 1          # まとめだけが残る
+        assert "1111" not in st.read_text(encoding="utf-8") and "テスト" not in st.read_text(encoding="utf-8")
+        XP.save_state({XP._hash(p["key"]) for p in ev + mo}, st)
+        assert XP.run("morning", day, send=False, state_path=st) == 0
+    finally:
+        F.account_paths = saved_paths
+    src = Path("claude_300man_x_posts.py").read_text(encoding="utf-8")
+    assert 'mail_to=config.mail_to.split(",")[0].strip()' in src and "X_POST_SEND" in src
+    assert "api.twitter.com" not in src and "api.x.com" not in src                  # X には何も送らない
+    for wf, kind in (("claude_300man_fill.yml", "morning"), ("claude_300man_declare.yml", "evening")):
+        y = Path(".github/workflows/" + wf).read_text(encoding="utf-8")
+        assert f"claude_300man_x_posts.py --kind {kind}" in y and "restore-keys: claude-x-posts-" in y, wf
+        assert y.index("claude_300man_x_posts.py") > y.index("git push origin"), "台帳を残してから送る"
+        assert "continue-on-error: true" in y.split("Mail X posts to the owner")[1].split("run:")[0]
+    assert "x_posts_state/" in Path(".gitignore").read_text(encoding="utf-8")
+    # note の記事にも X への案内（前の晩・朝・その日の夜に流している）
+    import note_two as N2
+    assert "@Breakout_Scan" in N2.X_CTA and N2.X_PROFILE_URL == XP.X_URL and "前の晩" in N2.X_CTA
+    print("self-test: Claude 300万円の X 投稿用の文 OK")
+
+
 def _test_volume_share() -> None:
     """出来高急増×下降のメールにも1銘柄ずつの投稿用のボタン（2026-10-30 持ち主「出来高急増急落銘柄もコピペできるようにして」）。
     文とチャートは docs/clip.html を開くリンクの # の後ろで運ぶ。リアルタイムの高値メールと同じ読み方。"""
@@ -3837,7 +3933,7 @@ def _test_volume_share() -> None:
         assert bad not in pt, bad
     # 画像の黄色い点線の見出し（clip.html の正規表現と同じ形）
     clip_page = Path("docs/clip.html").read_text(encoding="utf-8")
-    assert "|\\d+日線 [\\d,.]+円)/)" in clip_page
+    assert "|\\d+日線 [\\d,.]+円|" in clip_page
     assert _re.search(r"\d+日線 [\d,.]+円", pt).group(0) == f"25日線 {r['ma25']:,.1f}円"
     # ランク（◎）は長いときに最初に外す。前回の足が前営業日でなければ「前日比」と言わない
     assert SH.x_length(SH.post_text({**r, "name": "長" * 80, "mark": "◎"})) <= 280

@@ -231,6 +231,32 @@ jobs:
           git pull --rebase origin "${GITHUB_REF_NAME}"
           git push origin HEAD:"${GITHUB_REF_NAME}"
 
+      # 2026-10-30 持ち主「300万運用でXでリアルタイム情報流しますと言ってXのフォローを増やすよう」:
+      # X に貼る文（📋 文とチャート画像・𝕏 のボタンつき）を持ち主（MAIL_TO の1つ目）だけに届ける。X には何も送らない。
+      # 送った投稿の印（銘柄名を含まないハッシュ）はキャッシュに残し、予備の cron で動いても二度送らない。
+      - name: Restore X post state
+        if: steps.guard.outputs.run == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: x_posts_state
+          key: claude-x-posts-${{ github.run_id }}
+          restore-keys: claude-x-posts-
+      - name: Mail X posts to the owner
+        if: steps.guard.outputs.run == 'true'
+        continue-on-error: true
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+          X_POST_SEND: "1"
+        run: python3 claude_300man_x_posts.py --kind evening --date "${{ steps.guard.outputs.date }}"
+      - name: Save X post state
+        if: always() && steps.guard.outputs.run == 'true' && hashFiles('x_posts_state/sent.json') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: x_posts_state
+          key: claude-x-posts-${{ github.run_id }}
+
       - name: Upload declaration evidence
         if: always()
         uses: actions/upload-artifact@v7

@@ -150,7 +150,7 @@ a.th{background:#333333;color:#fff}
       var ly = Math.round(y(ch.line)) + 0.5;
       g.strokeStyle = "#ffd43b"; g.lineWidth = 2; g.setLineDash([10, 8]);
       g.beginPath(); g.moveTo(L, ly); g.lineTo(R, ly); g.stroke(); g.setLineDash([]);
-      var m = text.match(/(\S+ライン [\d,.]+円|\d+日線 [\d,.]+円)/), label = m ? m[1] : "ライン " + yen(ch.line) + "円";
+      var m = text.match(/(\S+ライン [\d,.]+円|\d+日線 [\d,.]+円|買値 [\d,.]+円)/), label = m ? m[1] : "ライン " + yen(ch.line) + "円";
       g.font = "700 22px " + FONT;
       var tw = g.measureText(label).width, lx = L + 8, ty = ly < T + 40 ? ly + 30 : ly - 10;
       g.fillStyle = "rgba(15,27,45,0.85)"; g.fillRect(lx - 6, ty - 22, tw + 12, 30);
