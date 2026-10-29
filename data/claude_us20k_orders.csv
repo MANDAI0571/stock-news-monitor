@@ -19,4 +19,5 @@
 2026-10-16,2026-10-19,SELL,NVDA,Nvidia,28,損切 -7%（-8.0%）,FILLED
 2026-10-19,2026-10-20,BUY,LLY,Lilly (Eli),5,52週新高値まで2.76% ／ 売買代金 $2.7B ／ 出来高比 1.08倍 ／ Health Care（売買代金の大きい順に採用）,FILLED
 2026-10-26,2026-10-27,SELL,AAPL,Apple Inc.,19,タイムアウト 10営業日（10営業日）,FILLED
-2026-10-27,2026-10-28,BUY,AAPL,Apple Inc.,19,52週新高値まで1.32% ／ 売買代金 $13.3B ／ 出来高比 1.05倍 ／ Information Technology（売買代金の大きい順に採用）,PENDING
+2026-10-27,2026-10-28,BUY,AAPL,Apple Inc.,19,52週新高値まで1.32% ／ 売買代金 $13.3B ／ 出来高比 1.05倍 ／ Information Technology（売買代金の大きい順に採用）,FILLED
+2026-10-28,2026-10-29,SELL,MSFT,Microsoft,12,タイムアウト 10営業日（10営業日）,PENDING
