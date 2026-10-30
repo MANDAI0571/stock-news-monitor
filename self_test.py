@@ -5328,6 +5328,73 @@ def _test_claude_300man_standing_exits() -> None:
     print("self-test: 300万円運用 3.0.0 の逆指値・指値・期限 OK")
 
 
+def _test_claude_300man_declare_once_per_day(declare_workflow: str) -> None:
+    """判定が済んだ日を、遅れて届いた予備の cron がやり直さない（2026-10-30 に 01:13 の予備が注文を足した）。"""
+    import os
+    import tempfile
+    import textwrap
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    import claude_300man_declared_dates as DD
+
+    head = declare_workflow.index("id: guard")
+    start = declare_workflow.index("python3 - <<'PY'\n", head) + len("python3 - <<'PY'\n")
+    end = declare_workflow.index("\n          PY\n", start)
+    guard = textwrap.dedent(declare_workflow[start:end])
+    assert guard.count('datetime.now(ZoneInfo("Asia/Tokyo"))') == 1
+    guard = guard.replace('datetime.now(ZoneInfo("Asia/Tokyo"))', "__fixed_now__")
+    assert "steps.guard.outputs.reason != 'already_declared'" in declare_workflow
+    assert "claude_300man_declared_dates.py --mark" in declare_workflow
+    commit = declare_workflow[declare_workflow.index("- name: Commit declaration ledger"):]
+    assert commit.index("claude_300man_declared_dates.py --mark") < commit.index("git add ")
+    assert "data/claude_300man_declared_dates.csv" in commit[:commit.index("git commit")]
+
+    original = DD.already_declared
+    saved_env = {key: os.environ.get(key) for key in ("GITHUB_EVENT_NAME", "INPUT_TARGET_DATE", "GITHUB_OUTPUT")}
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            marks = Path(tmp) / "declared.csv"
+            assert not original("2026-10-30", marks)
+            DD.mark("2026-10-29", "1", "repository_dispatch", marks)
+            DD.mark("2026-10-30", "2", "repository_dispatch", marks)
+            assert original("2026-10-30", marks) and not original("2026-10-28", marks)
+            DD.already_declared = lambda day, path=marks: original(day, path)
+
+            def run_guard(event: str, when: str, requested: str = "") -> dict:
+                out = Path(tmp) / "out.txt"
+                out.write_text("", encoding="utf-8")
+                os.environ.update(GITHUB_EVENT_NAME=event, INPUT_TARGET_DATE=requested, GITHUB_OUTPUT=str(out))
+                now = datetime.fromisoformat(when).replace(tzinfo=ZoneInfo("Asia/Tokyo"))
+                exec(compile(guard, "claude_300man_declare_guard", "exec"), {"__fixed_now__": now, "__name__": "guard"})
+                return dict(line.split("=", 1) for line in out.read_text(encoding="utf-8").splitlines())
+
+            # 10/30 18:45 の中継で済ませたあと、10/31 01:13 に届いた予備の cron はやり直さない（失敗にもしない）
+            assert run_guard("schedule", "2026-10-31T01:13") == {"run": "false", "reason": "already_declared",
+                                                                  "date": "2026-10-30"}
+            # 中継が同じ日に2回起こしても2回目はやらない
+            assert run_guard("repository_dispatch", "2026-10-30T18:50")["reason"] == "already_declared"
+            # 判定が抜けた日は、これまでどおり予備が補う
+            assert run_guard("schedule", "2026-10-28T01:13") == {"run": "true", "reason": "scheduled_delayed_recovery",
+                                                                  "date": "2026-10-27"}
+            assert run_guard("repository_dispatch", "2026-11-02T18:45") == {"run": "true", "reason": "jpx_business_day",
+                                                                             "date": "2026-11-02"}
+            # 朝の窓の外に届いた予備: 済んだ日なら知らせない。抜けた日なら失敗として知らせる（これまでどおり）
+            assert run_guard("schedule", "2026-10-30T09:30")["reason"] == "already_declared"
+            assert run_guard("schedule", "2026-10-29T09:30")["reason"] == "declaration_lost_20261028_ran_0930_JST"
+            # 手動の補完は持ち主が決めてするので止めない
+            assert run_guard("workflow_dispatch", "2026-10-31T01:00", "2026-10-30") == {
+                "run": "true", "reason": "manual_recovery", "date": "2026-10-30"}
+    finally:
+        DD.already_declared = original
+        for key, value in saved_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+    print("self-test: 300万円運用の判定は1日1回（予備の cron がやり直さない） OK")
+
+
 def _test_dual_300man_phase2_controls() -> None:
     """第2期の期ガード・遅延約定・計測列をオフラインで確認する。"""
     import tempfile
@@ -5648,6 +5715,7 @@ def _test_dual_300man_phase2_controls() -> None:
     assert "declaration_lost_" in declare_workflow
     assert "target_date:" in declare_workflow
     assert "scheduled_delayed_recovery" in declare_workflow
+    _test_claude_300man_declare_once_per_day(declare_workflow)
     assert "Verify fresh screening target date" in declare_workflow
     assert "screening date mismatch" in declare_workflow
     assert "Verify execution window is still open" in declare_workflow

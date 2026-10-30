@@ -13,7 +13,7 @@ on:
   schedule:
     # 毎平日18:45 JST（09:45 UTC）。当日終値の確定後に翌営業日の注文を宣告する。
     - cron: "45 9 * * 1-5"
-    # GitHub cronの取りこぼし対策（20:05 JST）。宣告は同一日・同一銘柄で冪等。
+    # GitHub cronの取りこぼし対策（20:05 JST）。判定が済んだ日はやり直さない（data/claude_300man_declared_dates.csv）。
     - cron: "5 11 * * 1-5"
 
 permissions:
@@ -108,6 +108,17 @@ jobs:
                   reason = "jpx_closed"
               else:
                   reason = f"outside_close_window_{now:%H%M}_JST"
+          # 2026-10-30: 中継が 18:45 に済ませた日の判定を、遅れて届いた予備の cron（01:13）がやり直して
+          # 注文を足した。判定が最後まで済んだ日（claude_300man_declared_dates.py の控え）は、手動の補完のほかはやらない。
+          from claude_300man_declared_dates import already_declared
+
+          lost_day = intended if reason.startswith("declaration_lost_") else None
+          check_day = target if run else lost_day
+          if (check_day and os.environ.get("GITHUB_EVENT_NAME") != "workflow_dispatch"
+                  and already_declared(check_day.isoformat())):
+              run = False
+              reason = "already_declared"
+              target = check_day
           print(
               f"claude_300man_declare_guard run={run} reason={reason} "
               f"target={target} now={now:%F_%H%M}"
@@ -119,7 +130,7 @@ jobs:
           PY
 
       - name: Fail when a declaration window was missed
-        if: steps.guard.outputs.run != 'true' && steps.guard.outputs.reason != 'jpx_closed'
+        if: steps.guard.outputs.run != 'true' && steps.guard.outputs.reason != 'jpx_closed' && steps.guard.outputs.reason != 'already_declared'
         run: |
           echo "::error::Claude 300man declaration skipped: ${{ steps.guard.outputs.reason }}"
           exit 1
@@ -222,7 +233,10 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data/claude_300man_orders.csv data/claude_300man_journal.csv docs/claude_300man_ledger.md data/claude_300man_shadow.csv docs/claude_300man_shadow.md data/claude_300man_entry_shadow.csv docs/claude_300man_entry_shadow.md data/claude_300man_reconciliation.csv docs/claude_300man_reconciliation.md data/claude_300man_daily_monitor.csv data/claude_300man_improvement_candidates.csv docs/claude_300man_daily_monitor.md
+          # 判定が最後まで済んだ日の控え（予備の cron が同じ日をやり直さないため。ガードの already_declared）
+          python3 claude_300man_declared_dates.py --mark "${{ steps.guard.outputs.date }}" \
+            --run-id "${{ github.run_id }}" --event "${{ github.event_name }}"
+          git add data/claude_300man_orders.csv data/claude_300man_journal.csv docs/claude_300man_ledger.md data/claude_300man_shadow.csv docs/claude_300man_shadow.md data/claude_300man_entry_shadow.csv docs/claude_300man_entry_shadow.md data/claude_300man_reconciliation.csv docs/claude_300man_reconciliation.md data/claude_300man_daily_monitor.csv data/claude_300man_improvement_candidates.csv docs/claude_300man_daily_monitor.md data/claude_300man_declared_dates.csv
           if git diff --cached --quiet; then
             echo "claude_300man_declare=no_order_change"
             exit 0
