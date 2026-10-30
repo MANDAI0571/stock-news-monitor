@@ -2,7 +2,7 @@
 
 注文台帳・約定・保有台帳・現金を突合する安全ゲートです。記録は自動修正しません。
 
-- 基準日: 2026-10-29
+- 基準日: 2026-10-30
 - 判定: **HEALTHY**
 - CRITICAL: 0
 - 新規買い: 許可
@@ -11,13 +11,13 @@
 | 重要度 | 検査 | 判定 | 対象 | 詳細 |
 |---|---|---|---|---|
 | INFO | schema_orders | PASS | orders | 13 rows |
-| INFO | schema_journal | PASS | journal | 5 rows |
+| INFO | schema_journal | PASS | journal | 7 rows |
 | INFO | duplicate_orders | PASS | orders | none |
 | INFO | duplicate_journal_entries | PASS | journal | none |
-| INFO | filled_buys_to_journal | PASS | all | 5 keys matched |
+| INFO | filled_buys_to_journal | PASS | all | 7 keys matched |
 | INFO | filled_sells_to_journal | PASS | all | 5 keys matched |
-| INFO | open_share_balance | PASS | all | 0 keys matched |
-| INFO | journal_arithmetic | PASS | journal | 5 rows matched |
-| INFO | cash_balance | PASS | paper_cash | cash_jpy=2876500 |
-| INFO | open_position_limits | PASS | portfolio | open=0 max=5 |
-| INFO | pending_rule_compatibility | PASS | pending_orders | count=2 |
+| INFO | open_share_balance | PASS | all | 2 keys matched |
+| INFO | journal_arithmetic | PASS | journal | 7 rows matched |
+| INFO | cash_balance | PASS | paper_cash | cash_jpy=2102400 |
+| INFO | open_position_limits | PASS | portfolio | open=2 max=5 |
+| INFO | pending_rule_compatibility | PASS | pending_orders | count=0 |
