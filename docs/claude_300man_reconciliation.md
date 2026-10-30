@@ -10,7 +10,7 @@
 
 | 重要度 | 検査 | 判定 | 対象 | 詳細 |
 |---|---|---|---|---|
-| INFO | schema_orders | PASS | orders | 13 rows |
+| INFO | schema_orders | PASS | orders | 14 rows |
 | INFO | schema_journal | PASS | journal | 7 rows |
 | INFO | duplicate_orders | PASS | orders | none |
 | INFO | duplicate_journal_entries | PASS | journal | none |
@@ -20,4 +20,4 @@
 | INFO | journal_arithmetic | PASS | journal | 7 rows matched |
 | INFO | cash_balance | PASS | paper_cash | cash_jpy=2102400 |
 | INFO | open_position_limits | PASS | portfolio | open=2 max=5 |
-| INFO | pending_rule_compatibility | PASS | pending_orders | count=0 |
+| INFO | pending_rule_compatibility | PASS | pending_orders | count=1 |
