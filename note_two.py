@@ -334,8 +334,15 @@ def portfolio_lines(day: dt.date, journal: pd.DataFrame, orders: pd.DataFrame, l
                 facts.append(f"終値 {px:,.0f}円")
             lines.append(f"{i}. {r.get('code', '')} {r.get('name', '')}（{'・'.join(facts)}）")
         if not len(shown):
-            lines.append("条件に当てはまる銘柄はありませんでした（今夜は買いをお休みする見込み）。")
+            # 2026-10-30: 「今夜は買いをお休みする見込み」と書いた夜に買いが出たので、言い切らない（夜にスクリーニングし直すため）
+            if getattr(candidates, "attrs", {}).get("earnings_hidden", 0):
+                lines.append("この記事を作った時点では、決算日を確かめられなかった銘柄を候補に入れられず、"
+                             "条件に当てはまる銘柄はありませんでした。今夜の判定では決算日を取り直すので、買いが出ることがあります。")
+            else:
+                lines.append("この記事を作った時点のスクリーニングでは、条件に当てはまる銘柄はありませんでした。"
+                             "今夜の判定ではスクリーニングをし直すので、買いが出ることもあります。")
         lines += ["", f"空いている枠は{free}つです。今夜（18:45ごろ）の判定で、この順に空き枠の数まで買いを決めます。"
+                  "判定のときにスクリーニングをし直すので、顔ぶれが変わることがあります。"
                   "悪材料のニュース・現金・同じ業種の重なりで飛ばすことがあり、翌朝の寄付が判定の値段から±3%を超えたら見送ります。"
                   "買えた銘柄には、その日から逆指値と指値を出しておきます。"]
     if ict is not None:
@@ -382,7 +389,20 @@ def portfolio_extras(day: dt.date, journal: pd.DataFrame, out: Path, fetch):
             ranked = D._claude_candidates(screening)
             held = set(journal.loc[journal["status"] == "OPEN", "code"].astype(str))
             recent = D._recent_entry_codes(journal, day, D.REENTRY_COOLDOWN_DAYS)
-            candidates = ranked[~ranked["code"].astype(str).isin(held | recent)]
+            candidates = ranked[~ranked["code"].astype(str).isin(held | recent)].copy()
+            # 2026-10-30: 16時台の記事で候補0件（「お休みする見込み」）と書いた夜に、18:45 の判定で買いが1件出た。
+            # 候補は決算日が「確認済」の銘柄だけで、決算日は Yahoo から1銘柄ずつ取るので、取れなかった銘柄は外れる（推定の原因）。
+            # 決算日が取れていれば候補に入った数を数えて、記事の言い方を変え、ログで原因を確かめられるようにする。
+            status = screening.get("earnings_status", pd.Series("", index=screening.index)).astype(str)
+            unknown = status.eq("未確認")
+            if unknown.any():
+                known_all = screening.assign(earnings_status=status.where(~unknown, "確認済"))
+                alt = D._claude_candidates(known_all)
+                alt = alt[~alt["code"].astype(str).isin(held | recent)]
+                candidates.attrs["earnings_hidden"] = max(0, len(alt) - len(candidates))
+            print(f"note_two_candidates_check earnings_known={int(status.eq('確認済').sum())} "
+                  f"earnings_unknown={int(unknown.sum())} "
+                  f"hidden_by_earnings={candidates.attrs.get('earnings_hidden', 0)}", flush=True)
     except Exception as error:                                     # noqa: BLE001
         print(f"note_two_candidates=failed reason={type(error).__name__}", flush=True)
     try:

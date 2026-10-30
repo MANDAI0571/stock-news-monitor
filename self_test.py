@@ -3342,6 +3342,25 @@ def _test_note_two() -> None:
     assert "1. 3333 候補（押し目・売買代金 20日平均25.0億円・52週高値から-5.2%・終値 2,850円）" in ctext
     assert "空いている枠は5つです" in ctext and "TOPIX連動ETF（1306）は同じ期間（9/28の始値から） +3.0%" in ctext
     assert ctext.index("## 今夜の判定の買い候補") < ctext.index("## ルール\n")
+    assert "判定のときにスクリーニングをし直すので、顔ぶれが変わることがあります。" in ctext
+    # 2026-10-30: 記事で候補0件（「お休みする見込み」）の夜に買いが出た。決算日が取れずに外れた分を数えて、言い切らない
+    scr = {"code": "3333", "name": "候補", "data_date": "2026-10-30", "rank": "A", "score": "99", "turnover_20d": "2500000000",
+           "volume_ratio_5d_20d": "1.33", "dist_52w_high_pct": "5.8", "ma25_gap_pct": "1.0", "ma75_gap_pct": "2.0",
+           "lot_value_100": "400200", "exclude_for_earnings": "False", "screen_tags": "52W_PULLBACK,25MA_PULLBACK",
+           "sector": "卸売業", "current_price": "4002"}
+    no_net = lambda ticker: (_ for _ in ()).throw(RuntimeError("no net"))  # noqa: E731
+    found = {}
+    for status in ("未確認", "確認済"):
+        with tempfile.TemporaryDirectory() as tmp:
+            pd.DataFrame([dict(scr, earnings_status=status)]).to_csv(Path(tmp) / "screening_result.csv", index=False)
+            _, found[status], _ = N.portfolio_extras(dt.date(2026, 10, 30), journal, Path(tmp), no_net)
+    assert len(found["未確認"]) == 0 and found["未確認"].attrs.get("earnings_hidden") == 1, found["未確認"].attrs
+    assert len(found["確認済"]) == 1 and not found["確認済"].attrs.get("earnings_hidden")
+    for cands, expect in ((found["未確認"], "決算日を確かめられなかった銘柄を候補に入れられず"),
+                          (found["確認済"].iloc[0:0], "この記事を作った時点のスクリーニングでは、条件に当てはまる銘柄はありませんでした。")):
+        _, e = N.portfolio_lines(dt.date(2026, 10, 30), journal, orders, "- 現金残: 2,033,400円\n", {}, None, candidates=cands)
+        etext = "\n".join(e)
+        assert expect in etext and "お休みする見込み" not in etext, etext
     # 2026-10-26 持ち主「300万運用にICT手法の記事織り込んで」: 運用の決まりは変えず、参考として上位5件
     ict6 = [{"kind": "②", "close": 1000.0 + k, "box_lo": 950.0, "box_hi": 990.0, "stop": 948.0, "target": 1200.0,
              "rr": 3.0, "ticker": str(1000 + k), "name": f"会社{k}", "turnover": 1e9 - k} for k in range(6)]
