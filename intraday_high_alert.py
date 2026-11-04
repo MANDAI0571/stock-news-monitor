@@ -882,13 +882,18 @@ NOTE_URL = "https://note.com/breakout_scan"
 def post_text(alert: Alert, limit: int = 280) -> str:
     """1銘柄ぶんの投稿用の文（2026-10-26 持ち主「一つずつコピペしてXなどに貼れるよう」）。
     X の280字に収める。長いときは ランク → 当日高値 → チャートのURL → タグ → note のURL の順に外す。
+    ただし上抜け幅は当日高値で計算しているので、幅を載せるときは当日高値を外さない
+    （2026-11-04: 外すと「現在値はライン未満なのに上抜け」と読めて数字が矛盾した）。
     売買をすすめる言葉は入れない。"""
     head = f"【{alert.alert_type}】{alert.code} {alert.name}"
     price = f"現在値 {alert.current_price:,.1f}円"
     high = f"（当日高値 {alert.today_high:,.1f}円）" if alert.today_high > 0 else ""
     if alert.is_break:
         line = f"{alert.line_label}ライン {alert.line_price:,.1f}円" + (
-            f"を +{alert.break_excess_pct:.2f}% 上抜け" if alert.break_excess_pct > 0 else "を更新")
+            f"を{'当日高値で' if alert.today_high > 0 else ''}"
+            f"{'一時 ' if alert.current_price < alert.line_price else ''}{alert.break_excess_pct:.2f}%上抜け"
+            f"{'（現在値はライン未満）' if alert.current_price < alert.line_price else ''}"
+            if alert.break_excess_pct > 0 else "を更新")
     else:
         line = f"{alert.line_label}ライン {alert.line_price:,.1f}円まで あと{alert.dist_pct:.1f}%"
     vol = f"出来高比 {alert.volume_ratio:.2f}倍"
@@ -897,13 +902,14 @@ def post_text(alert: Alert, limit: int = 280) -> str:
     url = chart_url(alert.code)
     nt = f"📝 note {NOTE_URL}"
     note = "※売買をすすめるものではありません"
-    steps = ((high, rank, url, tags, nt), ("", rank, url, tags, nt), ("", "", url, tags, nt), ("", "", "", tags, nt),
-             ("", "", "", "", nt), ("", "", "", "", ""))
+    keep = high if alert.is_break and alert.break_excess_pct > 0 else ""
+    steps = ((high, rank, url, tags, nt), (keep, rank, url, tags, nt), (keep, "", url, tags, nt), (keep, "", "", tags, nt),
+             (keep, "", "", "", nt), (keep, "", "", "", ""))
     for h, rk, u, tg, n in steps:
         text = "\n".join([head, price + h, line, vol + rk] + [x for x in (u, tg, n) if x] + [note])
         if x_length(text) <= limit:
             return text
-    return "\n".join([head, line, note])
+    return "\n".join([head, price + keep, line, note])
 
 
 # 1銘柄ずつコピーするページ（docs/clip.html。GitHub Pages）。文はリンクの「#」より後ろで運ぶので、サーバーにも

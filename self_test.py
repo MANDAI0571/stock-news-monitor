@@ -4099,6 +4099,15 @@ def _test_intraday_alert_grade() -> None:
     import re as _re
     assert not _re.search(r"\d{4} [^\s<]+(株式会社|ホールディングス)", clip)                  # 銘柄は入れない
     assert IHA.x_length("あいう abc https://example.com/x") == 2 * 3 + 5 + 23
+    # 2026-11-04: 上抜け幅は当日高値の計算なので、長い銘柄名でも当日高値を外さない。現在値がライン未満なら「一時」と書く
+    back = Alert(**{**a.__dict__, "name": "すかいらーくホールディングス", "current_price": 3649.0, "line_price": 3663.0,
+                    "today_high": 3681.0, "break_excess_pct": 0.49, "grade": "B"})
+    bt = IHA.post_text(back)
+    assert IHA.x_length(bt) <= 280 and "当日高値 3,681.0円" in bt and "一時 0.49%上抜け（現在値はライン未満）" in bt, bt
+    assert "直近高値ライン 3,663.0円" in bt, bt                                    # clip.html の画像の見出しが読む形
+    above = Alert(**{**back.__dict__, "current_price": 3700.0})
+    assert "当日高値で0.49%上抜け" in IHA.post_text(above) and "一時" not in IHA.post_text(above)
+    assert IHA.x_length(IHA.post_text(Alert(**{**back.__dict__, "name": "長" * 40}))) <= 280
     long_name = Alert(**{**a.__dict__, "name": "長" * 120})                       # 長すぎる銘柄名でも280字に収める
     assert IHA.x_length(IHA.post_text(long_name)) <= 280 or "長" * 100 in IHA.post_text(long_name)
     big = [Alert(**{**a.__dict__, "code": str(2000 + k), "reason": "理由" * 300}) for k in range(25)]
