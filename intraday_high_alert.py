@@ -881,7 +881,8 @@ NOTE_URL = "https://note.com/breakout_scan"
 
 def post_text(alert: Alert, limit: int = 280) -> str:
     """1銘柄ぶんの投稿用の文（2026-10-26 持ち主「一つずつコピペしてXなどに貼れるよう」）。
-    X の280字に収める。長いときは ランク → 当日高値 → チャートのURL → タグ → note のURL の順に外す。
+    X の280字に収める。長いときは 当日高値 → チャートのURL → タグ → note のURL の順に外す。
+    過去の成績ランクは載せない（2026-11-04 持ち主の指示。実際のアラートでの裏付けがまだないため。メール本文には残す）。
     ただし上抜け幅は当日高値で計算しているので、幅を載せるときは当日高値を外さない
     （2026-11-04: 外すと「現在値はライン未満なのに上抜け」と読めて数字が矛盾した）。
     売買をすすめる言葉は入れない。"""
@@ -897,16 +898,14 @@ def post_text(alert: Alert, limit: int = 280) -> str:
     else:
         line = f"{alert.line_label}ライン {alert.line_price:,.1f}円まで あと{alert.dist_pct:.1f}%"
     vol = f"出来高比 {alert.volume_ratio:.2f}倍"
-    rank = f"・過去の成績ランク {alert.grade}" if alert.grade else ""
     tags = "#日本株 #株式投資 " + ("#52週高値" if alert.alert_type.startswith("52週") else "#高値更新")
     url = chart_url(alert.code)
     nt = f"📝 note {NOTE_URL}"
     note = "※売買をすすめるものではありません"
     keep = high if alert.is_break and alert.break_excess_pct > 0 else ""
-    steps = ((high, rank, url, tags, nt), (keep, rank, url, tags, nt), (keep, "", url, tags, nt), (keep, "", "", tags, nt),
-             (keep, "", "", "", nt), (keep, "", "", "", ""))
-    for h, rk, u, tg, n in steps:
-        text = "\n".join([head, price + h, line, vol + rk] + [x for x in (u, tg, n) if x] + [note])
+    steps = ((high, url, tags, nt), (keep, url, tags, nt), (keep, "", tags, nt), (keep, "", "", nt), (keep, "", "", ""))
+    for h, u, tg, n in steps:
+        text = "\n".join([head, price + h, line, vol] + [x for x in (u, tg, n) if x] + [note])
         if x_length(text) <= limit:
             return text
     return "\n".join([head, price + keep, line, note])

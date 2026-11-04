@@ -4051,6 +4051,7 @@ def _test_intraday_alert_grade() -> None:
 
     pt = IHA.post_text(a)
     assert IHA.x_length(pt) <= 280 and pt.startswith("【直近高値ブレイク】1234 テスト") and "売買をすすめるものではありません" in pt, pt
+    assert "ランク" not in pt, pt                                                  # 2026-11-04: 投稿の文にランクは載せない（メールには残す）
     for bad in ("おすすめ", "買い時", "必ず上がる"):
         assert bad not in pt
     assert "x.com/intent/post?text=" in html and pt.split("\n")[0] in unquote(html.split("x.com/intent/post?text=")[1].split('"')[0])
