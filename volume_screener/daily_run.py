@@ -925,9 +925,11 @@ def _main(got):
         try:
             write("result.json", json.dumps(
                 {"date": date_label, "cutoff": cutoff_label, "volmode": a.volmode,
-                 "notes": notes, "errors": {k: v for k, v in errors.items() if k != "high52"},
+                 "notes": notes, "errors": {k: v for k, v in errors.items() if k not in ("high52", "cwh")},
                  # 52週新高値の一覧（note の記事に使う。2026-10-27）
                  "high52": errors.get("high52"),
+                 # カップ・ウィズ・ハンドルの一覧（note の有料記事に使う。2026-11-06）
+                 "cwh": errors.get("cwh"),
                  "rows": [{k: (str(v) if isinstance(v, dt.date) else v)
                            for k, v in h.items()
                            if k not in ("dates", "closes", "vols", "ohlc")}

@@ -163,6 +163,7 @@ def main() -> None:
     _test_volume_share()
     _test_claude_x_posts()
     _test_note_two()
+    _test_cwh_paid_article()
     _test_liquidity_track()
     _test_note_two_us()
     _test_us_ict()
@@ -3718,6 +3719,120 @@ def _test_volume_screener_on_actions() -> None:
     assert NAS.key_for_title(t52) == "volume" and "52週新高値" in NAS.tags_for("volume") and len(NAS.tags_for("volume")) <= 10
     print("self-test: 出来高急増スクリーナーの GitHub 版 OK")
 
+
+
+def _test_cwh_paid_article() -> None:
+    """カップ・ウィズ・ハンドルを有料記事に（2026-11-06 持ち主「カップウィズハンドルと出来高急増込みで有料か」）。
+    形は日足だけで機械的に見る。無料の部分は決まりと件数だけ、銘柄は有料の部分。"""
+    import datetime as _dt
+    import importlib.util
+
+    sys.path.insert(0, "volume_screener")
+    spec = importlib.util.spec_from_file_location("vs_screener_cwh", "volume_screener/screener.py")
+    vs = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(vs)
+    spec2 = importlib.util.spec_from_file_location("vs_note_article_cwh", "volume_screener/note_article.py")
+    na = importlib.util.module_from_spec(spec2)
+    spec2.loader.exec_module(na)
+
+    def path(points):
+        """(本, 値) の折れ線 → 毎日の値"""
+        out = []
+        for (k0, v0), (k1, v1) in zip(points, points[1:]):
+            out += [v0 + (v1 - v0) * (k - k0) / (k1 - k0) for k in range(k0, k1)]
+        return out + [points[-1][1]]
+
+    # 上げ（70→100）→ カップ（底 78、22%）→ 右の高値 99（170本目）→ 取っ手（93 まで 6%、15本）→ 本日
+    base = path([(0, 70.0), (100, 99.5), (130, 78.5), (170, 98.5), (185, 93.5)])
+    dd = [_dt.date(2026, 1, 1) + _dt.timedelta(days=k) for k in range(len(base) + 1)]
+
+    def facts(today_close, today_high, base=base, vol=3000.0):
+        cl = base + [today_close]
+        hi = [c + 0.5 for c in base] + [today_high]
+        lo = [c - 0.5 for c in base] + [today_close - 0.5]
+        return vs.cwh_facts(dd, cl, hi, lo, [1000.0] * len(base) + [vol], 1000.0)
+
+    b = facts(99.5, 100.0)
+    assert b and b["kind"] == "break" and b["pivot"] == 99.0 and b["handle_days"] == 15, b
+    assert b["pivot_date"] == dd[170].isoformat() and b["left_date"] == dd[100].isoformat(), b
+    assert b["bottom_date"] == dd[130].isoformat() and abs(b["cup_depth_pct"] - 22.0) < 1e-9, b
+    assert abs(b["handle_depth_pct"] - 6 / 99 * 100) < 1e-9 and b["vol_ratio"] == 3.0, b
+    nr = facts(96.0, 96.5)
+    assert nr and nr["kind"] == "near" and abs(nr["to_pivot_pct"] - (96 / 99 - 1) * 100) < 1e-9, nr
+    assert facts(90.0, 90.5) is None                                         # 取っ手の高値の95%より下
+    deep = path([(0, 70.0), (100, 99.5), (130, 50.5), (170, 98.5), (185, 93.5)])
+    assert facts(99.5, 100.0, base=deep) is None                             # カップが35%より深い
+    sag = path([(0, 70.0), (100, 99.5), (130, 78.5), (170, 98.5), (185, 86.5)])
+    assert facts(99.5, 100.0, base=sag) is None                              # 取っ手がカップの真ん中より下
+    flat = path([(0, 99.0), (100, 99.5), (130, 78.5), (170, 98.5), (185, 93.5)])
+    assert facts(99.5, 100.0, base=flat) is None                             # 前の上昇がない
+    vee = path([(0, 70.0), (100, 99.5), (105, 78.5), (170, 98.5), (185, 93.5)])
+    assert facts(99.5, 100.0, base=vee) is None                              # 底までが10営業日に満たない（V字）
+    # 下げの途中の点を左の高値と取り違えない（2026-11-06 実データで1件。前の山が高い）
+    slide = path([(0, 70.0), (10, 120.0), (40, 100.0), (100, 99.5), (130, 78.5), (170, 98.5), (185, 93.5)])
+    assert facts(99.5, 100.0, base=slide) is None
+    saved = vs.CWH_LEFT_LOOKBACK
+    vs.CWH_LEFT_LOOKBACK = 0
+    try:
+        assert facts(99.5, 100.0, base=slide), "左の山の確かめが無いと通ってしまう形のはず"
+    finally:
+        vs.CWH_LEFT_LOOKBACK = saved
+    lop = path([(0, 70.0), (100, 99.5), (112, 78.5), (170, 98.5), (185, 93.5)])
+    assert facts(99.5, 100.0, base=lop) is None                              # 底が左に片寄っている（2割より手前）
+    saved = vs.CWH_BOTTOM_POS
+    vs.CWH_BOTTOM_POS = (0.0, 1.0)
+    try:
+        assert facts(99.5, 100.0, base=lop), "底の位置の確かめが無いと通ってしまう形のはず"
+    finally:
+        vs.CWH_BOTTOM_POS = saved
+    short = path([(0, 70.0), (100, 99.5), (130, 78.5), (170, 98.5), (172, 96.5)])
+    dd_s = dd[:len(short) + 1]
+    assert vs.cwh_facts(dd_s, short + [99.5], [c + 0.5 for c in short] + [100.0], [c - 0.5 for c in short] + [99.0],
+                        [1000.0] * (len(short) + 1), 1000.0) is None          # 取っ手が5営業日に満たない
+    sm = vs.cwh_summary([dict(b, code="1", name="a", turnover20=1e9), dict(b, code="2", name="b", vol_ratio=1.2, turnover20=1e9),
+                         dict(nr, code="3", name="c", vol_ratio=1.0, turnover20=1e9)])
+    assert sm["n_break"] == 2 and [r["code"] for r in sm["break"]] == ["1", "2"] and sm["n_break_vol"] == 1, sm
+    assert sm["n_near"] == 1 and sm["near"][0]["code"] == "3", sm
+    src = Path("volume_screener/screener.py").read_text(encoding="utf-8")
+    assert src.index("cwh_facts(dates, closes") < src.index("if not (ma25 < ma25_prev):")           # 下降の足切りより前に見る
+    assert '"cwh": errors.get("cwh")' in Path("volume_screener/daily_run.py").read_text(encoding="utf-8")
+
+    res = {"date": "2026-11-06", "cutoff": "13:55", "rows": [
+        {"code": "1000", "name": "テスト急増", "price": 932.0, "chg_pct": -20.07, "dev25_pct": -21.0, "ratio": 9.32,
+         "base_label": "過去20日平均", "turnover20": 9.2e8, "prev_gap": 0, "suspect_split": None}],
+        "high52": {"n_new": 3, "new": [], "n_ma25": 0, "ma25": []}, "cwh": sm}
+    title, lines = na.article_lines(res, "その後の文")
+    text = "\n".join(lines)
+    assert title == "カップウィズハンドルと出来高急増・52週新高値｜2026-11-06 13:55時点 上抜け2件・新高値3件・急増1件", title
+    free, paid = text.split(na.PAID_LINE)
+    assert "## カップ・ウィズ・ハンドルの条件" in free and "上抜け2件（うち出来高急増1件）・形成中1件" in free
+    assert "まだ数えていません" in free and "投資助言" in free
+    assert "【CWH" not in free and "1000" not in free                                              # 銘柄は有料の部分だけ
+    assert "- 【CWH上抜け】【出来高急増】1 a" in paid and "- 【CWH上抜け】2 b" in paid and "- 【CWH形成中】3 c" in paid
+    assert "取っ手の高値 99.0円（" in paid and "当日高値で +1.01% 上抜け" in paid and "出来高 3.0倍" in paid
+    assert paid.index("カップ・ウィズ・ハンドルの銘柄") < paid.index("出来高急増×下降トレンドの銘柄の一覧")
+    assert "【セリングクライマックス】1000" in paid and "将来の結果を保証するものではありません" in paid
+    big = {"n_break": 40, "n_near": 40, "n_break_vol": 5,
+           "break": [dict(b, code=str(k), name="長い名前の銘柄" * 2) for k in range(15)],
+           "near": [dict(nr, code=str(k), name="長い名前の銘柄" * 2) for k in range(15)]}
+    _, lb = na.article_lines(dict(res, cwh=big), "その後の文")
+    assert sum(1 for x in lb if x.startswith("- 【CWH")) == 20                                       # 10件ずつまで
+    # cwh の無い前の形の記録は今までどおり
+    t0, _ = na.article_lines(dict(res, cwh=None))
+    assert t0.startswith("52週新高値と出来高急増×下降トレンド｜"), t0
+    import note_assets as NAS
+    assert NAS.key_for_title(title) == "volume" and "カップウィズハンドル" in NAS.tags_for("volume")
+    assert len(NAS.tags_for("volume")) <= 10
+
+    class _Font:                                                     # 全角1字66の幅とみなす
+        def getlength(self, x):
+            return 66 * len(x)
+
+    # 見出し画像: 「・」を行の頭に出さない（2026-11-06 「…急増」「・52週新高値」と折れていた）
+    assert NAS._wrap("カップウィズハンドルと出来高急増・52週新高値", _Font(), 1086, 3) == [
+        "カップウィズハンドルと出来高急増・", "52週新高値"]
+    assert NAS._wrap("52週新高値と出来高急増×下降トレンド", _Font(), 1086, 3) == ["52週新高値と出来高急増×", "下降トレンド"]
+    print("self-test: カップ・ウィズ・ハンドルの有料記事 OK", flush=True)
 
 
 def _test_liquidity_track() -> None:

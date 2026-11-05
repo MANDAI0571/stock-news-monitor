@@ -35,8 +35,9 @@ TAGS: dict[str, list[str]] = {
     "300man": ["日本株", "株式投資", "AI投資", "Claude", "紙上運用", "300万円運用", "ICT", "オーダーブロック",
                "資産運用", "投資記録"],
     # 2026-10-27 持ち主「出来高急増のところに52週新高値を織り込んで」: 52週新高値・押し目買いを足す
+    # 2026-11-06 持ち主「カップウィズハンドルと出来高急増込みで有料か」: 逆張り → カップウィズハンドル（10個のまま）
     "volume": ["日本株", "株式投資", "52週新高値", "押し目買い", "出来高急増", "下降トレンド", "セリングクライマックス",
-               "逆張り", "スクリーニング", "東証プライム"],
+               "カップウィズハンドル", "スクリーニング", "東証プライム"],
     "us_ranking": ["米国株", "株式投資", "52週高値", "押し目買い", "ICT", "オーダーブロック", "セリングクライマックス",
                    "SP500", "NASDAQ", "スクリーニング"],
     "us_20k": ["米国株", "米株", "株式投資", "AI投資", "Claude", "紙上運用", "ICT", "オーダーブロック", "資産運用", "投資記録"],
@@ -58,6 +59,7 @@ FOOTER = "※ 投資助言ではありません。過去の成績は将来の結
 # タイトルの書き出し → 記事の種類（下書きを作る側が、タイトルだけから見出し画像を作るため）
 TITLE_KEYS = (("高値更新・押し目・セリングクライマックス ランキング", "ranking"), ("Claudeが300万円運用", "300man"),
               ("出来高急増×下降トレンド", "volume"), ("52週新高値と出来高急増", "volume"),
+              ("カップウィズハンドルと出来高急増", "volume"),
               ("米株 高値更新", "us_ranking"), ("米国株 $20,000運用", "us_20k"))
 
 
@@ -122,6 +124,11 @@ def _wrap(text: str, font, width: int, max_lines: int) -> list[str]:
         if font.getlength(cur + ch) <= width:
             cur += ch
             continue
+        if ch in "・×":
+            # 区切りが行の頭に来ないように、行末にぶら下げる（2026-11-06「…急増」「・52週新高値」と折れていた）
+            lines.append(cur + ch)
+            cur = ""
+            continue
         cut = max(cur.rfind(d) for d in ("・", "｜", " ", "×"))
         if cut >= len(cur) // 2:
             # 「・」「×」は行末に残し、「｜」と空白は行末に残さない（見た目が切れて見えるため）
@@ -171,6 +178,11 @@ def make_image(key: str, title: str, out_path: Path) -> Path | None:
         d.text((104, y), line, font=f_main, fill=(255, 255, 255), stroke_width=1, stroke_fill=(255, 255, 255))
         y += 86
     if tail:
+        # 件数が3つ並ぶと48では右にはみ出す（2026-11-06）。収まるまで字を小さくする（32まで）
+        size = 48
+        while size > 32 and f_date.getlength(tail) > WIDTH - 104 - 60:
+            size -= 2
+            f_date = ImageFont.truetype(bold, size)
         d.text((104, y + 26), tail, font=f_date, fill=a, stroke_width=1, stroke_fill=a)
     d.text((104, HEIGHT - 62), FOOTER, font=f_foot, fill=(210, 214, 220))
     out_path.parent.mkdir(parents=True, exist_ok=True)

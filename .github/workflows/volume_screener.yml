@@ -135,7 +135,7 @@ jobs:
         run: |
           python3 volume_screener/note_article.py --out outputs/vs_note
           if [ ! -f outputs/vs_note/note_drafts_manifest.json ]; then exit 0; fi
-          python3 note_mail.py --dir outputs/vs_note --subject "【note貼り付け用】$(TZ=Asia/Tokyo date +%F) 出来高急増×下降（有料記事）"
+          python3 note_mail.py --dir outputs/vs_note --subject "【note貼り付け用】$(TZ=Asia/Tokyo date +%F) カップウィズハンドル・出来高急増×下降（有料記事）"
 
       - name: Check run (previous business day, no mail)
         if: steps.guard.outputs.mode == 'asof'

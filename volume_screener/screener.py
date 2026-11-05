@@ -53,6 +53,23 @@ H52_KEEP = 10               # 記録に残す件数（種類ごと、売買代�
 _H52: list = []
 _H52_LOCK = threading.Lock()
 
+# カップ・ウィズ・ハンドル（2026-11-06 持ち主「カップウィズハンドルと出来高急増込みで有料」）。
+# 52週新高値と同じく、段階Aで取った日足（1年分）で見る（取りに行く量は増えない）。当日の足は取った時点までの値。
+CWH_CUP_MIN, CWH_CUP_MAX = 30, 130     # 左の高値から右の高値までの営業日
+CWH_DEPTH_MIN, CWH_DEPTH_MAX = 0.12, 0.35   # カップの深さ（左の高値から底まで）
+CWH_RIGHT_MIN, CWH_RIGHT_MAX = 0.90, 1.03   # 右の高値 ÷ 左の高値（103%より上は前の高値をもう抜けている。
+                                            # 2026-11-06 実データで105%近い1件が上昇の続きに見えたので1.05→1.03）
+CWH_SIDE_MIN = 10                      # 左の高値→底、底→右の高値 はそれぞれ10営業日以上（V字を除く）
+CWH_BOTTOM_POS = (0.2, 0.8)            # 底はカップの左から2〜8割の位置（片寄った形を除く）
+CWH_LEFT_LOOKBACK = 60                 # 左の高値は、その前60営業日の高値より高い（本物の山。2026-11-06 実データで
+                                       # 下げの途中の点を左の高値と取り違えた1件を見て足した）
+CWH_HANDLE_MIN, CWH_HANDLE_MAX = 5, 25  # 取っ手の長さ（右の高値の翌日から前日まで、営業日）
+CWH_HANDLE_DEPTH_MIN, CWH_HANDLE_DEPTH_MAX = 0.03, 0.15   # 取っ手の下げ（右の高値から）
+CWH_PRIOR_RISE = 1.25                  # 左の高値は、その前（最大120営業日）の安値の1.25倍以上（前に上昇があった）
+CWH_NEAR = 0.95                        # 「形成中」は現在値が取っ手の高値の95%以上
+CWH_KEEP = 10                          # 記録に残す件数（上抜け・形成中それぞれ）
+_CWH: list = []
+
 
 def high52_facts(dates, closes, highs, lows, ma25, ma25_prev, target):
     """高値の3つの形を見る（日足だけ。当日の足は取った時点までの値）。
@@ -84,6 +101,80 @@ def high52_facts(dates, closes, highs, lows, ma25, ma25_prev, target):
         return {"kind": "ma25", "price": price, "line": line, "line_date": dates[k].isoformat(),
                 "ma25": ma25, "dev25_pct": (price / ma25 - 1) * 100, "from_high_pct": (price / line - 1) * 100}
     return None
+
+
+def cwh_facts(dates, closes, highs, lows, vols, vol_avg20):
+    """カップ・ウィズ・ハンドルの形を日足だけで見る。最後の1本が当日（取った時点までの値）。
+    右の高値: 前日までの30営業日の高値（取っ手の高値。上抜けを見る線）。そこから前日までが取っ手（5〜25営業日）。
+    左の高値: 右の高値の30〜130営業日前の範囲の高値で、その前60営業日の高値より高く、
+              そこから右の高値までの間にそれより2%超高い日がない。
+    カップ: 左の高値から底まで12〜35%下げ、右の高値は左の高値の90〜103%。底の前後はそれぞれ10営業日以上で、
+            底はカップの左から2〜8割の位置。
+    取っ手: 右の高値から3〜15%下げ、取っ手の安値はカップの真ん中より上。
+    前の上昇: 左の高値は、その前（最大120営業日）の安値の1.25倍以上。
+    break: 本日の高値が取っ手の高値を上回った。near: 上回っていないが、現在値が取っ手の高値の95%以上。
+    どちらでもなければ None。出来高倍率（本日のその時刻までの出来高 ÷ 過去20日平均）を一緒に返す。"""
+    n = len(closes)
+    if n < CWH_CUP_MIN + CWH_HANDLE_MIN + 2 or not (len(highs) == len(lows) == len(vols) == len(dates) == n):
+        return None
+    t = n - 1
+    lo_r = max(0, t - 30)
+    r = max(range(lo_r, t), key=lambda k: (highs[k], k))     # 同じ値なら新しい方
+    handle_len = t - 1 - r
+    if not CWH_HANDLE_MIN <= handle_len <= CWH_HANDLE_MAX:
+        return None
+    pivot = highs[r]
+    if not pivot > 0:
+        return None
+    lo_l, hi_l = max(0, r - CWH_CUP_MAX), r - CWH_CUP_MIN
+    if hi_l <= lo_l:
+        return None
+    left = max(range(lo_l, hi_l + 1), key=lambda k: (highs[k], k))
+    left_hi = highs[left]
+    if not left_hi > 0 or max(highs[left + 1:r]) > left_hi * 1.02:
+        return None
+    if max(highs[max(0, left - CWH_LEFT_LOOKBACK):left] or [0]) > left_hi:
+        return None
+    b = min(range(left + 1, r), key=lambda k: lows[k])
+    cup_low = lows[b]
+    depth = (left_hi - cup_low) / left_hi
+    if not CWH_DEPTH_MIN <= depth <= CWH_DEPTH_MAX:
+        return None
+    if not CWH_RIGHT_MIN <= pivot / left_hi <= CWH_RIGHT_MAX:
+        return None
+    if b - left < CWH_SIDE_MIN or r - b < CWH_SIDE_MIN:
+        return None
+    if not CWH_BOTTOM_POS[0] <= (b - left) / (r - left) <= CWH_BOTTOM_POS[1]:
+        return None
+    handle_low = min(lows[r + 1:t])
+    handle_depth = (pivot - handle_low) / pivot
+    if not CWH_HANDLE_DEPTH_MIN <= handle_depth <= CWH_HANDLE_DEPTH_MAX:
+        return None
+    if handle_low < cup_low + (left_hi - cup_low) * 0.5:
+        return None
+    prior = lows[max(0, left - 120):left]
+    if not prior or left_hi < min(prior) * CWH_PRIOR_RISE:
+        return None
+    price = closes[-1]
+    if highs[-1] > pivot:
+        kind = "break"
+    elif price >= pivot * CWH_NEAR:
+        kind = "near"
+    else:
+        return None
+    return {"kind": kind, "price": price, "pivot": pivot, "pivot_date": dates[r].isoformat(),
+            "left_date": dates[left].isoformat(), "bottom_date": dates[b].isoformat(),
+            "cup_depth_pct": depth * 100, "handle_depth_pct": handle_depth * 100, "handle_days": handle_len,
+            "to_pivot_pct": (price / pivot - 1) * 100, "today_high": highs[-1],
+            "vol_ratio": (vols[-1] / vol_avg20) if vol_avg20 else None}
+
+
+def cwh_summary(found):
+    """上抜け（出来高倍率の大きい順）・形成中（取っ手の高値に近い順）。件数と上位 CWH_KEEP 件を返す。"""
+    brk = sorted((f for f in found if f["kind"] == "break"), key=lambda f: (-(f["vol_ratio"] or 0), f["code"]))
+    near = sorted((f for f in found if f["kind"] == "near"), key=lambda f: (-f["to_pivot_pct"], f["code"]))
+    return {"n_break": len(brk), "break": brk[:CWH_KEEP], "n_near": len(near), "near": near[:CWH_KEEP],
+            "n_break_vol": sum(1 for f in brk if (f["vol_ratio"] or 0) >= VOL_RATIO_MIN)}
 
 
 def high52_summary(found):
@@ -298,6 +389,15 @@ def stage_a(code, name, target):
     if h52:
         with _H52_LOCK:
             _H52.append(dict(h52, code=code, name=name, turnover20=turnover20))
+    # カップ・ウィズ・ハンドル（これも出来高急増とは別の一覧。下降トレンドの足切りより前に見る）
+    try:
+        cwh = cwh_facts(dates, closes, list(ohlc.get("high") or [])[:i], list(ohlc.get("low") or [])[:i],
+                        vols, vol_avg20)
+    except (ValueError, TypeError, ZeroDivisionError):
+        cwh = None
+    if cwh:
+        with _H52_LOCK:
+            _CWH.append(dict(cwh, code=code, name=name, turnover20=turnover20))
     if not (ma25 < ma25_prev):
         return None, "25日線が下向きでない"
     if not (price < ma25 * PREFILTER_SLACK and ma25 < ma75):
@@ -527,6 +627,7 @@ def run(asof=None, cutoff=dt.time(14, 0), limit=None, workers=8, volmode="prevda
 
     with _H52_LOCK:
         _H52.clear()
+        _CWH.clear()
     names, asof_list = F.prime_list()
     if limit:
         names = names[:limit]
@@ -592,6 +693,7 @@ def run(asof=None, cutoff=dt.time(14, 0), limit=None, workers=8, volmode="prevda
     notes.append(f"判定した日: {target}（日足の最終日がこの日でない銘柄は除外）")
     with _H52_LOCK:
         errors["high52"] = high52_summary(list(_H52))
+        errors["cwh"] = cwh_summary(list(_CWH))
     if errors.get("implausible"):
         notes.append(f"25日線からの乖離が現実的でない（-75%より深い・+200%より高い）"
                      f"ため除いた銘柄: {errors['implausible']}"
