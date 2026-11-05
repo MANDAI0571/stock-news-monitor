@@ -116,6 +116,7 @@ def main() -> None:
     _test_jpx_business_day_calendar()
     _test_gmail_holiday_guard()
     _test_mail_to_owner_only()
+    _test_gmail_yahoo_recipient_guard()
     _test_holiday_target_date_and_skip_guard()
     _test_openwork_manual_reflection_contract()
     _test_previous_52w_high_line_retest()
@@ -2770,6 +2771,17 @@ def _test_mail_to_owner_only() -> None:
         sent = smtp.return_value.__enter__.return_value.send_message.call_args[0][0]
     assert sent["To"] == "owner@example.com" and sent["Cc"] is None and sent["Bcc"] is None, sent["To"]
     print("self-test: mail_to_owner_only OK")
+
+
+def _test_gmail_yahoo_recipient_guard() -> None:
+    from unittest.mock import patch
+    from gmail_notify import GmailConfig, send_gmail
+
+    config = GmailConfig("sender@example.com", "secret", "tanto571@yahoo.co.jp")
+    with patch("gmail_notify.smtplib.SMTP_SSL") as smtp:
+        assert send_gmail("【DUKEシステム】test", "body", config) is False
+        smtp.assert_not_called()
+    print("self-test: gmail_yahoo_recipient_guard OK")
 
 
 def _test_holiday_target_date_and_skip_guard() -> None:

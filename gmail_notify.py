@@ -118,6 +118,17 @@ def send_gmail(
     allow_non_business_day: bool = False,
     html_body: str | None = None,
 ) -> bool:
+    # Yahoo mailboxes are explicitly excluded from DUKE notifications. Keep the
+    # guard in the shared transport so scheduled, manual, alert, digest, and
+    # failure-mail callers cannot bypass it even if MAIL_TO is changed later.
+    recipient = config.mail_to.strip().lower()
+    if recipient.endswith(("@yahoo.co.jp", "@yahoo.com")):
+        print(
+            "gmail_delivery=skipped reason=yahoo_recipient_blocked "
+            f"recipient={recipient} subject={subject}"
+        )
+        return False
+
     today = jst_today()
     if not allow_non_business_day and not is_jpx_business_day(today):
         print(f"gmail_delivery=skipped reason=jpx_holiday date={today.isoformat()}")
