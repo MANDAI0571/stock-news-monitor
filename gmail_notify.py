@@ -28,7 +28,9 @@ class GmailConfig:
 def load_gmail_config() -> GmailConfig | None:
     user = os.environ.get("GMAIL_USER", "").strip()
     app_password = os.environ.get("GMAIL_APP_PASSWORD", "").strip()
-    mail_to = os.environ.get("MAIL_TO", "").strip()
+    # 宛先は持ち主（MAIL_TO の1つ目）だけ。2つ目以降には送らない
+    # （持ち主「yahoo宛にDUKEでメール送るのやめて」2026-11-06。障害・高値・サマリーのメールも含めて全部）。
+    mail_to = os.environ.get("MAIL_TO", "").split(",")[0].strip()
     if not user or not app_password or not mail_to:
         return None
     return GmailConfig(user=user, app_password=app_password, mail_to=mail_to)

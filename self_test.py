@@ -115,6 +115,7 @@ def main() -> None:
     _test_openwork_cache_contract()
     _test_jpx_business_day_calendar()
     _test_gmail_holiday_guard()
+    _test_mail_to_owner_only()
     _test_holiday_target_date_and_skip_guard()
     _test_openwork_manual_reflection_contract()
     _test_previous_52w_high_line_retest()
@@ -2748,6 +2749,27 @@ def _test_gmail_holiday_guard() -> None:
         assert send_gmail("subject", "body", config) is False
         smtp.assert_not_called()
     print("self-test: gmail_holiday_guard OK")
+
+
+def _test_mail_to_owner_only() -> None:
+    """MAIL_TO に宛先が複数あっても、1つ目（持ち主）だけに送る（持ち主 2026-11-06）。"""
+    from unittest.mock import patch
+    from gmail_notify import GmailConfig, load_gmail_config, send_gmail
+
+    env = {"GMAIL_USER": "sender@example.com", "GMAIL_APP_PASSWORD": "secret",
+           "MAIL_TO": " owner@example.com , other@example.net,third@example.org "}
+    with patch.dict("os.environ", env):
+        config = load_gmail_config()
+    assert config is not None and config.mail_to == "owner@example.com", config
+    with patch.dict("os.environ", {**env, "MAIL_TO": "owner@example.com"}):
+        assert load_gmail_config().mail_to == "owner@example.com"
+    with patch.dict("os.environ", {**env, "MAIL_TO": " , other@example.net"}):
+        assert load_gmail_config() is None
+    with patch("gmail_notify.smtplib.SMTP_SSL") as smtp:
+        assert send_gmail("subject", "body", config, allow_non_business_day=True) is not False
+        sent = smtp.return_value.__enter__.return_value.send_message.call_args[0][0]
+    assert sent["To"] == "owner@example.com" and sent["Cc"] is None and sent["Bcc"] is None, sent["To"]
+    print("self-test: mail_to_owner_only OK")
 
 
 def _test_holiday_target_date_and_skip_guard() -> None:
