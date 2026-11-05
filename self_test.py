@@ -5487,8 +5487,12 @@ def _test_claude_300man_standing_exits() -> None:
     print("self-test: 300万円運用 3.0.0 の逆指値・指値・期限 OK")
 
 
-def _test_claude_300man_declare_once_per_day(declare_workflow: str) -> None:
-    """判定が済んだ日を、遅れて届いた予備の cron がやり直さない（2026-10-30 に 01:13 の予備が注文を足した）。"""
+def _test_claude_300man_declare_once_per_day(declare_workflow: str | None = None) -> None:
+    """判定が済んだ日を、遅れて届いた予備の cron がやり直さない（2026-10-30 に 01:13 の予備が注文を足した）。
+    self_test_groups.py は引数なしで呼ぶので、無ければ自分で読む（2026-11-06 まで editorial が毎回ここで失敗していた）。"""
+    if declare_workflow is None:
+        declare_workflow = (Path(__file__).resolve().parent / ".github" / "workflows"
+                            / "claude_300man_declare.yml").read_text(encoding="utf-8")
     import os
     import tempfile
     import textwrap
