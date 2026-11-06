@@ -3797,13 +3797,13 @@ def _test_cwh_paid_article() -> None:
     assert src.index("cwh_facts(dates, closes") < src.index("if not (ma25 < ma25_prev):")           # 下降の足切りより前に見る
     assert '"cwh": errors.get("cwh")' in Path("volume_screener/daily_run.py").read_text(encoding="utf-8")
 
-    res = {"date": "2026-11-06", "cutoff": "13:55", "rows": [
+    res = {"date": "2026-11-16", "cutoff": "13:55", "rows": [
         {"code": "1000", "name": "テスト急増", "price": 932.0, "chg_pct": -20.07, "dev25_pct": -21.0, "ratio": 9.32,
          "base_label": "過去20日平均", "turnover20": 9.2e8, "prev_gap": 0, "suspect_split": None}],
         "high52": {"n_new": 3, "new": [], "n_ma25": 0, "ma25": []}, "cwh": sm}
     title, lines = na.article_lines(res, "その後の文")
     text = "\n".join(lines)
-    assert title == "カップウィズハンドルと出来高急増・52週新高値｜2026-11-06 13:55時点 上抜け2件・新高値3件・急増1件", title
+    assert title == "カップウィズハンドルと出来高急増・52週新高値｜2026-11-16 13:55時点 上抜け2件・新高値3件・急増1件", title
     free, paid = text.split(na.PAID_LINE)
     assert "## カップ・ウィズ・ハンドルの条件" in free and "上抜け2件（うち出来高急増1件）・形成中1件" in free
     assert "まだ数えていません" in free and "投資助言" in free
@@ -3817,6 +3817,14 @@ def _test_cwh_paid_article() -> None:
            "near": [dict(nr, code=str(k), name="長い名前の銘柄" * 2) for k in range(15)]}
     _, lb = na.article_lines(dict(res, cwh=big), "その後の文")
     assert sum(1 for x in lb if x.startswith("- 【CWH")) == 20                                       # 10件ずつまで
+    # 2026-11-06 持ち主「全部公開まで」「一週間無料で」: 11/6〜11/12 の記事は境目の線と前置きを無料の文にする
+    _, lf = na.article_lines(dict(res, date="2026-11-06"), "その後の文")
+    xf = "\n".join(lf)
+    assert na.PAID_LINE not in xf and na.FREE_LINE in xf and "有料の部分" not in xf and "どちらも後半の部分" in xf
+    assert xf.index("## カップ・ウィズ・ハンドルの条件") < xf.index(na.FREE_LINE) < xf.index("【CWH上抜け】")
+    _, lp = na.article_lines(dict(res, date="2026-11-13"), "その後の文")
+    assert na.PAID_LINE in "\n".join(lp) and na.FREE_LINE not in "\n".join(lp)
+    assert not na.free_week({"date": "2026-11-05"}) and na.free_week({"date": "2026-11-12"})
     # cwh の無い前の形の記録は今までどおり
     t0, _ = na.article_lines(dict(res, cwh=None))
     assert t0.startswith("52週新高値と出来高急増×下降トレンド｜"), t0

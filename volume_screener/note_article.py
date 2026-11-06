@@ -25,6 +25,14 @@ sys.path.insert(0, str(HERE))
 DISCLAIMER = ("これは条件に当てはまった銘柄を機械的に並べた一覧です。売買をすすめるものではありません。"
               "投資の判断はご自身でお願いします。")
 PAID_LINE = "▼ここから有料▼"
+# 2026-11-06 持ち主「全部公開まで」「（有料の記事は）一週間無料で」: この期間の記事は無料で公開するので、
+# 境目の線と前置きを「無料で公開している」とわかる文にする（値段はその後に持ち主が決める）
+FREE_FROM, FREE_UNTIL = "2026-11-06", "2026-11-12"
+FREE_LINE = "▼ここから下も、11/6〜11/12 の記事は無料で公開しています（お試しの期間）▼"
+
+
+def free_week(result: dict) -> bool:
+    return FREE_FROM <= str(result.get("date") or "") <= FREE_UNTIL
 
 
 def _oku(v) -> str:
@@ -149,19 +157,20 @@ def article_lines(result: dict, track_note: str = "", warning: str = "") -> tupl
     n_mark = sum(1 for r in rows if r.get("mark") == "◎")
     h52 = result.get("high52") if isinstance(result.get("high52"), dict) else None
     cwh = result.get("cwh") if isinstance(result.get("cwh"), dict) else None
+    paid = "後半の部分" if free_week(result) else "有料の部分"
     if cwh:
         # 2026-11-06 持ち主「カップウィズハンドルと出来高急増込みで有料か」
         title = (f"カップウィズハンドルと出来高急増・52週新高値｜{when}時点 上抜け{int(cwh.get('n_break') or 0)}件"
                  + (f"・新高値{int(h52.get('n_new') or 0)}件" if h52 else "") + f"・急増{len(rows)}件")
         intro = (f"東証プライム全銘柄（約1,550銘柄）から、カップ・ウィズ・ハンドルの形の銘柄と、下降トレンドの途中で"
-                 f"出来高が急に増えた銘柄（どちらも有料の部分）"
+                 f"出来高が急に増えた銘柄（どちらも{paid}）"
                  + ("、52週新高値の銘柄（無料の部分で一部を紹介）" if h52 else "")
                  + f"を機械的に探した結果です（{when}時点の値）。")
     elif h52:
         # 2026-10-27 持ち主「タイトルも52週新高値の文字を織り込んで」
         title = f"52週新高値と出来高急増×下降トレンド｜{when}時点 新高値{int(h52.get('n_new') or 0)}件・急増{len(rows)}件"
         intro = (f"東証プライム全銘柄（約1,550銘柄）から、52週新高値の銘柄（無料の部分で一部を紹介）と、下降トレンドの途中で"
-                 f"出来高が急に増えた銘柄（有料の部分）を機械的に探した結果です（{when}時点の値）。")
+                 f"出来高が急に増えた銘柄（{paid}）を機械的に探した結果です（{when}時点の値）。")
     else:
         title = f"出来高急増×下降トレンド｜{when}時点 {len(rows)}件"
         intro = (f"東証プライム全銘柄（約1,550銘柄）から、下降トレンドの途中で出来高が急に増えた銘柄を"
@@ -192,7 +201,7 @@ def article_lines(result: dict, track_note: str = "", warning: str = "") -> tupl
         lines += [f"**※ 本日のデータについての注意：** {warning}", ""]
     if track_note:
         lines += ["## この一覧に出た銘柄のその後", "", track_note, ""]
-    lines += ["---", "", PAID_LINE, ""]
+    lines += ["---", "", FREE_LINE if free_week(result) else PAID_LINE, ""]
     if cwh:
         lines += cwh_list_lines(cwh)
     lines += ["## 出来高急増×下降トレンドの銘柄の一覧" if vs else "## 銘柄の一覧", ""]
