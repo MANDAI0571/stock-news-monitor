@@ -51,18 +51,18 @@
 | 2026-10-29 | pullback_only_v1 | 2212 山崎製パン | OPEN | 3790.00円 | -  | -% |
 | 2026-10-29 | pullback_only_v1 | 8218 コメリ | OPEN | 3900.00円 | -  | -% |
 | 2026-10-30 | balanced_2p_1m_v1 | 7976 三菱鉛筆 | OPEN | 3665.00円 | -  | -% |
-| 2026-10-30 | balanced_2p_1m_v1 | 8060 キヤノンマーケティングジャパン | OPEN | 3979.00円 | -  | -% |
+| 2026-10-30 | balanced_2p_1m_v1 | 8060 キヤノンマーケティングジャパン | PENDING_EXIT | 3979.00円 | STOP_LOSS 2026-11-06 | -% |
 | 2026-10-30 | current_combined_v1 | 7976 三菱鉛筆 | OPEN | 3665.00円 | -  | -% |
-| 2026-10-30 | current_combined_v1 | 8060 キヤノンマーケティングジャパン | OPEN | 3979.00円 | -  | -% |
+| 2026-10-30 | current_combined_v1 | 8060 キヤノンマーケティングジャパン | PENDING_EXIT | 3979.00円 | STOP_LOSS 2026-11-06 | -% |
 | 2026-10-30 | pullback_only_v1 | 7976 三菱鉛筆 | OPEN | 3665.00円 | -  | -% |
-| 2026-10-30 | pullback_only_v1 | 8060 キヤノンマーケティングジャパン | OPEN | 3979.00円 | -  | -% |
-| 2026-11-02 | balanced_2p_1m_v1 | 8060 キヤノンマーケティングジャパン | OPEN | 3965.00円 | -  | -% |
+| 2026-10-30 | pullback_only_v1 | 8060 キヤノンマーケティングジャパン | PENDING_EXIT | 3979.00円 | STOP_LOSS 2026-11-06 | -% |
+| 2026-11-02 | balanced_2p_1m_v1 | 8060 キヤノンマーケティングジャパン | PENDING_EXIT | 3965.00円 | STOP_LOSS 2026-11-06 | -% |
 | 2026-11-02 | balanced_2p_1m_v1 | 9505 北陸電力 | PENDING_EXIT | 1092.00円 | STOP_LOSS 2026-11-06 | -% |
 | 2026-11-02 | current_combined_v1 | 7976 三菱鉛筆 | OPEN | 3625.00円 | -  | -% |
-| 2026-11-02 | current_combined_v1 | 8060 キヤノンマーケティングジャパン | OPEN | 3965.00円 | -  | -% |
+| 2026-11-02 | current_combined_v1 | 8060 キヤノンマーケティングジャパン | PENDING_EXIT | 3965.00円 | STOP_LOSS 2026-11-06 | -% |
 | 2026-11-02 | current_combined_v1 | 9505 北陸電力 | PENDING_EXIT | 1092.00円 | STOP_LOSS 2026-11-06 | -% |
 | 2026-11-02 | pullback_only_v1 | 7976 三菱鉛筆 | OPEN | 3625.00円 | -  | -% |
-| 2026-11-02 | pullback_only_v1 | 8060 キヤノンマーケティングジャパン | OPEN | 3965.00円 | -  | -% |
+| 2026-11-02 | pullback_only_v1 | 8060 キヤノンマーケティングジャパン | PENDING_EXIT | 3965.00円 | STOP_LOSS 2026-11-06 | -% |
 | 2026-11-02 | pullback_only_v1 | 9505 北陸電力 | PENDING_EXIT | 1092.00円 | STOP_LOSS 2026-11-06 | -% |
 | 2026-11-04 | balanced_2p_1m_v1 | 4812 電通総研 | OPEN | 2873.00円 | -  | -% |
 | 2026-11-04 | balanced_2p_1m_v1 | 7970 信越ポリマー | PENDING_EXIT | 2459.00円 | STOP_LOSS 2026-11-06 | -% |
