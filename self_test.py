@@ -99,6 +99,7 @@ def main() -> None:
     _test_note_artifact_validator_contract()
     _run_or_skip_on_outage("JPXキャッシュのテスト", _test_jpx_universe_cache)
     _test_gmail_body()
+    _test_weekly_outlook()
     _test_openwork_display_only()
     _test_note_autosave_and_mail_body()
     _test_sns_promo()
@@ -974,6 +975,61 @@ def _test_jpx_universe_cache() -> None:
             universe_module.JPX_CACHE_META_PATH = old_meta_path
             universe_module.JPX_LISTED_URLS = old_urls
             universe_module.requests.get = old_get
+
+
+def _test_weekly_outlook() -> None:
+    from datetime import date
+
+    import numpy as np
+
+    import weekly_market_digest as digest
+    import weekly_outlook as wo
+
+    # 水星逆行の日付は暦（2024年4/1〜25、2026年10/24〜11/13）と1日以内で合うこと
+    days = wo.mercury_retrograde_days(date(2024, 1, 1), date(2026, 12, 31))
+    starts = [start for start, _ in wo.retrograde_periods(days)]
+    assert any(abs((start - date(2024, 4, 1)).days) <= 1 for start in starts)
+    assert any(abs((start - date(2026, 10, 24)).days) <= 1 for start in starts)
+    assert date(2026, 11, 12) in days and date(2026, 11, 20) not in days
+    # 祝日で4日しかない週でも、基準は前週末の終値
+    holiday_week = pd.to_datetime(["2026-10-29", "2026-10-30", "2026-11-02", "2026-11-04", "2026-11-05", "2026-11-06"])
+    assert wo.week_base(pd.DatetimeIndex(holiday_week)) == (pd.Timestamp("2026-10-30"), pd.Timestamp("2026-11-06"))
+    assert (wo.regime(-0.03), wo.regime(0.03), wo.regime(0.0)) == ("下落", "上昇", "横ばい")
+    assert (wo.quadrant(1, 1), wo.quadrant(1, -1), wo.quadrant(-1, 1), wo.quadrant(-1, -1)) == ("主導", "失速", "回復", "出遅れ")
+
+    dates = pd.bdate_range("2024-01-01", "2026-11-06")
+    sector_names = ["空運業", "石油・石炭製品", "鉱業", "食料品", "小売業", "銀行業", "電気機器", "機械", "化学", "医薬品", "陸運業", "卸売業"]
+    rng = np.random.default_rng(7)
+    codes = [f"{i:04d}" for i in range(1000, 1072)]
+    close = pd.DataFrame(100 * np.cumprod(1 + rng.normal(0, 0.02, (len(dates), len(codes))), axis=0), index=dates, columns=codes)
+    names = pd.Series({code: f"合成銘柄{code}" for code in codes})
+    sectors = pd.Series({code: sector_names[i % len(sector_names)] for i, code in enumerate(codes)})
+    panel = wo.Panel(close, close * 1.01, pd.DataFrame(1e7, index=dates, columns=codes), names, sectors, close.mean(axis=1))
+    stocks = wo.build_stock_table(panel)
+    assert len(stocks) == len(codes) and stocks["週間騰落率%"].is_monotonic_decreasing
+    liquid, market, relative = wo.weekly_frames(panel)
+    table, stats = wo.build_sector_forecast(relative, market, -8.0)
+    assert table["最終確率"].between(*wo.PROBABILITY_RANGE).all()
+    assert table.loc["空運業", "原油の補正"] == 3 and table.loc["鉱業", "原油の補正"] == -3
+    assert table.loc["食料品", "原油の補正"] == 0
+    assert wo.build_sector_forecast(relative, market, -1.0)[0]["原油の補正"].eq(0).all()
+
+    nikkei = pd.Series(1000 * np.cumprod(1 + rng.normal(0.0003, 0.01, 4000)), index=pd.bdate_range("2011-06-01", periods=4000))
+    anomalies, call = wo.anomaly_lines(nikkei, date(2026, 11, 9))
+    assert 0 < call["probability"] < 100 and any("水星逆行" in line for line in anomalies)
+    forecast = wo.forecast_lines(table, stats, call, date(2026, 11, 9))
+    public = "\n".join([*forecast, *wo.rotation_lines(relative, stats, table), *anomalies])
+    assert "合成銘柄" not in public
+    mail = "\n".join(wo.stock_lines(stocks, wo.strong_stock_history(liquid, market), str(stats["regime"])))
+    assert "合成銘柄" in mail
+    # 銘柄の一覧は artifact に載せない（公開リポジトリ）
+    workflow = (Path(".github/workflows/weekly-market-digest.yml")).read_text(encoding="utf-8")
+    assert "weekly_stocks" not in workflow
+    # 取得の持ち時間を過ぎたら通信せずに諦める（ジョブ全体のタイムアウトを守る）
+    assert wo._fetch_daily("1306.T", 0.0) is None
+    sector_returns = pd.DataFrame({"sector": ["A", "B"], "ticker": ["1", "2"], "weekly_return_pct": [1.0, -1.0]})
+    _, body = digest.build_digest(sector_returns, [], None, "OUTLOOK_MARK")
+    assert "OUTLOOK_MARK" in body
 
 
 def _test_gmail_body() -> None:
