@@ -10,6 +10,13 @@ on:
   schedule:
     # Saturday 10:00 JST. GitHub Actions uses UTC.
     - cron: "0 1 * * 6"
+  # When the digest code changes, run it on GitHub without sending mail.
+  push:
+    branches: [main]
+    paths:
+      - weekly_market_digest.py
+      - weekly_outlook.py
+      - .github/workflows/weekly-market-digest.yml
 
 jobs:
   weekly-market-digest:
@@ -44,7 +51,7 @@ jobs:
             outputs/weekly_sector_returns.csv
           if-no-files-found: error
       - name: Notify failure by mail
-        if: failure()
+        if: failure() && github.event_name != 'push'
         env:
           GMAIL_USER: ${{ secrets.GMAIL_USER }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
