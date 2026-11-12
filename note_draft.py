@@ -1528,8 +1528,7 @@ from dual_300man_config import CONFIG as DUAL_300MAN_CONFIG
 
 PORTFOLIO_RULE_LINE = (
     f"ルール：1枠{DUAL_300MAN_CONFIG.slot_yen // 10_000}万円・最大{DUAL_300MAN_CONFIG.max_positions}銘柄"
-    f" ／ 損切 {DUAL_300MAN_CONFIG.stop_loss_pct:.0f}% ／ 利確 +{DUAL_300MAN_CONFIG.take_profit_pct:.0f}%"
-    f" ／ {DUAL_300MAN_CONFIG.timeout_days}営業日で手じまい"
+    f" ／ 売り：{DUAL_300MAN_CONFIG.exit_rule_text}"
 )
 
 

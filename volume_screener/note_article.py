@@ -56,11 +56,23 @@ LABELS = {"new": "【52週新高値】", "recent": "【直近高値更新】", "
           "climax": "【セリングクライマックス】"}
 
 
+def _cap(r: dict) -> str:
+    """「・時価総額 1兆2,345億円」（screener.by_market_cap で付けた値）。無ければ空。"""
+    try:
+        import screener as SC
+
+        text = SC.cap_text(r)
+    except Exception:                                 # noqa: BLE001
+        text = ""
+    return f"・{text}" if text else ""
+
+
 def high52_lines(h: dict) -> list[str]:
     """52週新高値の節（2026-10-27 持ち主「出来高急増のところに52週新高値を織り込んで…25MAとかいくつか紹介して。
-    文字数が多くなると note が落ちるので注意」）。無料の部分に、種類ごとに売買代金の大きい順に5件まで、1銘柄1行。"""
+    文字数が多くなると note が落ちるので注意」）。無料の部分に、種類ごとに時価総額の大きい順に5件まで、1銘柄1行
+    （2026-11-13 持ち主「時価総額順」。それまでは売買代金の大きい順）。"""
     md = lambda d: f"{int(d[5:7])}/{int(d[8:10])}" if len(d or "") >= 10 else "-"  # noqa: E731
-    lines = ["## 52週新高値・直近高値の銘柄（売買代金の大きい順に5件まで）", "",
+    lines = ["## 52週新高値・直近高値の銘柄（時価総額の大きい順に5件まで）", "",
              "同じ東証プライムの銘柄（20日平均の売買代金1億円以上）から、高値に関わる3つの形を機械的に拾いました。"
              "行の先頭の【 】が形です。", ""]
     heads = (("new", "本日、52週高値を更新"), ("recent", "本日、直近高値（60営業日の高値）を更新"),
@@ -74,7 +86,7 @@ def high52_lines(h: dict) -> list[str]:
             lines += ["当てはまる銘柄はありませんでした。", ""]
             continue
         for r in rows:
-            head_ = f"- {LABELS[kind]}{r['code']} {r['name']}　現在 {_yen(r['price'])}"
+            head_ = f"- {LABELS[kind]}{r['code']} {r['name']}　現在 {_yen(r['price'])}{_cap(r)}"
             if kind == "new":
                 lines.append(f"{head_}・52週高値 {_yen(r['line'])}（{md(r.get('line_date'))}）を当日高値で "
                              f"{float(r['excess_pct']):+.2f}% 上抜け")
@@ -116,12 +128,12 @@ def cwh_rule_lines(c: dict) -> list[str]:
 
 
 def cwh_list_lines(c: dict) -> list[str]:
-    """カップ・ウィズ・ハンドルの銘柄（有料の部分）。上抜けは出来高倍率の大きい順、形成中は取っ手の高値に近い順。"""
+    """カップ・ウィズ・ハンドルの銘柄（有料の部分）。上抜け・形成中とも時価総額の大きい順（2026-11-13 から）。"""
     md = lambda d: f"{int(d[5:7])}/{int(d[8:10])}" if len(d or "") >= 10 else "-"  # noqa: E731
     lines = ["## カップ・ウィズ・ハンドルの銘柄", "",
              "【CWH上抜け】＝本日、取っ手の高値を上抜け。【CWH形成中】＝取っ手の高値の95%以上まで来ている。"
              "【出来高急増】＝本日の出来高が過去20日平均の2倍以上。", ""]
-    heads = (("break", "上抜け", "出来高倍率の大きい順"), ("near", "形成中", "取っ手の高値に近い順"))
+    heads = (("break", "上抜け", "時価総額の大きい順"), ("near", "形成中", "時価総額の大きい順"))
     for kind, label, order in heads:
         n, rows = int(c.get(f"n_{kind}") or 0), list(c.get(kind) or [])[:CWH_SHOW]
         lines += [f"### {label}（全{n}件、{order}に{CWH_SHOW}件まで）", ""]
@@ -136,7 +148,7 @@ def cwh_list_lines(c: dict) -> list[str]:
                 where = f"を当日高値で {(float(r['today_high']) / pivot - 1) * 100:+.2f}% 上抜け"
             else:
                 where = f"まで {float(r['to_pivot_pct']):+.1f}%"
-            lines.append(f"- 【CWH{label}】{surge}{r['code']} {r['name']}　現在 {_yen(r['price'])}"
+            lines.append(f"- 【CWH{label}】{surge}{r['code']} {r['name']}　現在 {_yen(r['price'])}{_cap(r)}"
                          f"・取っ手の高値 {_yen(pivot)}（{md(r.get('pivot_date'))}）{where}"
                          f"・カップ -{float(r['cup_depth_pct']):.0f}%（{md(r.get('left_date'))}→{md(r.get('bottom_date'))}）"
                          f"・取っ手 {int(r['handle_days'])}日 -{float(r['handle_depth_pct']):.1f}%"
@@ -187,7 +199,7 @@ def article_lines(result: dict, track_note: str = "", warning: str = "") -> tupl
               "- 出来高が過去20日平均の2倍以上（当日のその時刻までの出来高）",
               "- 現在値 < 25日線 < 75日線、25日線が5本前より低い（下降トレンド）",
               "- 20日平均の売買代金が1億円以上",
-              "- 並び順はランク（◎）の銘柄が先、その中は25日線から深い順", "",
+              "- 並び順は時価総額の大きい順", "",
               f"## {vs}本日の件数：{len(rows)}件" + (f"（うち ◎ {n_mark}件）" if ranked and rows else ""), ""]
     try:
         import rank as RK
@@ -217,6 +229,8 @@ def article_lines(result: dict, track_note: str = "", warning: str = "") -> tupl
                      f"{r['code']} {r['name']}**")
         if r.get("mark") == "◎":
             lines.append("- ランク ◎（業種の勢いがとても弱い）")
+        if _cap(r):
+            lines.append(f"- {_cap(r).lstrip('・')}")
         lines.append(f"- {float(r['price']):,.1f}円（{'前日比' if not r.get('prev_gap') else '前回の足から'}"
                      f" {float(r['chg_pct']):+.2f}%）・25日線から {float(r['dev25_pct']):+.1f}%")
         lines.append(f"- 出来高 {float(r['ratio']):.2f}倍（{r.get('base_label', '過去20日平均')}比）・"

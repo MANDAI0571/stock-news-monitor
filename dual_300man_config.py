@@ -53,9 +53,10 @@ class StrategyConfig:
     initial_cash: int
     max_positions: int
     slot_yen: int
-    stop_loss_pct: float
-    take_profit_pct: float
-    timeout_days: int
+    # 4.0.0（2026-11-13）は直近の安値の逆指値だけなので、この3つは None（固定の幅・利確・期限が無い）
+    stop_loss_pct: float | None
+    take_profit_pct: float | None
+    timeout_days: int | None
     max_entry_gap_pct: float
     circuit_reduce_pct: float | None
     circuit_stop_pct: float | None
@@ -67,11 +68,30 @@ class StrategyConfig:
     regime_slots: Mapping[str, int] | None = None
     peak_drawdown_reduce_pct: float | None = None
     previous_rules_accepted: tuple[tuple[str, str], ...] = ()
+    # 4.0.0（2026-11-13）から。直近 N 営業日の安値に逆指値を出しておき、毎晩引き上げる
+    trailing_low_days: int | None = None
+    rule_start_date: date | None = None
 
     @property
     def standing_exit_orders(self) -> bool:
-        """売りを逆指値・指値（日中）と期限の大引けで行うか。False なら終値で判定して翌寄付で売る（2.x）。"""
-        return self.exit_execution == "standing_orders"
+        """売りを出しておいた注文（日中に約定）で行うか。False なら終値で判定して翌寄付で売る（2.x）。
+        3.0.0 は逆指値・指値・期限、4.0.0 は直近の安値の逆指値。"""
+        return self.exit_execution in {"standing_orders", "trailing_low"}
+
+    @property
+    def exit_rule_text(self) -> str:
+        """売りの決まりの短い説明（台帳・レポート・記事で同じ言い方にする）。"""
+        if self.trailing_low:
+            return f"直近{self.trailing_low_days}営業日の安値の逆指値（毎晩引き上げ・下げない。損切りも利食いも）"
+        if self.standing_exit_orders:
+            return (f"逆指値{self.stop_loss_pct:+.0f}%・指値{self.take_profit_pct:+.0f}%（日中）・"
+                    f"{self.timeout_days}営業日目の大引け")
+        return f"損切り{self.stop_loss_pct:.0f}%・利確+{self.take_profit_pct:.0f}%・{self.timeout_days}営業日（終値で判定し翌寄付）"
+
+    @property
+    def trailing_low(self) -> bool:
+        """4.0.0: 直近 trailing_low_days 営業日の安値を割ったら売る（損切りも利食いも）。"""
+        return self.exit_execution == "trailing_low"
 
 
 def _canonical_payload(raw: dict) -> bytes:
@@ -93,6 +113,10 @@ def _optional_float(value: object) -> float | None:
     return None if value is None or str(value).strip() == "" else float(value)
 
 
+def _optional_int(value: object) -> int | None:
+    return None if value is None or str(value).strip() == "" else int(value)
+
+
 def load_strategy_config(path: Path = CONFIG_PATH) -> StrategyConfig:
     raw = json.loads(path.read_text(encoding="utf-8"))
     rules = raw["shared_risk_rules"]
@@ -109,9 +133,9 @@ def load_strategy_config(path: Path = CONFIG_PATH) -> StrategyConfig:
         initial_cash=int(next(iter(raw["accounts"].values()))["starting_capital_jpy"]),
         max_positions=int(rules["max_positions"]),
         slot_yen=int(rules["slot_capital_jpy"]),
-        stop_loss_pct=float(rules["stop_loss_pct"]),
-        take_profit_pct=float(rules["take_profit_pct"]),
-        timeout_days=int(rules["timeout_business_days"]),
+        stop_loss_pct=_optional_float(rules.get("stop_loss_pct")),
+        take_profit_pct=_optional_float(rules.get("take_profit_pct")),
+        timeout_days=_optional_int(rules.get("timeout_business_days")),
         max_entry_gap_pct=float(rules["max_entry_gap_pct"]),
         circuit_reduce_pct=_optional_float(rules.get("drawdown_reduce_pct")),
         circuit_stop_pct=_optional_float(rules.get("drawdown_stop_pct")),
@@ -125,12 +149,18 @@ def load_strategy_config(path: Path = CONFIG_PATH) -> StrategyConfig:
             (str(item["strategy_version"]), str(item["rule_hash"]))
             for item in raw.get("previous_rules_accepted", [])
         ),
+        trailing_low_days=_optional_int(rules.get("trailing_low_days")),
+        rule_start_date=date.fromisoformat(str(rules["rule_start_date"])) if rules.get("rule_start_date") else None,
     )
-    if config.exit_execution not in {"next_open", "standing_orders"}:
+    if config.exit_execution not in {"next_open", "standing_orders", "trailing_low"}:
         raise ValueError(f"unknown exit_execution: {config.exit_execution}")
     if config.circuit_reduce_pct is None and config.peak_drawdown_reduce_pct is None:
         raise ValueError("300man config needs drawdown_reduce_pct or peak_drawdown_reduce_pct")
-    if config.stop_loss_pct >= 0 or config.take_profit_pct <= 0:
+    if config.trailing_low:
+        if not config.trailing_low_days or config.trailing_low_days < 2 or config.rule_start_date is None:
+            raise ValueError("trailing_low needs trailing_low_days >= 2 and rule_start_date")
+    elif (config.stop_loss_pct is None or config.take_profit_pct is None or config.timeout_days is None
+          or config.stop_loss_pct >= 0 or config.take_profit_pct <= 0):
         raise ValueError("stop_loss_pct must be negative and take_profit_pct positive")
     if config.slot_yen <= 0 or config.initial_cash <= 0 or config.max_positions <= 0:
         raise ValueError("capital and position settings must be positive")

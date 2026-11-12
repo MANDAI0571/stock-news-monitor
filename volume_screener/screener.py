@@ -49,7 +49,7 @@ H52_PULLBACK_DAYS = 20      # 52週高値を付けてから20営業日以内
 H52_TOUCH_UP = 1.01         # 本日の安値が25日線の+1%以内まで下がった
 H52_TOUCH_DOWN = 0.98       # 現在値が25日線の-2%より上
 H52_RECENT_DAYS = 60        # 直近高値＝前日までの60営業日の高値（2026-10-27 持ち主「直近高値とか…わかるように」）
-H52_KEEP = 10               # 記録に残す件数（種類ごと、売買代金の大きい順）
+H52_KEEP = 10               # 記録に残す件数（種類ごと、時価総額の大きい順。2026-11-12 までは売買代金の大きい順）
 _H52: list = []
 _H52_LOCK = threading.Lock()
 
@@ -169,19 +169,50 @@ def cwh_facts(dates, closes, highs, lows, vols, vol_avg20):
             "vol_ratio": (vols[-1] / vol_avg20) if vol_avg20 else None}
 
 
+def by_market_cap(rows):
+    """時価総額の大きい順（2026-11-13 持ち主「スクリーニングした銘柄はすべて時価総額順に並べる」）。
+    株式数はリポジトリ直下の market_cap.py（data/jp_shares.csv）。時価総額が出ない銘柄は最後（もとの順のまま）。
+    market_cap.py が無いところ（Mac の写し）では、並びを変えずに返す。"""
+    rows = list(rows)
+    MC = _market_cap_module()
+    if MC is None:
+        return rows
+    for r in rows:
+        r["market_cap_yen"] = MC.market_cap_yen(r.get("code"), r.get("price"))
+    return MC.sort_by_market_cap(rows, code=lambda r: r.get("code"), price=lambda r: r.get("price"))
+
+
+def cap_text(r):
+    """「時価総額 1兆2,345億円」（by_market_cap で付けた値）。無ければ空。"""
+    MC = _market_cap_module()
+    return MC.cap_text(r.get("market_cap_yen")) if MC is not None else ""
+
+
+def _market_cap_module():
+    try:
+        here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        if here not in sys.path:
+            sys.path.append(here)
+        import market_cap as MC
+    except ImportError:
+        return None
+    return MC
+
+
 def cwh_summary(found):
-    """上抜け（出来高倍率の大きい順）・形成中（取っ手の高値に近い順）。件数と上位 CWH_KEEP 件を返す。"""
-    brk = sorted((f for f in found if f["kind"] == "break"), key=lambda f: (-(f["vol_ratio"] or 0), f["code"]))
-    near = sorted((f for f in found if f["kind"] == "near"), key=lambda f: (-f["to_pivot_pct"], f["code"]))
+    """上抜け・形成中を、それぞれ時価総額の大きい順に。件数と上位 CWH_KEEP 件を返す
+    （2026-11-12 までは上抜けは出来高倍率の大きい順、形成中は取っ手の高値に近い順）。"""
+    brk = by_market_cap(sorted((f for f in found if f["kind"] == "break"), key=lambda f: (-(f["vol_ratio"] or 0), f["code"])))
+    near = by_market_cap(sorted((f for f in found if f["kind"] == "near"), key=lambda f: (-f["to_pivot_pct"], f["code"])))
     return {"n_break": len(brk), "break": brk[:CWH_KEEP], "n_near": len(near), "near": near[:CWH_KEEP],
             "n_break_vol": sum(1 for f in brk if (f["vol_ratio"] or 0) >= VOL_RATIO_MIN)}
 
 
 def high52_summary(found):
-    """種類ごとに売買代金の大きい順に並べ、件数と上位 H52_KEEP 件を返す。"""
+    """種類ごとに時価総額の大きい順に並べ、件数と上位 H52_KEEP 件を返す（時価総額が出ない銘柄は最後に売買代金の順）。"""
     out = {}
     for kind in ("new", "recent", "ma25"):
-        rows = sorted((f for f in found if f["kind"] == kind), key=lambda f: -f["turnover20"])
+        rows = by_market_cap(sorted((f for f in found if f["kind"] == kind), key=lambda f: -f["turnover20"]))
         out[f"n_{kind}"] = len(rows)
         out[kind] = rows[:H52_KEEP]
     return out
@@ -851,7 +882,10 @@ def run(asof=None, cutoff=dt.time(14, 0), limit=None, workers=8, volmode="prevda
         for r in rows:
             r.setdefault("mark", "")
         notes.append(f"ランク（◎）は付けていません（{type(e).__name__}）")
-    notes.append("並び順: ランク（◎）の銘柄を先に、その中は25日線からの乖離が深い順")
+    # 2026-11-13 持ち主「スクリーニングした銘柄はすべて時価総額順に並べる」。◎ の印は残し、並びは時価総額の大きい順
+    rows[:] = by_market_cap(rows)
+    notes.append("並び順: 時価総額の大きい順" if any(r.get("market_cap_yen") for r in rows)
+                 else "並び順: ランク（◎）の銘柄を先に、その中は25日線からの乖離が深い順（時価総額が出せなかったため）")
     notes.append(f"所要時間: {time.time() - t0:.0f}秒")
     return rows, notes, errors
 

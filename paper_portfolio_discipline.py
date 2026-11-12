@@ -16,9 +16,11 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 CAPITAL = CONFIG.initial_cash
 MAX_POSITIONS = CONFIG.max_positions
 SLOT_CAPITAL = CONFIG.slot_yen
-STOP_LOSS_PCT = abs(CONFIG.stop_loss_pct) / 100
-TAKE_PROFIT_PCT = CONFIG.take_profit_pct / 100
-TIMEOUT_BUSINESS_DAYS = CONFIG.timeout_days
+# 4.0.0（2026-11-13〜）の正本は直近の安値の逆指値で、固定の幅・利確・期限が無い。この一覧（Sランクの規律表示）は
+# 3.0.0 の値（-7% / +15% / 20営業日）のまま出す
+STOP_LOSS_PCT = abs(CONFIG.stop_loss_pct if CONFIG.stop_loss_pct is not None else -7.0) / 100
+TAKE_PROFIT_PCT = (CONFIG.take_profit_pct if CONFIG.take_profit_pct is not None else 15.0) / 100
+TIMEOUT_BUSINESS_DAYS = CONFIG.timeout_days or 20
 
 
 def build_discipline_portfolio(screening: pd.DataFrame, regime: Regime | str) -> pd.DataFrame:
@@ -65,8 +67,8 @@ def build_discipline_portfolio(screening: pd.DataFrame, regime: Regime | str) ->
                 "timeout_date": timeout_date.isoformat(),
                 "rule": (
                     f"Sランクのみ / 地合い{regime_value}は最大{max_positions}銘柄 / "
-                    f"1枠{SLOT_CAPITAL // 10_000}万円 / 損切{abs(CONFIG.stop_loss_pct):.0f}% / "
-                    f"利確{CONFIG.take_profit_pct:.0f}% / {TIMEOUT_BUSINESS_DAYS}営業日タイムアウト"
+                    f"1枠{SLOT_CAPITAL // 10_000}万円 / 損切{STOP_LOSS_PCT * 100:.0f}% / "
+                    f"利確{TAKE_PROFIT_PCT * 100:.0f}% / {TIMEOUT_BUSINESS_DAYS}営業日タイムアウト"
                 ),
                 "cash_reason": "",
             }

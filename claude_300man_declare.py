@@ -4,13 +4,16 @@
 これまでは買い候補が毎日出ていても注文台帳に入る仕組みが無く、
 2026-07-21の1件（良品計画）以外は1件も約定していなかった。
 
-ルール（data/dual_300man_start.json が正本。2026-10-30 から 3.0.0）:
-  - 新規は検証済みAランク押し目を優先し、空き枠を厳格Sランクで補完。
-    同じ組の中は、売買代金の順位と52週高値からの距離の順位の合計が大きい順
+ルール（data/dual_300man_start.json が正本。2026-11-13 から 4.0.0）:
+  - 新規は、当日に52週新高値を付けた東証プライムの銘柄（screening_highs の 52W_NEW_HIGH。売買代金20日平均1億円以上、
+    TOB・イナゴの疑いなし、決算日が分かっていて決算の14営業日前〜翌営業日でない）を、時価総額の大きい順に
+    （2026-11-13 持ち主「52週高値で買いに変える」「スクリーニングした銘柄はすべて時価総額順に並べる」）
   - 1枠55万円・100株単位・現金の範囲内
   - 保有は最大5銘柄。すでに持っている銘柄は買い増ししない
-  - 手仕舞い: 逆指値 -7% / 指値 +15%（どちらも日中）/ 20営業日目の大引け（claude_300man_exits.py）
+  - 手仕舞い: 直近15営業日の安値の逆指値（毎晩引き上げ。損切りも利食いも。claude_300man_exits.py）
   - 口座の評価額が最高値から -8% 以下のあいだは、1日の新規を半分（最低1）にする
+  3.0.0（2026-10-30〜11-12）は、検証済みAランク押し目を優先して厳格Sランクで補い、売買代金と52週高値からの距離の
+  順位で並べ、逆指値 -7% / 指値 +15% / 20営業日目の大引けで売っていた（_claude_candidates は影の記録用に残す）。
   2.x（〜2026-10-29）は 1枠60万円・最大3銘柄・終値で -5% / +12% / 15営業日を判定して翌寄付で売り、
   口座 -5% で新規1、-10% で新規0（戻らない）だった。設定ファイルが 2.x のときは、その動きのまま。
 
@@ -58,8 +61,15 @@ STOP_LOSS_PCT = CONFIG.stop_loss_pct
 TAKE_PROFIT_PCT = CONFIG.take_profit_pct
 TIMEOUT_DAYS = CONFIG.timeout_days
 CLAUDE_RULES = CONFIG.strategy_rules["claude"]
-STRICT_RULE = CLAUDE_RULES["strict_momentum"]
-PULLBACK_RULE = CLAUDE_RULES["pullback_combo_v1"]
+# 3.0.0 の買いの条件（4.0.0 の設定ファイルには無い。影の記録 claude_300man_entry_shadow.py が使うので値を残す）
+LEGACY_STRICT_RULE = {"rank": "S", "score_min": 105, "turnover_20d_min": 1_000_000_000,
+                      "volume_ratio_5d_20d_min": 1.15, "ma25_gap_pct_min": 0, "ma25_gap_pct_max": 8}
+LEGACY_PULLBACK_RULE = {"rank": "A", "score_min": 80, "turnover_20d_min": 100_000_000, "volume_ratio_5d_20d_min": 1.1,
+                        "dist_52w_high_pct_min": 0, "dist_52w_high_pct_max": 7, "ma25_gap_pct_min": 0,
+                        "ma25_gap_pct_max": 3, "required_screen_tags": ["25MA_PULLBACK", "52W_PULLBACK"]}
+STRICT_RULE = CLAUDE_RULES.get("strict_momentum", LEGACY_STRICT_RULE)
+PULLBACK_RULE = CLAUDE_RULES.get("pullback_combo_v1", LEGACY_PULLBACK_RULE)
+NEW_HIGH_RULE = CLAUDE_RULES.get("new_high_52w_v1")
 MIN_SCORE = float(STRICT_RULE["score_min"])
 MIN_TURNOVER = float(STRICT_RULE["turnover_20d_min"])
 MIN_VOLUME_RATIO = float(STRICT_RULE["volume_ratio_5d_20d_min"])
@@ -212,6 +222,82 @@ def load_screening(output_dir: Path, today: date | None = None) -> pd.DataFrame:
     return screening
 
 
+def load_highs(output_dir: Path, today: date | None = None) -> pd.DataFrame:
+    """当日の52週高値の一覧（run_screening.py の screening_highs_*.csv）。当日の値の行だけ。無ければ空（見送り）。"""
+    today = today or datetime.now(JST).date()
+    found = sorted(output_dir.glob("screening_highs_*.csv"))
+    if not found:
+        print("claude_300man_declare=no_highs_file")
+        return pd.DataFrame()
+    try:
+        highs = pd.read_csv(found[-1], dtype=str).fillna("")
+    except Exception as error:  # noqa: BLE001
+        print(f"claude_300man_declare=highs_unreadable err={error}")
+        return pd.DataFrame()
+    if "data_date" not in highs.columns:
+        print(f"claude_300man_declare=highs_no_data_date file={found[-1].name}")
+        return pd.DataFrame()
+    fresh = highs[highs["data_date"].astype(str).str.slice(0, 10) == today.isoformat()].copy()
+    if fresh.empty:
+        print(f"claude_300man_declare=highs_stale file={found[-1].name} today={today}")
+    return fresh
+
+
+def _earnings_blocked(text: object, today: date) -> tuple[bool, str]:
+    """(買わないか, 理由)。決算日が分からない・決算の14営業日前〜翌営業日なら買わない。"""
+    from scanner.scoring import assess_earnings_window
+
+    raw = str(text or "").strip()[:10]
+    try:
+        when = date.fromisoformat(raw)
+    except ValueError:
+        return bool(NEW_HIGH_RULE and NEW_HIGH_RULE.get("earnings_known_required", True)), "決算日未確認"
+    window = assess_earnings_window(today, when)
+    return bool(window["exclude_for_earnings"]), "決算回避期間" if window["exclude_for_earnings"] else ""
+
+
+def new_high_candidates(highs: pd.DataFrame, today: date) -> pd.DataFrame:
+    """4.0.0 の買い候補: 当日の52週新高値（東証プライム）を時価総額の大きい順に。"""
+    import market_cap
+
+    if highs is None or highs.empty or not NEW_HIGH_RULE:
+        return pd.DataFrame()
+    rule = NEW_HIGH_RULE
+    ranked = highs.copy()
+    for source, target in (("turnover_20d", "_turnover"), ("current_price", "_price")):
+        ranked[target] = pd.to_numeric(ranked.get(source), errors="coerce")
+    ok = (
+        ranked.get("high_type", pd.Series("", index=ranked.index)).astype(str).eq(str(rule["high_type"]))
+        & ranked.get("market", pd.Series("", index=ranked.index)).astype(str).eq(str(rule["market"]))
+        & ranked["_turnover"].ge(float(rule["turnover_20d_min"]))
+        & (ranked["_price"] * 100).le(SLOT_YEN)
+    )
+    if rule.get("exclude_tob_suspect"):
+        ok &= ~ranked.get("tob_suspect", pd.Series("", index=ranked.index)).map(_truthy)
+    if rule.get("exclude_inago_suspect"):
+        ok &= ~ranked.get("inago_suspect", pd.Series("", index=ranked.index)).map(_truthy)
+    blocked = ranked.get("earnings_date", pd.Series("", index=ranked.index)).map(lambda v: _earnings_blocked(v, today))
+    ranked["_earnings_note"] = [why for _, why in blocked]
+    ranked.attrs["earnings_unknown"] = int((ok & ranked["_earnings_note"].eq("決算日未確認")).sum())
+    ranked.attrs["earnings_window"] = int((ok & ranked["_earnings_note"].eq("決算回避期間")).sum())
+    ok &= ~blocked.map(lambda pair: pair[0])
+    ranked = ranked[ok].sort_values("_turnover", ascending=False)
+    ranked["_candidate_priority"] = 0
+    ranked["_candidate_strategy"] = "claude_new_high_52w_v1"
+    out = market_cap.sort_frame_by_market_cap(ranked, "code", "current_price")
+    out.attrs.update(ranked.attrs)
+    return out
+
+
+def claude_candidates(output_dir: Path, today: date) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """(並べた買い候補, 値段の元にした一覧)。4.0.0 は52週新高値の一覧、3.x はスクリーニングの結果から。"""
+    if NEW_HIGH_RULE:
+        highs = load_highs(output_dir, today)
+        return new_high_candidates(highs, today), highs
+    screening = load_screening(output_dir, today)
+    return (_claude_candidates(screening) if not screening.empty else screening), screening
+
+
 def _price_map(screening: pd.DataFrame) -> dict[str, float]:
     out: dict[str, float] = {}
     if screening.empty:
@@ -356,7 +442,8 @@ def _order_score(ranked: pd.DataFrame) -> pd.Series:
     （押し目の範囲の中で）成績が上だった。前半と後半の両方でそろったのはこの2つだけ（2026-10-30 調べ）。
     出来高比・25日線からの距離は、前半と後半で向きがそろわなかった。
     """
-    if CLAUDE_RULES.get("candidate_order") != "turnover_and_distance_rank" or len(ranked) < 2:
+    # 4.0.0（candidate_order=market_cap）でも、影の記録が使う 3.0.0 の候補はこの並びのまま
+    if CLAUDE_RULES.get("candidate_order") not in {"turnover_and_distance_rank", "market_cap"} or len(ranked) < 2:
         return pd.Series(0.0, index=ranked.index)
     span = len(ranked) - 1
     turnover = (ranked["_turnover"].rank(method="average") - 1) / span
@@ -366,6 +453,14 @@ def _order_score(ranked: pd.DataFrame) -> pd.Series:
 
 def _candidate_reason(row: pd.Series) -> str:
     strategy = str(row.get("_candidate_strategy", "claude_momentum"))
+    if strategy == "claude_new_high_52w_v1":
+        import market_cap
+
+        cap = market_cap.cap_text(_float(row, "market_cap_yen"))
+        return (
+            f"52週新高値（当日高値が前日までの52週高値を上抜け）・{cap or '時価総額は取れず'}"
+            f"・売買代金20日平均{(_float(row, 'turnover_20d') or 0) / 1e8:,.1f}億円・悪材料ゲート通過"
+        )
     if strategy == "claude_pullback_combo_v1":
         return (
             f"検証済み押し目Aランク・スコア{row.get('score')}"
@@ -477,7 +572,7 @@ def declare(
     orders = _read(ORDERS_PATH, ORDER_COLUMNS)
     journal = _read(JOURNAL_PATH, JOURNAL_COLUMNS)
     orders_changed = _cancel_incompatible_pending(orders, today)
-    screening = load_screening(output_dir, today)
+    ranked, screening = claude_candidates(output_dir, today)
     regime = load_regime()
     declared_now: list[dict[str, str]] = []
 
@@ -585,7 +680,6 @@ def declare(
     elif screening.empty:
         print("claude_300man_declare=no_screening")
     else:
-        ranked = _claude_candidates(screening)
         # 翌寄付で売る銘柄の業種は、新規BUYと同時保有にならないため解放する。
         # これを残すと、出口と同時の同業種入替だけが不必要に止まる。
         used_sectors = _retained_sectors(open_rows, selling)

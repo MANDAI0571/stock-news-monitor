@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "phase_id": "claude-codex-phase2-2026-09-28",
-  "strategy_version": "3.0.0",
+  "strategy_version": "4.0.0",
   "restart_date": "2026-09-28",
   "mode": "paper",
   "accounts": {
@@ -11,58 +11,44 @@
     },
     "claude": {
       "starting_capital_jpy": 3000000,
-      "strategy": "52週高値の近くまで押した上昇トレンドの銘柄（押し目を優先し、順張りで補う）"
+      "strategy": "52週新高値を付けた東証プライムの銘柄を、時価総額の大きい順に買う。直近15営業日の安値を割ったら売る（損切りも利食いも）"
     }
   },
-  "execution": "買いは当日大引け後に宣言し、次の東証営業日の寄り付きでペーパー約定。売りは買った日から逆指値（損切り）と指値（利確）を出しておく形で日中に約定し、期限の営業日は大引けで売る",
+  "execution": "買いは当日大引け後に宣言し、次の東証営業日の寄り付きでペーパー約定。売りは買った日から逆指値を直近15営業日の安値に出しておき、毎晩その日までの直近15営業日の安値まで引き上げる（下げない）。日中に安値が届いたらその値段、寄り付きで下回っていたら始値で売る",
   "strategy_rules": {
     "claude": {
       "entry_priority": [
-        "pullback_combo_v1",
-        "strict_momentum"
+        "new_high_52w_v1"
       ],
       "reentry_cooldown_business_days": 5,
-      "strict_momentum": {
-        "rank": "S",
-        "score_min": 105,
-        "turnover_20d_min": 1000000000,
-        "volume_ratio_5d_20d_min": 1.15,
-        "ma25_gap_pct_min": 0,
-        "ma25_gap_pct_max": 8
-      },
-      "pullback_combo_v1": {
-        "rank": "A",
-        "score_min": 80,
+      "new_high_52w_v1": {
+        "high_type": "52W_NEW_HIGH",
+        "market": "東証プライム",
         "turnover_20d_min": 100000000,
-        "volume_ratio_5d_20d_min": 1.1,
-        "dist_52w_high_pct_min": 0,
-        "dist_52w_high_pct_max": 7,
-        "ma25_gap_pct_min": 0,
-        "ma25_gap_pct_max": 3,
-        "required_screen_tags": [
-          "25MA_PULLBACK",
-          "52W_PULLBACK"
-        ]
+        "exclude_tob_suspect": true,
+        "exclude_inago_suspect": true,
+        "earnings_known_required": true,
+        "note": "当日の高値が前日までの52週高値を上抜いた銘柄（screening_highs の 52W_NEW_HIGH）。決算日が分からない・決算の14営業日前〜翌営業日の銘柄は買わない"
       },
-      "candidate_order": "turnover_and_distance_rank",
-      "candidate_order_note": "押し目→順張りの順。同じ組の中は、売買代金の順位と52週高値からの距離の順位の合計が大きい順（過去4年の日足で、どちらも前半・後半の両方で大きい方が成績が上だった）"
+      "candidate_order": "market_cap",
+      "candidate_order_note": "時価総額（発行済株式数 data/jp_shares.csv × 終値）の大きい順。株式数が無い銘柄は最後に売買代金の大きい順（2026-11-13 持ち主「スクリーニングした銘柄はすべて時価総額順に並べる」）"
     }
   },
   "shared_risk_rules": {
     "max_positions": 5,
     "slot_capital_jpy": 550000,
-    "stop_loss_pct": -7,
-    "take_profit_pct": 15,
-    "timeout_business_days": 20,
+    "stop_loss_pct": null,
+    "take_profit_pct": null,
+    "timeout_business_days": null,
     "max_entry_gap_pct": 3,
     "pending_expiry_business_days": 3,
     "execution_costs_jpy": 0,
     "trailing_stop": {
-      "enabled": false,
-      "note": "数値ルール未定義。exit_typeとMFE/利益捕捉率を記録し、定義後に有効化する"
+      "enabled": true,
+      "note": "2026-11-13 から（直近15営業日の安値）"
     },
-    "exit_execution": "standing_orders",
-    "exit_execution_note": "逆指値・指値は日足の安値・高値で判定。寄り付きで超えていたら始値。同じ日に両方届いたら損切りを先にする（安全側）",
+    "exit_execution": "trailing_low",
+    "exit_execution_note": "逆指値＝直近15営業日の安値（その日の前の営業日までの15本の安値の最小）。毎晩引き上げ、下げない。日足の安値が届いたらその値段、寄り付きで下回っていたら始値。利確の指値と期限はない（利食いも直近の安値割れで行う）",
     "regime_slots": {
       "NORMAL": 5,
       "CAUTION": 2,
@@ -70,13 +56,21 @@
       "STOP": 0
     },
     "peak_drawdown_reduce_pct": -8,
-    "peak_drawdown_note": "口座の評価額が最高値から-8%以下のあいだは新規の枠を半分（最低1）にする。旧ルールの-10%で永久停止はやめた"
+    "peak_drawdown_note": "口座の評価額が最高値から-8%以下のあいだは新規の枠を半分（最低1）にする。旧ルールの-10%で永久停止はやめた",
+    "trailing_low_days": 15,
+    "rule_start_date": "2026-11-13",
+    "rule_start_note": "4.0.0 の売りはこの日の立会から。それより前に買った保有も、この日から直近15営業日の安値の逆指値に切り替える（前の日までの売りは 3.0.0 のまま付いている）"
   },
   "previous_rules_accepted": [
     {
       "strategy_version": "2.1.0",
       "rule_hash": "73ec747f8431",
       "note": "2026-10-30 の切り替え前に宣言済みの注文だけを約定させるため"
+    },
+    {
+      "strategy_version": "3.0.0",
+      "rule_hash": "10a041d150ff",
+      "note": "2026-11-13 の切り替え前に宣言済みの注文だけを約定させるため"
     }
   ],
   "rule_change_log": [
@@ -85,6 +79,12 @@
       "from": "2.1.0",
       "to": "3.0.0",
       "reason": "持ち主「300万運用はもう少しアクティブに運用し、利益を出し損を減らす」。旧ルールの損切りは終値で判定して翌寄付で売るため、決めた-5%を超えて-7〜-8%で売っていた（3回とも）"
+    },
+    {
+      "date": "2026-11-13",
+      "from": "3.0.0",
+      "to": "4.0.0",
+      "reason": "持ち主「300万運用は損切り 直近の安値を下回ったら 利食いも」「52週高値で買いに変える」「スクリーニングした銘柄はすべて時価総額順に並べる」"
     }
   ]
 }

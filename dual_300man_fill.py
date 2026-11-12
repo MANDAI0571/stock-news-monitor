@@ -115,7 +115,8 @@ def _fill_buy(
         _cancel(orders, idx, "CANCELLED_CAPITAL", "約定額が現金残を超過")
         print(f"{account}_300man_fill=cancelled code={order['code']} reason=capital_limit")
         return journal, False
-    stop_risk = value * abs(CONFIG.stop_loss_pct) / 100
+    # 4.0.0 は直近の安値の逆指値で、買った時点の幅が決まっていない（0 と書かずに空にする）
+    stop_risk = value * abs(CONFIG.stop_loss_pct) / 100 if CONFIG.stop_loss_pct is not None else None
     row = {
         "phase_id": order.get("phase_id", ""),
         "strategy_version": order.get("strategy_version", ""),
@@ -126,8 +127,8 @@ def _fill_buy(
         "name": order["name"], "sector": order.get("sector", ""),
         "entry_price": f"{price:.2f}", "shares": str(shares), "position_value": str(value),
         "position_pct_initial": f"{value / CONFIG.initial_cash * 100:.2f}",
-        "planned_stop_risk_jpy": f"{stop_risk:.0f}",
-        "planned_stop_risk_pct_initial": f"{stop_risk / CONFIG.initial_cash * 100:.2f}",
+        "planned_stop_risk_jpy": f"{stop_risk:.0f}" if stop_risk is not None else "",
+        "planned_stop_risk_pct_initial": f"{stop_risk / CONFIG.initial_cash * 100:.2f}" if stop_risk is not None else "",
         "strategy": order.get("strategy") or DEFAULT_STRATEGIES[account],
         "source_order_date": order["decision_date"],
         "entry_decision_price": f"{decision_price:.2f}" if decision_price else "",
@@ -253,8 +254,7 @@ def write_ledger(account: str, orders: pd.DataFrame, journal: pd.DataFrame) -> N
             f"{int(float(row['shares']))}株 | {row['status']} | {row.get('phase_id') or '-'} / {row.get('rule_hash') or '-'} |"
         )
     exits_note = (
-        f"売りは逆指値（{CONFIG.stop_loss_pct:+.0f}%）・指値（{CONFIG.take_profit_pct:+.0f}%）を日足の安値・高値で判定し、"
-        f"{CONFIG.timeout_days}営業日目は大引けで売ります（ルール {CONFIG.strategy_version}、claude_300man_exits.py）。"
+        f"売りは{CONFIG.exit_rule_text}を日足で判定します（ルール {CONFIG.strategy_version}、claude_300man_exits.py）。"
         if CONFIG.standing_exit_orders else ""
     )
     lines.extend(["", "買いの価格は宣告した次の東証営業日の始値をYahoo Financeから取得します。" + exits_note +

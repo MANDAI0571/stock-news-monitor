@@ -168,6 +168,7 @@ def main() -> None:
     _test_liquidity_track()
     _test_note_two_us()
     _test_us_ict()
+    _test_market_cap_and_daily_scan()
     _test_note_assets()
     _test_intraday_alert_grade()
     _test_alert_grade_track()
@@ -3148,10 +3149,23 @@ def _test_claude_note_structure_is_readable() -> None:
 def _test_intraday_mail_is_capped() -> None:
     """1通のメールに全件を詰め込まない（2026-08-03の347件事故の再発防止）。
 
-    件数そのものは必ず残し、明細だけを売買代金の大きい順に上位N件へ絞る。
+    件数そのものは必ず残し、明細だけを時価総額の大きい順に上位N件へ絞る（時価総額が出ない銘柄は最後に
+    売買代金の大きい順。2026-11-13 から。それまではランク→売買代金の順）。
     省略した件数とCSVの案内を本文に必ず書く。
     """
+    import market_cap
     from intraday_high_alert import Alert, build_body, build_subject, select_mail_alerts
+
+    saved_table = market_cap.shares_table
+    market_cap.shares_table = lambda path=None: {}
+    try:
+        _check_intraday_mail_is_capped(Alert, build_body, build_subject, select_mail_alerts, market_cap)
+    finally:
+        market_cap.shares_table = saved_table
+    print("self-test: ザラ場メールは上位N件に制限され件数とCSV案内が残る OK")
+
+
+def _check_intraday_mail_is_capped(Alert, build_body, build_subject, select_mail_alerts, market_cap) -> None:
 
     def mk(i: int, turnover: int) -> Alert:
         return Alert(
@@ -3166,7 +3180,7 @@ def _test_intraday_mail_is_capped() -> None:
     shown, omitted = select_mail_alerts(alerts, max_items=25)
     assert len(shown) == 25, len(shown)
     assert omitted == 322, omitted
-    # 売買代金の大きい順に選ばれること
+    # 時価総額が出ないときは売買代金の大きい順に選ばれること
     assert shown[0].turnover_20d == 347 * 100_000_000, shown[0].turnover_20d
     assert shown[0].turnover_20d > shown[-1].turnover_20d
 
@@ -3179,22 +3193,24 @@ def _test_intraday_mail_is_capped() -> None:
     few = alerts[:5]
     shown2, omitted2 = select_mail_alerts(few, max_items=25)
     assert omitted2 == 0 and len(shown2) == 5
-    # 2026-10-16: ランクの高い順（SS→S→A→B→C→ランクなし）、同じランクは売買代金の大きい順
+    # 2026-11-13: 時価総額の大きい順（ランクは使わない）。時価総額が出ない銘柄は最後に売買代金の大きい順
     graded = [mk(i, turnover=(i + 1) * 100_000_000) for i in range(6)]
     for a, g in zip(graded, ("B", "", "SS", "C", "S", "SS")):
         a.grade = g
-    order = [(a.grade, a.turnover_20d) for a in select_mail_alerts(graded, max_items=25)[0]]
-    assert [g for g, _ in order] == ["SS", "SS", "S", "B", "C", ""], order
-    assert order[0][1] > order[1][1], order
+    table = {"1000": (5e8, "2026-11-13"), "1003": (9e8, "2026-11-13"), "1001": (1e6, "2026-11-13")}
+    market_cap.shares_table = lambda path=None: table
+    order = [a.code for a in select_mail_alerts(graded, max_items=25)[0]]
+    assert order == ["1003", "1000", "1001", "1005", "1004", "1002"], order
     top, cut = select_mail_alerts(graded, max_items=2)
-    assert [a.grade for a in top] == ["SS", "SS"] and cut == 4
+    assert [a.code for a in top] == ["1003", "1000"] and cut == 4
+    assert "時価総額" in build_body(graded, max_items=25)
+    market_cap.shares_table = lambda path=None: {}
     assert "省略" not in build_body(few, max_items=25)
     # 0以下は無制限（従来どおり）
     shown3, omitted3 = select_mail_alerts(alerts, max_items=0)
     assert omitted3 == 0 and len(shown3) == 347
     # 件名は従来どおり件数を伝える
     assert "ほか346件" in build_subject(alerts)
-    print("self-test: ザラ場メールは上位N件に制限され件数とCSV案内が残る OK")
 
 
 def _test_intraday_mail_time_is_jst() -> None:
@@ -3358,6 +3374,19 @@ def _test_intraday_relay_contract() -> None:
 
 def _test_note_two() -> None:
     """note の2本立て（note_two.py、2026-10-16 追加）。記事の日の決め方、本文、manifest、ワークフロー。"""
+    import market_cap
+
+    table = {"2222": (1e9, "2026-11-13"), "3333": (5e8, "2026-11-13"), "1111": (1e7, "2026-11-13"),
+             "7003": (1e9, "2026-11-13"), "9697": (5e8, "2026-11-13")}
+    saved = market_cap.shares_table
+    market_cap.shares_table = lambda path=None: table
+    try:
+        _check_note_two()
+    finally:
+        market_cap.shares_table = saved
+
+
+def _check_note_two() -> None:
     import datetime as dt
     import json
     import tempfile
@@ -3387,10 +3416,17 @@ def _test_note_two() -> None:
     climax = [{"code": "8001", "name": "x", "dev25_pct": -10.0, "ratio": 3.0}]
     title, lines = N.ranking_lines(dt.date(2026, 10, 15), alerts, pb, climax, info, {"建設業": -0.05}, {"7001": 30.0})
     text = "\n".join(lines)
-    assert "SS 1件・S 1件" in text and text.index("**SS｜3333") < text.index("**S｜2222")
-    assert "1. SS　3333" in text and "2. S　2222" in text and "ランクなし　5555" in text
-    assert "注意なし1件" in text and "7003 c（200MA）" in text and "7001" not in text.split("押し目")[1].split("##")[0].split("注意あり")[0]
-    assert "1. ◎ 8001" in text and "売買をすすめるものではありません" in text
+    # 2026-11-13 持ち主「スクリーニングした銘柄はすべて時価総額順に並べる」「過去の成績という言葉は入らない」:
+    # ランク（SS〜C）は使わず、時価総額の大きい順。時価総額が出ない銘柄（株式数なし）は最後
+    assert (text.index("**2222 銘柄2222") < text.index("**3333 銘柄3333") < text.index("**1111 銘柄1111")
+            < text.index("**5555 銘柄5555")), text
+    assert "1. 2222 銘柄2222（時価総額 1,000億円）" in text and "4. 5555 銘柄5555" in text, text
+    assert "時価総額 1,000億円" in text.split("**2222")[1].split("**3333")[0]
+    for bad in ("過去の成績", "ランクについて", "SS", "ランクなし"):
+        assert bad not in text, bad
+    assert "注意なし1件" in text and "7003 c（200MA" in text and "7001" not in text.split("押し目")[1].split("##")[0].split("注意あり")[0]
+    assert "1. ◎ 8001" in text and "売買をすすめるものではありません" in text and "## 印について" in text
+    assert "## PPP" not in text and "循環物色" not in text                # 日足の数字（facts）が無い日は節を出さない
     from note_legal import COMPLIANCE_LINES
     assert all(x in lines for x in COMPLIANCE_LINES)
     _, none_lines = N.ranking_lines(dt.date(2026, 10, 15), [], pb.iloc[0:0], None, {}, {}, {})
@@ -3402,7 +3438,7 @@ def _test_note_two() -> None:
     _, ict_lines = N.ranking_lines(dt.date(2026, 10, 15), [], pb.iloc[0:0], None, {}, {}, {}, ict)
     it = "\n".join(ict_lines)
     assert "押し目の箱（オーダーブロック）まで戻った銘柄（1件" in it and "1. ③ 1234 テスト（終値1,234.0円" in it, it
-    assert "1.16 / 3.18 / 2.05 / 3.12" in it and it.index("押し目の箱") < it.index("## ランクについて")
+    assert "1.16 / 3.18 / 2.05 / 3.12" in it and it.index("押し目の箱") < it.index("## 印について")
     _, ict0 = N.ranking_lines(dt.date(2026, 10, 15), [], pb.iloc[0:0], None, {}, {}, {}, [])
     assert "押し目の箱（オーダーブロック）まで戻った銘柄（0件" in "\n".join(ict0) and "本日は該当なし。" in "\n".join(ict0)
     journal = pd.DataFrame([{"status": "OPEN", "code": "9697", "name": "カプコン", "shares": "100", "entry_date": "2026-10-05",
@@ -3415,36 +3451,43 @@ def _test_note_two() -> None:
     assert "4,489円（+1.2%、+5,500円）" in btext and "窓が開いたため見送り" in btext and "Codex" not in btext
     assert all(x in b for x in COMPLIANCE_LINES)
     assert "押し目の箱" not in btext                                  # 判定できなかった日（None）は節を出さない
-    # 2026-10-30 持ち主「300万運用は…読者を惹きつけるように…記事の内容で惹きつけても良い」（ルール 3.0.0）:
-    # 持ち株ごとに出しておく注文、タイトルに評価額、今夜の候補、本日の売り、ルールを変えた理由（負けている点も）
-    assert "出しておく注文：逆指値 4,124円（-7%）・指値 5,099円（+15%）・期限 " in btext, btext
     assert tb.startswith("Claudeが300万円運用｜運用状況 2026-10-15 評価額248.2万円（-17.3%）"), tb
-    assert "## ルールを変えました" not in btext and "## 今夜の判定の買い候補" not in btext
+    # 2026-11-13 持ち主「物差し入らない」: TOPIX の物差しの行は出さない。逆指値は直近15営業日の安値（4.0.0）
+    assert "TOPIX" not in btext and "1306" not in btext and "## ルールを変えました" not in btext
+    assert "出しておく逆指値：直近15営業日の安値（値段を取れませんでした）" in btext, btext
     from claude_300man_exits import ExitEvent
-    cand = pd.DataFrame([{"code": "3333", "name": "候補", "_candidate_strategy": "claude_pullback_combo_v1",
-                          "turnover_20d": "2500000000", "dist_52w_high_pct": "5.2", "current_price": "2850"}])
-    sold = {"9697": ExitEvent(dt.date(2026, 10, 30), 4123.62, 4123.62, "STOP_LOSS", "逆指値 4,123.6円（-7%）に日中の安値 4,100.0円が届いた", 18)}
-    tc, c = N.portfolio_lines(dt.date(2026, 10, 30), journal, orders, "- 現金残: 2,033,400円\n", {}, None,
+    cand = pd.DataFrame([{"code": "3333", "name": "候補", "_candidate_strategy": "claude_new_high_52w_v1",
+                          "turnover_20d": "2500000000", "current_price": "2850", "market_cap_yen": 2.85e11}])
+    sold = {"9697": ExitEvent(dt.date(2026, 11, 13), 4600.0, 4600.0, "TAKE_PROFIT",
+                              "直近15営業日の安値 4,600.0円を日中の安値が割った（利食い）", 18)}
+    tc, c = N.portfolio_lines(dt.date(2026, 11, 13), journal, orders, "- 現金残: 2,033,400円\n", {}, None,
                               today_exits=sold, candidates=cand, bench=(3000.0, 3090.0))
     ctext = "\n".join(c)
-    assert tc.endswith("・本日1銘柄売り") and "## ルールを変えました（2026-10-30から）" in ctext
-    assert "**どちらのルールもこれを下回りました。**" in ctext and "約+116%" in ctext
-    assert "## 本日、出しておいた注文に届いた売り" in ctext and "4,434円 → 4,124円（-7.0%、-31,038円）" in ctext, ctext
-    assert "1. 3333 候補（押し目・売買代金 20日平均25.0億円・52週高値から-5.2%・終値 2,850円）" in ctext
-    assert "空いている枠は5つです" in ctext and "TOPIX連動ETF（1306）は同じ期間（9/28の始値から） +3.0%" in ctext
-    assert ctext.index("## 今夜の判定の買い候補") < ctext.index("## ルール\n")
+    assert tc.endswith("・本日1銘柄売り") and "## ルールを変えました（2026-11-13から）" in ctext
+    assert "**新しいやり方はこれとほぼ同じで、上回ってはいません。**" in ctext and "+112%" in ctext   # 負けている点も書く
+    assert "## 本日、出しておいた注文に届いた売り" in ctext and "9697 カプコン：利食い。" in ctext
+    assert "4,434円 → 4,600円（+3.7%、+16,600円）" in ctext, ctext
+    assert "1. 3333 候補（52週新高値・時価総額 2,850億円・売買代金 20日平均25.0億円・終値 2,850円）" in ctext, ctext
+    assert "空いている枠は5つです" in ctext and "TOPIX" not in ctext            # bench を渡しても物差しは出さない
+    # 2026-11-13 持ち主「保有銘柄5銘柄の後に5銘柄と損益通算とを並べる チャート」: 保有 → 次の買い候補 → 損益通算（棒）
+    assert (ctext.index("## 保有銘柄") < ctext.index("## 次の買い候補（52週新高値・時価総額の大きい順に5件まで）")
+            < ctext.index("## 損益通算") < ctext.index("## ルール\n")), ctext
+    assert "本日の売りの損益（台帳には夜に付きます）：+16,600円" in ctext and "- 通算　□" in ctext
     assert "判定のときにスクリーニングをし直すので、顔ぶれが変わることがあります。" in ctext
+    assert N.pnl_bar(3.4) == "■■■" and N.pnl_bar(-1.2) == "□" and N.pnl_bar(0.3) == "・" and len(N.pnl_bar(55)) == 20
+    _, d = N.portfolio_lines(dt.date(2026, 10, 15), journal, orders, "- 現金残: 2,033,400円\n", {"9697": 4489.0},
+                             stops={"9697": 4300.0})
+    assert "｜出しておく逆指値：4,300円（直近15営業日の安値・買値から" in "\n".join(d), "\n".join(d)
     # 2026-10-30: 記事で候補0件（「お休みする見込み」）の夜に買いが出た。決算日が取れずに外れた分を数えて、言い切らない
-    scr = {"code": "3333", "name": "候補", "data_date": "2026-10-30", "rank": "A", "score": "99", "turnover_20d": "2500000000",
-           "volume_ratio_5d_20d": "1.33", "dist_52w_high_pct": "5.8", "ma25_gap_pct": "1.0", "ma75_gap_pct": "2.0",
-           "lot_value_100": "400200", "exclude_for_earnings": "False", "screen_tags": "52W_PULLBACK,25MA_PULLBACK",
-           "sector": "卸売業", "current_price": "4002"}
+    high = {"code": "3333", "name": "候補", "data_date": "2026-10-30", "market": "東証プライム", "high_type": "52W_NEW_HIGH",
+            "turnover_20d": "2500000000", "current_price": "4002", "tob_suspect": "False", "inago_suspect": "False",
+            "sector": "卸売業"}
     no_net = lambda ticker: (_ for _ in ()).throw(RuntimeError("no net"))  # noqa: E731
     found = {}
-    for status in ("未確認", "確認済"):
+    for key, when in (("未確認", ""), ("確認済", "2027-01-29")):
         with tempfile.TemporaryDirectory() as tmp:
-            pd.DataFrame([dict(scr, earnings_status=status)]).to_csv(Path(tmp) / "screening_result.csv", index=False)
-            _, found[status], _ = N.portfolio_extras(dt.date(2026, 10, 30), journal, Path(tmp), no_net)
+            pd.DataFrame([dict(high, earnings_date=when)]).to_csv(Path(tmp) / "screening_highs_20261030_160000.csv", index=False)
+            _, found[key], _ = N.portfolio_extras(dt.date(2026, 10, 30), journal, Path(tmp), no_net)
     assert len(found["未確認"]) == 0 and found["未確認"].attrs.get("earnings_hidden") == 1, found["未確認"].attrs
     assert len(found["確認済"]) == 1 and not found["確認済"].attrs.get("earnings_hidden")
     for cands, expect in ((found["未確認"], "決算日を確かめられなかった銘柄を候補に入れられず"),
@@ -3524,7 +3567,7 @@ def _test_us_ict() -> None:
     src = Path("note_two_us.py").read_text(encoding="utf-8")
     assert "us_ict.state(df.iloc[-260:])" in src and 'us_ict.section_lines(L.get("ict", []))' in src
     jsrc = Path("note_two.py").read_text(encoding="utf-8")
-    assert "ict_rows(universe" in jsrc and 'us_ict.section_lines(ict, market="jp")' in jsrc and "note_two_ict=failed" in jsrc
+    assert "ict_rows(universe" in jsrc and 'us_ict.section_lines(ict, market="jp", keep_order=True)' in jsrc and "note_two_ict=failed" in jsrc
     # 記事に出した銘柄のその後（ict_track.py）
     import datetime as dt
     import tempfile
@@ -4081,9 +4124,21 @@ def _test_claude_x_posts() -> None:
     fill = mo[1]["text"]
     assert "🔴" in sell and "損切りで売り" in sell and "-7.0%・-21,000円" in sell and "保有13営業日" in sell, sell
     assert order.startswith("【Claude×300万円 注文】11/5の寄付で買います") and "11/4の終値 1,800.0円で約54万円" in order, order
-    stop, take = (1000 * (1 + CONFIG.stop_loss_pct / 100), 1000 * (1 + CONFIG.take_profit_pct / 100))
-    assert f"逆指値ライン {stop:,.1f}円" in fill and f"指値 {take:,.1f}円" in fill and "11/4の寄付で 1,000.0円×500株" in fill, fill
-    assert mo[1]["line"] == stop and ev[0]["line"] == 3000.0                  # 画像の点線: 約定は逆指値、売りは買値
+    assert "11/4の寄付で 1,000.0円×500株" in fill, fill
+    if CONFIG.trailing_low:
+        # 4.0.0: 逆指値は直近15営業日の安値。日足が取れないときは値段を書かず決まりだけ
+        assert "逆指値は直近15営業日の安値（毎晩引き上げ）" in fill and "／指値" not in fill, fill
+        assert mo[1]["line"] == 0.0 and ev[0]["line"] == 3000.0
+        days = pd.bdate_range("2026-10-01", "2026-11-04")
+        bars = pd.DataFrame({"Open": 1000.0, "High": 1010.0, "Low": 950.0, "Close": 1000.0, "Volume": 1.0}, index=days)
+        with_stop = XP.build_posts("morning", day, orders, journal, lambda _t: bars)[1]
+        assert with_stop["line"] == 950.0 and "逆指値ライン 950.0円（直近15営業日の安値・-5.0%）／毎晩引き上げ" in with_stop["text"]
+        assert x_length(with_stop["text"]) <= 280
+        assert "買えたら 逆指値は直近15営業日の安値" in order, order
+    else:
+        stop, take = (1000 * (1 + CONFIG.stop_loss_pct / 100), 1000 * (1 + CONFIG.take_profit_pct / 100))
+        assert f"逆指値ライン {stop:,.1f}円" in fill and f"指値 {take:,.1f}円" in fill, fill
+        assert mo[1]["line"] == stop and ev[0]["line"] == 3000.0              # 画像の点線: 約定は逆指値、売りは買値
     assert "|買値 [\\d,.]+円)/)" in Path("docs/clip.html").read_text(encoding="utf-8") and "買値 3,000.0円" in sell
     cash = F.cash_balance(journal)
     assert f"評価額 {cash + 500 * 1000 + 200 * 2100:,.0f}円" in summary and "保有2銘柄" in summary and "売り1件" in summary, summary
@@ -4247,7 +4302,8 @@ def _test_intraday_alert_grade() -> None:
     f = G.facts_from_history(h)
     assert f is not None and f["dist52_pct"] < 0 and 0 <= f["close_pos"] <= 1
     assert G.facts_from_history(h.tail(100)) is None
-    # メール: 等級の行と末尾の説明（売買をすすめるものではない）が出る
+    # メール: 2026-11-13 持ち主「過去の成績という言葉は入らない」→ 等級の行・成績の表は載せない。
+    # 末尾の「投資助言ではなく、スクリーニング通知です」は残す
     a = Alert(code="1234", name="テスト", current_price=100.0, alert_type="直近高値ブレイク",
               high_type="SWING_HIGH_BREAK", line_label="直近高値", line_price=95.0, dist_pct=0.0,
               is_break=True, volume_ratio=1.2, turnover_20d=300_000_000, reason="r",
@@ -4255,8 +4311,8 @@ def _test_intraday_alert_grade() -> None:
     body = build_body([a])
     html = build_html_body([a])
     for text in (body, html):
-        assert "過去の成績ランク" in text and "売買をすすめるものではありません" in text
-        assert "S: 2022-23 1.17" in text
+        assert "過去の成績" not in text and "投資助言ではなく、スクリーニング通知です" in text
+        assert "S: 2022-23 1.17" not in text
     # 2026-10-26 持ち主「リアルタイムメールで出た銘柄を一つずつコピペしてXなどに貼れるよう」: 投稿用の文と 𝕏 のボタン
     from urllib.parse import unquote
 
@@ -4333,17 +4389,17 @@ def _test_intraday_alert_grade() -> None:
     # 等級が無いアラートだけなら、末尾の説明は出さない
     b = Alert(**{**a.__dict__, "grade": "", "grade_score": 0, "grade_reasons": []})
     assert "過去の成績ランクについて" not in build_body([b])
-    # 市場ごと（2026-10-12）: スタンダードの数字も載り、グロースは等級なしとその理由
+    # 市場ごとの等級（2026-10-12）は計算だけ残す（記録 alert_grade_track 用）。メールには出さない（2026-11-13）
     for text in (body, html):
-        assert "東証スタンダード（24,249場面）" in text and "S: 2022-23 0.95" in text
+        assert "24,249場面" not in text and "S: 2022-23 0.95" not in text
     facts = {"dist52_pct": -2.0, "close_pos": 0.1, "ret20": 0.01}
     assert G.grade_of(facts, 0.0, "東証グロース") == ("", 0, [G.GROWTH_NOTE])
     assert G.grade_of(facts, 0.0, "東証スタンダード")[0] == "SS"
     c = Alert(**{**a.__dict__, "grade": "", "grade_score": 0,
                  "grade_reasons": [G.GROWTH_NOTE], "market": "東証グロース"})
     for text in (build_body([c]), build_html_body([c])):
-        assert "過去の成績ランク:なし（グロース市場は" in text and "過去の成績ランクについて" in text
-    print("self-test: ザラ場アラートの過去の成績ランク OK")
+        assert "過去の成績" not in text
+    print("self-test: ザラ場アラートの等級（計算のみ・メールに出さない） OK")
 
 
 def _test_alert_grade_track() -> None:
@@ -4418,7 +4474,8 @@ def _test_alert_grade_track() -> None:
                       high_type="SWING_HIGH_BREAK", line_label="直近高値", line_price=95.0,
                       dist_pct=0.0, is_break=True, volume_ratio=1.2, turnover_20d=300_000_000,
                       reason="r", grade="S", grade_score=1, grade_reasons=[])
-            assert "実際のアラートでの成績" in build_body([a])
+            # 2026-11-13 持ち主「過去の成績という言葉は入らない」: メールには載せない（記録と集計は続ける）
+            assert "実際のアラートでの成績" not in build_body([a])
         finally:
             G.FORWARD_PATH = saved
 
@@ -5464,7 +5521,24 @@ def _test_upstream_outage_judgement() -> None:
 
 
 def _test_claude_300man_standing_exits() -> None:
-    """3.0.0 の売り（逆指値-7%・指値+15%・20営業日目の大引け）を日足で判定して台帳に付ける（claude_300man_exits.py）。"""
+    """3.0.0 の売り（逆指値-7%・指値+15%・20営業日目の大引け）を日足で判定して台帳に付ける（claude_300man_exits.py）。
+    2026-11-13 から本番は 4.0.0 なので、3.0.0 の設定に差し替えて確かめる。"""
+    import dataclasses
+
+    import claude_300man_exits as X
+    from dual_300man_config import CONFIG
+
+    legacy = dataclasses.replace(CONFIG, exit_execution="standing_orders", stop_loss_pct=-7.0, take_profit_pct=15.0,
+                                 timeout_days=20, trailing_low_days=None, rule_start_date=None)
+    saved = X.CONFIG
+    X.CONFIG = legacy
+    try:
+        _check_claude_300man_standing_exits_v3()
+    finally:
+        X.CONFIG = saved
+
+
+def _check_claude_300man_standing_exits_v3() -> None:
     import tempfile
     from datetime import date
 
@@ -5549,6 +5623,186 @@ def _test_claude_300man_standing_exits() -> None:
     declare_src = Path("claude_300man_declare.py").read_text(encoding="utf-8")
     assert declare_src.index("settle_standing_exits(today)") < declare_src.index("orders = _read(ORDERS_PATH")
     print("self-test: 300万円運用 3.0.0 の逆指値・指値・期限 OK")
+
+
+def _test_market_cap_and_daily_scan() -> None:
+    """時価総額の並び（market_cap.py）と、ランク記事の4つの節（daily_market_scan.py）。2026-11-13 追加。"""
+    import datetime as dt
+    import tempfile
+
+    import numpy as np
+
+    import daily_market_scan as S
+    import market_cap as M
+
+    assert M.cap_text(1.2345e12) == "時価総額 1兆2,345億円" and M.cap_text(3e12) == "時価総額 3兆円"
+    assert M.cap_text(8.5e10) == "時価総額 850億円" and M.cap_text(5e8) == "時価総額 5.0億円" and M.cap_text(None) == ""
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "shares.csv"
+        path.write_text("code,shares,asof\n1111,1000,2026-11-01\n2222,5000,2026-09-01\n3333,0,2026-11-01\n", encoding="utf-8")
+        assert M.market_cap_yen("1111.T", 100, path) == 100_000 and M.market_cap_yen("3333", 100, path) is None
+        assert M.market_cap_yen("1111", "", path) is None and M.market_cap_yen("9999", 100, path) is None
+        rows = [("9999", 1.0), ("1111", 10.0), ("2222", 10.0), ("8888", 1.0)]
+        got = M.sort_by_market_cap(rows, code=lambda r: r[0], price=lambda r: r[1], path=path)
+        assert [r[0] for r in got] == ["2222", "1111", "9999", "8888"], got             # 出ない銘柄は最後・もとの順
+        frame = M.sort_frame_by_market_cap(pd.DataFrame({"code": ["1111", "7777", "2222"], "current_price": [10, 5, 10]}),
+                                           path=path)
+        assert frame["code"].tolist() == ["2222", "1111", "7777"] and frame["market_cap_yen"].iloc[0] == 50_000
+        # 取り直し: 古い（30日より前）・無い銘柄だけ。取れなかった銘柄は前の値を残す
+        saved = (M._fetch_batch, M._fetch_one)
+        asked = []
+        M._fetch_batch = lambda codes: asked.extend(codes) or {"2222": 6000.0}
+        M._fetch_one = lambda code: 7000.0 if code == "4444" else None
+        try:
+            stats = M.refresh(["1111", "2222", "3333", "4444.T"], path, today=dt.date(2026, 11, 13), budget_s=60)
+        finally:
+            M._fetch_batch, M._fetch_one = saved
+        assert asked == ["2222", "3333", "4444"] and stats == {"wanted": 3, "updated": 2, "missed": 1, "total": 3}, (asked, stats)
+        table = M.shares_table(path)
+        assert table["2222"] == (6000.0, "2026-11-13") and table["4444"] == (7000.0, "2026-11-13")
+        assert table["1111"] == (1000.0, "2026-11-01") and "3333" not in table
+        assert "name" not in path.read_text(encoding="utf-8").splitlines()[0]          # 銘柄名は入れない
+
+    days = pd.bdate_range("2026-01-05", periods=260)
+    up = np.linspace(1000, 1500, 260)
+    rise = pd.DataFrame({"Open": up - 2, "High": up + 5, "Low": up - 5, "Close": up, "Volume": 1e6}, index=days)
+    f = S.stock_facts(rise)
+    assert f["ppp"] and not f["ppp_new"] and not f["downtrend"] and f["turnover20"] > 1e8 and abs(f["ret5"]) < 0.02
+    down = np.linspace(1500, 1000, 260)
+    fall = pd.DataFrame({"Open": down + 2, "High": down + 5, "Low": down - 5, "Close": down, "Volume": 1e6}, index=days)
+    fall.iloc[-1] = [1000.0, 1015.0, 985.0, 1000.5, 1e6]                          # 最後の足は十字線
+    g = S.stock_facts(fall)
+    assert g["downtrend"] and g["doji"] and not g["ppp"] and g["dev25"] < 0
+    assert S.stock_facts(rise.tail(50)) is None and S.stock_facts(None) is None
+
+    def fact(code, sector, **kw):
+        base = {"code": code, "name": f"会社{code}", "sector": sector, "close": 1000.0, "turnover20": 5e8,
+                "turnover_today": 5e8, "turnover_base": 5e8, "ret1": 0.0, "ret5": 0.0, "ret20": 0.0, "ret60": 0.0,
+                "ppp": False, "ppp_new": False, "downtrend": False, "doji": False, "dev25": 0.0, "high52": False}
+        return {**base, **kw}
+
+    facts = []
+    sectors = ["電気機器", "銀行業", "機械", "化学", "小売業", "陸運業", "建設業"]
+    for k, sector in enumerate(sectors):
+        for j in range(5):
+            code = str(1000 + k * 10 + j)
+            hot = sector == "銀行業"
+            facts.append(fact(code, sector, ret5=(0.08 if hot else 0.01 * k - 0.03), ret60=(-0.10 if hot else 0.05 * k),
+                              ret1=(0.02 if hot else -0.01), turnover_today=(1.5e9 if hot else 4e8),
+                              ppp=(j == 0), ppp_new=(j == 0 and k < 2), downtrend=(j == 4), doji=(j == 4 and k == 3),
+                              high52=hot and j == 1))
+    facts.append(fact("9990", "空運業"))                                            # 5銘柄に満たない業種は出さない
+    table = {"1010": (1e9, "x"), "1011": (2e9, "x"), "1000": (1e8, "x"), "1034": (3e8, "x")}
+    saved_table = M.shares_table
+    M.shares_table = lambda path=None: table
+    try:
+        ppp = "\n".join(S.ppp_lines(facts))
+        assert "本日そろった2件" in ppp and "全部で7件" in ppp and ppp.index("1010") < ppp.index("1000"), ppp
+        doji = "\n".join(S.doji_lines(facts))
+        assert "下げトレンドの十字線：1件" in doji and "1034 会社1034（終値 1,000円・時価総額 3,000億円" in doji, doji
+        sec = "\n".join(S.sector_lines(facts))
+        assert "1. **銀行業**（5銘柄）" in sec and "業種No.1：1011 会社1011（時価総額 2兆円" in sec and "本日52週新高値" in sec, sec
+        assert "空運業" not in sec and "## 循環物色はあるか" in sec and "出遅れから上位へ：銀行業" in sec, sec
+        assert "断定できません" in sec
+        for bad in ("おすすめ", "買い時", "必ず上がる", "過去の成績"):
+            assert bad not in ppp + doji + sec, bad
+        assert S.sector_lines(facts[:10]) == []                                    # 業種が少ない日は出さない
+    finally:
+        M.shares_table = saved_table
+    wf = Path(".github/workflows/market_cap_refresh.yml").read_text(encoding="utf-8")
+    assert "python3 market_cap.py --refresh" in wf and "git add data/jp_shares.csv" in wf and "contents: write" in wf
+    for step in ("Install dependencies", "Refresh shares", "Persist shares"):            # 取得・push の失敗では止めない
+        assert "continue-on-error: true" in wf.split(f"name: {step}", 1)[1].split("- name:", 1)[0], step
+    header = Path("data/jp_shares.csv").read_text(encoding="utf-8").splitlines()[0]
+    assert header == "code,shares,asof", header                                        # 銘柄名は入れない（公開リポジトリ）
+    print("self-test: 時価総額の並びとランク記事の節（PPP・十字線・業種・循環物色） OK")
+
+
+def _test_claude_300man_trailing_low() -> None:
+    """4.0.0 の売り（直近15営業日の安値の逆指値。毎晩引き上げ・下げない。損切りも利食いも）。2026-11-13 追加。"""
+    from datetime import date
+
+    import claude_300man_exits as X
+    from jpx_calendar import is_jpx_business_day
+
+    days = [d for d in pd.bdate_range("2026-10-01", "2026-12-30") if is_jpx_business_day(d.date())]
+    low = pd.Series([1000.0 + 5 * i for i in range(len(days))], index=days)
+    frame = pd.DataFrame({"Open": low + 10, "High": low + 20, "Low": low, "Close": low + 15, "Volume": 1000.0}, index=days)
+    pos = {d.date(): i for i, d in enumerate(days)}
+    # 11/16 に買った。その朝の逆指値＝11/13 までの15本の安値の最小
+    entry = date(2026, 11, 16)
+    first = X.trailing_stop(frame, entry, entry)
+    assert first == float(low.iloc[pos[entry] - 15:pos[entry]].min()), first
+    # 上がり続けるあいだは売らない。逆指値は毎晩上がる（下げない）
+    assert X.find_exit(frame, entry, 1100.0, date(2026, 12, 10)) is None
+    later = X.trailing_stop(frame, entry, date(2026, 12, 10))
+    assert later > first and later == float(low.iloc[pos[date(2026, 12, 10)] - 15:pos[date(2026, 12, 10)]].min())
+    # 12/11 に安値が直近15本の安値を割った → その値段で売り。買値より上なので利食い
+    drop = frame.copy()
+    drop.loc[pd.Timestamp("2026-12-11"), "Low"] = 900.0
+    ev = X.find_exit(drop, entry, 1100.0, date(2026, 12, 15))
+    stop = float(low.iloc[pos[date(2026, 12, 11)] - 15:pos[date(2026, 12, 11)]].min())
+    assert ev and ev.day == date(2026, 12, 11) and ev.price == stop and ev.exit_type == "TAKE_PROFIT", ev
+    assert ev.reason.startswith("直近15営業日の安値") and "利食い" in ev.reason
+    # 買値より下で割ったら損切り。寄付で下回っていたら始値
+    gap = frame.copy()
+    gap.loc[pd.Timestamp("2026-11-18"), ["Open", "Low"]] = [950.0, 940.0]
+    ev2 = X.find_exit(gap, entry, 1300.0, date(2026, 11, 20))
+    assert ev2.day == date(2026, 11, 18) and ev2.price == 950.0 and ev2.exit_type == "STOP_LOSS" and "始値" in ev2.reason
+    # 4.0.0 より前に買った保有は、切り替えの日（11/13）の立会から。前の日までの安値割れは付けない
+    old = frame.copy()
+    old.loc[pd.Timestamp("2026-11-05"), "Low"] = 500.0
+    assert X.find_exit(old, date(2026, 10, 20), 1000.0, date(2026, 11, 12)) is None
+    ev3 = X.find_exit(old, date(2026, 10, 20), 1000.0, date(2026, 11, 20))
+    assert ev3 is None or ev3.day >= date(2026, 11, 13)
+    # 期限は無い
+    assert X.deadline(entry) is None
+    # 足の配信待ち（直近の足が無い）は判定を待つ
+    assert X.find_exit(frame.loc[:"2026-11-17"], entry, 1100.0, date(2026, 11, 18)) is None
+    print("self-test: 300万円運用 4.0.0 の直近の安値の逆指値 OK")
+
+
+def _test_claude_300man_new_high_candidates() -> None:
+    """4.0.0 の買い候補（当日の52週新高値・東証プライム・時価総額の大きい順）。2026-11-13 追加。"""
+    import tempfile
+    from datetime import date
+
+    import claude_300man_declare as D
+    import market_cap
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        table = {"1111": (1e9, "2026-11-13"), "2222": (5e6, "2026-11-13"), "3333": (9e9, "2026-11-13")}
+        saved = market_cap.shares_table
+        market_cap.shares_table = lambda path=None: table
+        try:
+            base = {"market": "東証プライム", "high_type": "52W_NEW_HIGH", "turnover_20d": "500000000",
+                    "current_price": "1000", "tob_suspect": "False", "inago_suspect": "False",
+                    "earnings_date": "2027-02-05", "data_date": "2026-11-13", "sector": "機械"}
+            rows = [{**base, "code": "2222", "name": "小さい", "turnover_20d": "9000000000"},
+                    {**base, "code": "1111", "name": "大きい"},
+                    {**base, "code": "4444", "name": "株式数なし", "turnover_20d": "800000000"},
+                    {**base, "code": "3333", "name": "TOBの疑い", "tob_suspect": "True"},
+                    {**base, "code": "5555", "name": "接近", "high_type": "52W_NEAR_HIGH"},
+                    {**base, "code": "6666", "name": "グロース", "market": "東証グロース"},
+                    {**base, "code": "7777", "name": "決算前", "earnings_date": "2026-11-20"},
+                    {**base, "code": "8888", "name": "決算日不明", "earnings_date": ""},
+                    {**base, "code": "9999", "name": "高すぎ", "current_price": "6000"},
+                    {**base, "code": "1212", "name": "売買代金不足", "turnover_20d": "50000000"}]
+            highs = pd.DataFrame(rows)
+            got = D.new_high_candidates(highs, date(2026, 11, 13))
+            assert got["code"].tolist() == ["1111", "2222", "4444"], got[["code", "name"]]
+            assert got.attrs["earnings_unknown"] == 1 and got.attrs["earnings_window"] == 1
+            assert "52週新高値" in D._candidate_reason(got.iloc[0]) and "時価総額" in D._candidate_reason(got.iloc[0])
+            # 当日の一覧だけを使う（古い日付の行は見送り）
+            highs.assign(data_date="2026-11-12").to_csv(root / "screening_highs_20261112_160000.csv", index=False)
+            assert D.load_highs(root, date(2026, 11, 13)).empty
+            highs.to_csv(root / "screening_highs_20261113_160000.csv", index=False)
+            ranked, source = D.claude_candidates(root, date(2026, 11, 13))
+            assert len(source) == len(rows) and ranked["code"].tolist()[:2] == ["1111", "2222"]
+        finally:
+            market_cap.shares_table = saved
+    print("self-test: 300万円運用 4.0.0 の買い候補（52週新高値・時価総額順） OK")
 
 
 def _test_claude_300man_declare_once_per_day(declare_workflow: str | None = None) -> None:
@@ -5639,11 +5893,16 @@ def _test_dual_300man_phase2_controls() -> None:
     from dual_300man_config import CONFIG, JOURNAL_COLUMNS, ORDER_COLUMNS, order_metadata
 
     assert CONFIG.restart_date.isoformat() == "2026-09-28"
-    # 2026-10-30 持ち主「もう少しアクティブに運用し…利益を出し損を減らす」で 3.0.0 に変えた
-    assert CONFIG.strategy_version == "3.0.0"
+    # 2026-10-30 持ち主「もう少しアクティブに運用し…利益を出し損を減らす」で 3.0.0 に変えた。
+    # 2026-11-13 持ち主「損切り 直近の安値を下回ったら 利食いも」「52週高値で買いに変える」で 4.0.0 に変えた
+    assert CONFIG.strategy_version == "4.0.0"
     assert CONFIG.max_positions == 5 and CONFIG.slot_yen == 550_000
-    assert CONFIG.stop_loss_pct == -7 and CONFIG.take_profit_pct == 15 and CONFIG.timeout_days == 20
+    assert CONFIG.stop_loss_pct is None and CONFIG.take_profit_pct is None and CONFIG.timeout_days is None
+    assert CONFIG.trailing_low and CONFIG.trailing_low_days == 15 and CONFIG.rule_start_date == date(2026, 11, 13)
     assert CONFIG.standing_exit_orders and CONFIG.peak_drawdown_reduce_pct == -8
+    assert "直近15営業日の安値" in CONFIG.exit_rule_text
+    assert CONFIG.strategy_rules["claude"]["candidate_order"] == "market_cap"
+    assert claude_declare.NEW_HIGH_RULE["market"] == "東証プライム"
     assert CONFIG.circuit_stop_pct is None                       # -10%で新規をやめる（戻らない）は外した
     assert claude_declare.REGIME_SLOTS == {"NORMAL": 5, "CAUTION": 2, "RISK": 0, "STOP": 0}
     assert CONFIG.strategy_rules["claude"]["reentry_cooldown_business_days"] == 5
@@ -5654,10 +5913,20 @@ def _test_dual_300man_phase2_controls() -> None:
     assert order_compatibility({**old_rule, "strategy_version": "2.1.0", "rule_hash": "73ec747f8431"}) == (True, "")
     assert order_compatibility({**old_rule, "strategy_version": "2.1.0", "rule_hash": "000000000000"})[0] is False
     assert order_compatibility({**old_rule, "strategy_version": "2.0.0", "rule_hash": "753eb2644c04"})[0] is False
-    assert claude_declare._exit_reason(100, 92.9, 1)[0] == "STOP_LOSS"
-    assert claude_declare._exit_reason(100, 115.0, 1)[0] == "TAKE_PROFIT"
-    assert claude_declare._exit_reason(100, 105.0, 20)[0] == "TIMEOUT"
+    # 4.0.0 に切り替えた日に宣言済みだった 3.0.0 の注文も約定させる
+    assert order_compatibility({**old_rule, "strategy_version": "3.0.0", "rule_hash": "10a041d150ff"}) == (True, "")
+    # 2.x の終値判定（設定ファイルが 2.x のときだけ使う）。値は 3.0.0 の幅で確かめる
+    saved_levels = (claude_declare.STOP_LOSS_PCT, claude_declare.TAKE_PROFIT_PCT, claude_declare.TIMEOUT_DAYS)
+    claude_declare.STOP_LOSS_PCT, claude_declare.TAKE_PROFIT_PCT, claude_declare.TIMEOUT_DAYS = -7.0, 15.0, 20
+    try:
+        assert claude_declare._exit_reason(100, 92.9, 1)[0] == "STOP_LOSS"
+        assert claude_declare._exit_reason(100, 115.0, 1)[0] == "TAKE_PROFIT"
+        assert claude_declare._exit_reason(100, 105.0, 20)[0] == "TIMEOUT"
+    finally:
+        claude_declare.STOP_LOSS_PCT, claude_declare.TAKE_PROFIT_PCT, claude_declare.TIMEOUT_DAYS = saved_levels
     _test_claude_300man_standing_exits()
+    _test_claude_300man_trailing_low()
+    _test_claude_300man_new_high_candidates()
 
     screening = pd.DataFrame([
         {
@@ -6055,7 +6324,8 @@ def _test_dual_300man_phase2_controls() -> None:
             got_journal = pd.read_csv(journal_path, dtype=str).fillna("")
             assert len(got_journal) == 1
             assert got_journal.iloc[0]["entry_gap_pct"] == "1.00"
-            assert got_journal.iloc[0]["planned_stop_risk_pct_initial"] == "0.02"
+            # 4.0.0 は固定の損切り幅が無い（直近の安値の逆指値）ので、予定リスクは空
+            assert got_journal.iloc[0]["planned_stop_risk_pct_initial"] == ("" if CONFIG.stop_loss_pct is None else "0.02")
 
             days = pd.bdate_range("2026-09-28", periods=12)
             history = pd.DataFrame({

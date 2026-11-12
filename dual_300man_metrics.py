@@ -136,9 +136,10 @@ def update_account(
             continue
         value = entry_price * shares
         journal.at[idx, "position_pct_initial"] = f"{value / CONFIG.initial_cash * 100:.2f}"
-        stop_risk = value * abs(CONFIG.stop_loss_pct) / 100
-        journal.at[idx, "planned_stop_risk_jpy"] = f"{stop_risk:.0f}"
-        journal.at[idx, "planned_stop_risk_pct_initial"] = f"{stop_risk / CONFIG.initial_cash * 100:.2f}"
+        if CONFIG.stop_loss_pct is not None:     # 4.0.0 は直近の安値の逆指値で、買った時点の幅が決まっていない
+            stop_risk = value * abs(CONFIG.stop_loss_pct) / 100
+            journal.at[idx, "planned_stop_risk_jpy"] = f"{stop_risk:.0f}"
+            journal.at[idx, "planned_stop_risk_pct_initial"] = f"{stop_risk / CONFIG.initial_cash * 100:.2f}"
         ticker = str(row.get("ticker") or f"{row.get('code')}.T")
         if ticker not in cache:
             try:
@@ -301,9 +302,10 @@ def build_report(accounts: dict[str, pd.DataFrame], stats: dict[str, dict[str, i
         "# Claude 300万円運用 — 第2期検証レポート", "",
         f"- 更新: {now}", f"- 期: `{CONFIG.phase_id}`",
         f"- ルール版: `{CONFIG.strategy_version}` / 設定ハッシュ `{CONFIG.rule_hash}`",
-        f"- 正本ルール: 1枠{CONFIG.slot_yen:,}円、損切り{CONFIG.stop_loss_pct:.0f}%、利確+{CONFIG.take_profit_pct:.0f}%、{CONFIG.timeout_days}営業日",
+        f"- 正本ルール: 1枠{CONFIG.slot_yen:,}円、{CONFIG.exit_rule_text}",
         "- 売買コスト・税金: ペーパー運用のため0円（実運用との差として明示）",
-        "- トレーリング: 数値ルール未定義のため現在は無効。決済種別とMFEは記録済み。", "",
+        ("- トレーリング: 4.0.0（2026-11-13）から直近の安値の逆指値で有効。" if CONFIG.trailing_low
+         else "- トレーリング: 数値ルール未定義のため現在は無効。決済種別とMFEは記録済み。"), "",
     ]
     for account in ACCOUNTS:
         lines.extend(_account_report(account, accounts[account]))

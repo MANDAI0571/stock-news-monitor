@@ -48,6 +48,7 @@ from pathlib import Path
 import pandas as pd
 
 import alert_grade
+import market_cap
 import nikkei_compare
 from scanner.highs import classify_high_profile
 from scanner.indicators import calculate_indicators
@@ -541,22 +542,22 @@ def build_subject(new_alerts: list[Alert]) -> str:
     return base
 
 
-# 過去の成績ランクの並び（メールの掲載順）
+# ランクの並び（記録用。2026-11-13 からメールの掲載順には使わない）
 GRADE_ORDER = {g: i for i, g in enumerate(alert_grade.GRADES)}
 
 
 def select_mail_alerts(
     new_alerts: list[Alert], max_items: int | None = None
 ) -> tuple[list[Alert], int]:
-    """メール本文に載せる分だけを、過去の成績ランクの高い順（SS→S→A→B→C→ランクなし）、
-    同じランクの中は売買代金の大きい順に並べて選ぶ（2026-10-16 持ち主の指示。以前は
-    売買代金の順だけで、件数が上限以下なら銘柄コード順のままだった）。
+    """メール本文に載せる分だけを、時価総額の大きい順に並べて選ぶ（2026-11-13 持ち主「スクリーニングした
+    銘柄はすべて時価総額順に並べる」「過去の成績という言葉は入らない」。2026-10-16〜11-12 はランクの高い順、
+    同じランクの中は売買代金の大きい順だった）。時価総額が出ない銘柄（株式数が無い）は最後に売買代金の大きい順。
 
     戻り値は (掲載するアラート, 省略した件数)。上限が0以下なら全件を並べて返す。
     """
     limit = _max_mail_items() if max_items is None else max_items
-    ranked = sorted(new_alerts, key=lambda a: (GRADE_ORDER.get(a.grade, len(GRADE_ORDER)),
-                                               -a.turnover_20d))
+    ranked = market_cap.sort_by_market_cap(sorted(new_alerts, key=lambda a: -a.turnover_20d),
+                                           code=lambda a: a.code, price=lambda a: a.current_price)
     if limit <= 0 or len(ranked) <= limit:
         return ranked, 0
     return ranked[:limit], len(ranked) - limit
@@ -578,7 +579,7 @@ def build_body(new_alerts: list[Alert], max_items: int | None = None) -> str:
         lines.append(f"価格データ日: {_shown}{_extra}")
     if omitted:
         lines.append(
-            f"※本文にはランクの高い順（同じランクは売買代金の大きい順）に{len(shown)}件だけ掲載しています"
+            f"※本文には時価総額の大きい順に{len(shown)}件だけ掲載しています"
             f"（残り{omitted}件は省略）。全件は intraday_high_alerts_*.csv にあります。"
         )
     lines.append("")
@@ -597,11 +598,14 @@ def build_body(new_alerts: list[Alert], max_items: int | None = None) -> str:
             lines.extend(_format_alert(alert))
         lines.append("")
 
-    if any(a.grade or a.grade_reasons for a in shown):
-        lines.extend(alert_grade.footer_lines())
-        lines.append("")
     lines.append(DISCLAIMER)
     return "\n".join(lines)
+
+
+def _cap_suffix(alert: Alert) -> str:
+    """「 / 時価総額 1兆2,345億円」。株式数が無い銘柄は何も付けない（2026-11-13）。"""
+    text = market_cap.cap_text(market_cap.market_cap_yen(alert.code, alert.current_price))
+    return f" / {text}" if text else ""
 
 
 def _line_suffix(alert: Alert) -> str:
@@ -645,14 +649,9 @@ def _format_alert(alert: Alert) -> list[str]:
         f"  {_price_text(alert)} / 種別:{alert.alert_type}",
         f"  {alert.line_label}ライン:{alert.line_price:,.1f}円{_line_suffix(alert)}"
         f" / {dist_text}{_break_text(alert)}",
-        f"  出来高比:{alert.volume_ratio:.2f}倍 / 売買代金:{alert.turnover_20d / 100_000_000:.1f}億円",
+        f"  出来高比:{alert.volume_ratio:.2f}倍 / 売買代金:{alert.turnover_20d / 100_000_000:.1f}億円{_cap_suffix(alert)}",
         f"  🗓 決算予定日:{alert.earnings_date}",
     ]
-    if alert.grade:
-        lines.append(f"  🏷 過去の成績ランク:{alert.grade}"
-                     f"（{'、'.join(alert.grade_reasons) or '加点・減点なし'}）")
-    elif alert.grade_reasons:
-        lines.append(f"  🏷 過去の成績ランク:なし（{'、'.join(alert.grade_reasons)}）")
     # fix61(2026-09-11): 高重さんの指示「チャートをワンクリックで出せるように」。
     lines.append(f"  📈 チャート:{chart_url(alert.code)}")
     # fix(2026-10-06): 比較チャートのURLはスマホで compare= ごと捨てられ、
@@ -882,7 +881,7 @@ NOTE_URL = "https://note.com/breakout_scan"
 def post_text(alert: Alert, limit: int = 280) -> str:
     """1銘柄ぶんの投稿用の文（2026-10-26 持ち主「一つずつコピペしてXなどに貼れるよう」）。
     X の280字に収める。長いときは 当日高値 → チャートのURL → タグ → note のURL の順に外す。
-    過去の成績ランクは載せない（2026-11-04 持ち主の指示。実際のアラートでの裏付けがまだないため。メール本文には残す）。
+    ランクは載せない（2026-11-04 持ち主の指示。2026-11-13 からメール本文からも外した）。
     ただし上抜け幅は当日高値で計算しているので、幅を載せるときは当日高値を外さない
     （2026-11-04: 外すと「現在値はライン未満なのに上抜け」と読めて数字が矛盾した）。
     売買をすすめる言葉は入れない。"""
@@ -993,14 +992,9 @@ def _alert_html_card(alert: Alert, share: bool = False) -> str:
     rows = [
         f"{escape(_price_text(alert))} / 種別:{escape(alert.alert_type)}",
         f"{escape(alert.line_label)}ライン:{alert.line_price:,.1f}円{escape(_line_suffix(alert))} / {dist_text}{escape(_break_text(alert))}",
-        f"出来高比:{alert.volume_ratio:.2f}倍 / 売買代金:{alert.turnover_20d / 100_000_000:.1f}億円",
+        f"出来高比:{alert.volume_ratio:.2f}倍 / 売買代金:{alert.turnover_20d / 100_000_000:.1f}億円{escape(_cap_suffix(alert))}",
         f"🗓 決算予定日:{escape(alert.earnings_date)}",
     ]
-    if alert.grade:
-        rows.append(f"🏷 過去の成績ランク:<b>{escape(alert.grade)}</b>"
-                    f"（{escape('、'.join(alert.grade_reasons) or '加点・減点なし')}）")
-    elif alert.grade_reasons:
-        rows.append(f"🏷 過去の成績ランク:なし（{escape('、'.join(alert.grade_reasons))}）")
     # fix61(2026-09-11): チャートを1タップで開けるようにする。ボタンの形にして押しやすくする。
     rows.append(
         f'<a class="chart" href="{escape(chart_url(alert.code))}">'
@@ -1047,8 +1041,6 @@ def build_html_body(new_alerts: list[Alert], max_items: int | None = None) -> st
     in_order = [a for key in order for a in grouped.get(key, [])]
     plain = {id(a): _alert_html_card(a) for a in in_order}
     tail = []
-    if any(a.grade or a.grade_reasons for a in shown):
-        tail.append('<div class="dis">' + "<br>".join(escape(x) for x in alert_grade.footer_lines()) + "</div>")
     tail.append(f'<div class="dis">{escape(DISCLAIMER)}</div>')
     tail.append("</body></html>")
     # 投稿欄（文と 𝕏 のボタン）は、Gmail が途中で切らない大きさに収まる分だけ、上から順に付ける

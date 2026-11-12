@@ -1,4 +1,13 @@
-"""Claude 300万円運用の売り（ルール 3.0.0、2026-10-30 から）。
+"""Claude 300万円運用の売り（ルール 4.0.0 は 2026-11-13 から。3.0.0 は 2026-10-30〜11-12）。
+
+4.0.0（持ち主「300万運用は損切り 直近の安値を下回ったら 利食いも」2026-11-13）:
+  - 逆指値: 直近15営業日の安値（その日の前の営業日までの15本の安値の最小）。買った日から出しておき、
+    毎晩その日までの15本の安値まで引き上げる（下げない）。日中の安値が届いたらその値段、寄付で下回っていたら始値。
+  - 利確の指値と期限は無い。値上がりしたあとに直近の安値を割ったら、その値段で売る（利食い）。
+  - 4.0.0 より前に買った保有は rule_start_date の立会から切り替える（前の日までは 3.0.0 の判定で付いている）。
+  - 売った値段が買値より上なら TAKE_PROFIT（利食い）、買値以下なら STOP_LOSS（損切り）として台帳に付ける。
+
+以下は 3.0.0 の説明（設定ファイルが 3.0.0 のときの動き）。
 
 持ち主「300万運用はもう少しアクティブに運用し、利益を出し損を減らすのも重要だ」（2026-10-30）。
 2.x では損切りを終値で判定して翌日の寄付で売っていたため、決めた -5% を超えて -7〜-8% で売っていた
@@ -49,13 +58,78 @@ class ExitEvent:
 
 
 def exit_levels(entry_price: float) -> tuple[float, float]:
-    """(逆指値, 指値) の値段。"""
+    """(逆指値, 指値) の値段（3.0.0）。4.0.0 では使わない（trailing_stop を使う）。"""
     return (entry_price * (1 + CONFIG.stop_loss_pct / 100), entry_price * (1 + CONFIG.take_profit_pct / 100))
 
 
-def deadline(entry_date: date) -> date:
-    """期限の営業日（この日の大引けで売る）。"""
+def deadline(entry_date: date) -> date | None:
+    """期限の営業日（この日の大引けで売る）。4.0.0 は期限が無いので None。"""
+    if not CONFIG.timeout_days:
+        return None
     return add_jpx_business_days(entry_date, CONFIG.timeout_days)
+
+
+def _low_before(frame: pd.DataFrame, day: date) -> float | None:
+    """day より前の直近 trailing_low_days 本の安値の最小。足が1本も無ければ None。"""
+    prior = frame[frame.index < pd.Timestamp(day)].tail(int(CONFIG.trailing_low_days or 0))
+    return float(prior["Low"].min()) if len(prior) else None
+
+
+def trailing_stop(history: pd.DataFrame | None, entry_date: date, next_day: date) -> float | None:
+    """4.0.0: next_day の朝に出しておく逆指値（直近の安値。entry_date か rule_start_date からの引き上げを反映）。
+    next_day より前の足だけで決める。値段が取れなければ None。"""
+    frame = _bars(history)
+    if frame.empty or not CONFIG.trailing_low:
+        return None
+    start = max(entry_date, CONFIG.rule_start_date or entry_date)
+    stop = None
+    for stamp in [*frame.index[(frame.index >= pd.Timestamp(start)) & (frame.index < pd.Timestamp(next_day))],
+                  pd.Timestamp(next_day)]:
+        level = _low_before(frame, stamp.date())
+        if level is not None:
+            stop = level if stop is None else max(stop, level)
+    return stop
+
+
+def _find_exit_trailing(frame: pd.DataFrame, entry_date: date, entry_price: float, as_of: date) -> ExitEvent | None:
+    """4.0.0: 直近 N 営業日の安値の逆指値（毎晩引き上げ・下げない）。最初に約定する売りを返す。"""
+    n_days = int(CONFIG.trailing_low_days or 0)
+    start = max(entry_date, CONFIG.rule_start_date or entry_date)
+    stop = None
+    day = start
+    while day <= as_of:
+        if not is_jpx_business_day(day):
+            day += timedelta(days=1)
+            continue
+        stamp = pd.Timestamp(day)
+        if stamp not in frame.index:
+            if business_days_between(day, as_of) < WAIT_FOR_BARS_BUSINESS_DAYS:
+                return None                      # 足の配信待ち。次の実行でこの日から見直す
+            day += timedelta(days=1)             # 売買のなかった日（売買停止など）
+            continue
+        level = _low_before(frame, day)
+        if level is not None:
+            stop = level if stop is None else max(stop, level)
+        if stop is None:
+            day += timedelta(days=1)
+            continue
+        row = frame.loc[stamp]
+        o, low = float(row["Open"]), float(row["Low"])
+        held = business_days_between(entry_date, day)
+        px = trigger = None
+        if o <= stop:
+            px, trigger = o, stop
+            how = (f"直近{n_days}営業日の安値 {stop:,.1f}円より下の {o:,.1f}円で寄り付いたため"
+                   + ("、買った直後に" if day == entry_date else "") + "始値で売り")
+        elif low <= stop:
+            px, trigger = stop, stop
+            how = f"直近{n_days}営業日の安値 {stop:,.1f}円（逆指値）に日中の安値 {low:,.1f}円が届いた"
+        if px is not None:
+            kind = "TAKE_PROFIT" if px > entry_price else "STOP_LOSS"
+            word = "利食い" if kind == "TAKE_PROFIT" else "損切り"
+            return ExitEvent(day, px, trigger, kind, f"{how}（{word}）", held)
+        day += timedelta(days=1)
+    return None
 
 
 def _bars(history: pd.DataFrame | None) -> pd.DataFrame:
@@ -86,6 +160,8 @@ def find_exit(history: pd.DataFrame | None, entry_date: date, entry_price: float
     frame = _bars(history)
     if frame.empty:
         return None
+    if CONFIG.trailing_low:
+        return _find_exit_trailing(frame, entry_date, entry_price, as_of)
     stop, take = exit_levels(entry_price)
     stop_pct, take_pct = CONFIG.stop_loss_pct, CONFIG.take_profit_pct
     day = entry_date

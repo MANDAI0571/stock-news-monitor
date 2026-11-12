@@ -5,7 +5,7 @@ X への投稿は持ち主が自分でする（このプログラムは X に何
 「📋 文とチャート画像」（docs/clip.html を開く。文とチャートはリンクの # の後ろで運ぶのでサーバーに残らない）と
 「𝕏に投稿（文だけ）」のボタンを付ける。宛先は持ち主（MAIL_TO の1つ目）だけ。
 
-  朝（約定のあと。claude_300man_fill.yml）  : 寄付で約定した買い（逆指値・指値・期限つき）、前の営業日の売り（夜に付けられなかった分）
+  朝（約定のあと。claude_300man_fill.yml）  : 寄付で約定した買い（4.0.0 は直近の安値の逆指値つき）、前の営業日の売り（夜に付けられなかった分）
   夜（注文のあと。claude_300man_declare.yml）: 今日の売り、明日の寄付の買い注文、口座のまとめ
 
 同じ投稿は二度送らない（送った投稿の印をキャッシュに残す。印は銘柄名を含まないハッシュ）。
@@ -31,7 +31,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 
 import dual_300man_fill as F
-from claude_300man_exits import deadline, exit_levels
+from claude_300man_exits import deadline, exit_levels, trailing_stop
 from dual_300man_config import CONFIG, JOURNAL_COLUMNS, ORDER_COLUMNS
 from jpx_calendar import is_jpx_business_day
 
@@ -43,6 +43,8 @@ TAGS = "#日本株 #AI投資 #Claude"
 FOOT = "※架空の300万円の記録です。売買をすすめるものではありません"
 # 2.x の売り（終値で決めて翌日の寄付）と 3.0.0 の売り（逆指値・指値・期限の大引け）のどちらにも当てはまる言い方にする
 EXIT_LABEL = {"STOP_LOSS": "損切り", "TAKE_PROFIT": "利確", "TIMEOUT": "期限"}
+if CONFIG.trailing_low:                         # 4.0.0 の利確は「直近の安値割れでの利食い」
+    EXIT_LABEL["TAKE_PROFIT"] = "利食い"
 PriceFetcher = Callable[[str], pd.DataFrame]
 
 
@@ -88,20 +90,48 @@ def order_post(row: pd.Series) -> str:
     shares = int(_f(row.get("shares")) or 0)
     lines = [f"【Claude×300万円 注文】{_md(row['execution_date'])}の寄付で買います",
              f"{row['code']} {row['name']}　{shares:,}株（{_md(row['decision_date'])}の終値 {price:,.1f}円で約{price * shares / 10000:,.0f}万円）",
-             f"買えたら 逆指値{CONFIG.stop_loss_pct:+.0f}%・指値{CONFIG.take_profit_pct:+.0f}%・{CONFIG.timeout_days}営業日で手じまい",
+             _exit_rule_line(),
              FOOT]
     return _fit(lines, ["注文は寄付の前にここで出します（後出しなし）", TAGS])
 
 
-def fill_post(row: pd.Series) -> str:
+def _exit_rule_line() -> str:
+    if CONFIG.trailing_low:
+        # 4.0.0（2026-11-13）: 直近の安値を割ったら売る（損切りも利食いも）
+        return f"買えたら 逆指値は直近{CONFIG.trailing_low_days}営業日の安値（毎晩引き上げ）。利食いも安値割れで"
+    return f"買えたら 逆指値{CONFIG.stop_loss_pct:+.0f}%・指値{CONFIG.take_profit_pct:+.0f}%・{CONFIG.timeout_days}営業日で手じまい"
+
+
+def fill_stop(row: pd.Series, fetch: PriceFetcher | None) -> float:
+    """約定した日の逆指値。4.0.0 は直近の安値（値段が取れなければ 0）、3.0.0 は買値からの幅。"""
+    entry = _f(row.get("entry_price")) or 0.0
+    if not CONFIG.trailing_low:
+        return exit_levels(entry)[0]
+    if fetch is None:
+        return 0.0
+    try:
+        day = date.fromisoformat(str(row["entry_date"])[:10])
+        return trailing_stop(fetch(str(row.get("ticker") or f"{row['code']}.T")), day, day) or 0.0
+    except Exception:  # noqa: BLE001 - 値段が取れなくても文は届ける
+        return 0.0
+
+
+def fill_post(row: pd.Series, stop: float | None = None) -> str:
     entry = _f(row.get("entry_price")) or 0.0
     shares = int(_f(row.get("shares")) or 0)
-    stop, take = exit_levels(entry)
-    due = deadline(date.fromisoformat(str(row["entry_date"])[:10]))
+    if CONFIG.trailing_low:
+        # 「逆指値ライン X円」は clip.html が画像の黄色い点線の見出しに使う
+        exit_line = (f"逆指値ライン {stop:,.1f}円（直近{CONFIG.trailing_low_days}営業日の安値・{(stop / entry - 1) * 100:+.1f}%）"
+                     "／毎晩引き上げ" if stop and entry else
+                     f"逆指値は直近{CONFIG.trailing_low_days}営業日の安値（毎晩引き上げ）")
+    else:
+        stop, take = exit_levels(entry)
+        due = deadline(date.fromisoformat(str(row["entry_date"])[:10]))
+        exit_line = (f"逆指値ライン {stop:,.1f}円（{CONFIG.stop_loss_pct:+.0f}%）／指値 {take:,.1f}円"
+                     f"（{CONFIG.take_profit_pct:+.0f}%）／期限 {_md(due)}")
     lines = [f"【Claude×300万円 約定】{row['code']} {row['name']}",
              f"{_md(row['entry_date'])}の寄付で {entry:,.1f}円×{shares:,}株（約{entry * shares / 10000:,.0f}万円）",
-             # 「逆指値ライン X円」は clip.html が画像の黄色い点線の見出しに使う
-             f"逆指値ライン {stop:,.1f}円（{CONFIG.stop_loss_pct:+.0f}%）／指値 {take:,.1f}円（{CONFIG.take_profit_pct:+.0f}%）／期限 {_md(due)}",
+             exit_line,
              FOOT]
     return _fit(lines, ["届いたらその日のうちにここで流します", TAGS])
 
@@ -154,8 +184,8 @@ def build_posts(kind: str, day: date, orders: pd.DataFrame, journal: pd.DataFram
     if kind == "morning":
         opened = journal[journal["entry_date"].astype(str).str[:10].eq(day.isoformat())] if not journal.empty else journal
         for _, row in opened.iterrows():
-            stop, _ = exit_levels(_f(row.get("entry_price")) or 0.0)
-            posts.append({"key": f"fill|{row['code']}|{row['entry_date']}", "kind": "fill", "text": fill_post(row),
+            stop = fill_stop(row, fetch)
+            posts.append({"key": f"fill|{row['code']}|{row['entry_date']}", "kind": "fill", "text": fill_post(row, stop),
                           "ticker": str(row.get("ticker") or f"{row['code']}.T"), "line": stop})
         return posts
     side = orders["side"].astype(str).str.upper() if not orders.empty else pd.Series(dtype=str)

@@ -14,6 +14,9 @@ from claude_shadow_exits import EXIT_VARIANTS
 from dual_300man_config import CONFIG, JOURNAL_COLUMNS, ORDER_COLUMNS, ROOT, order_compatibility
 from dual_300man_fill import business_days_between, cash_balance, read_csv
 
+# 3.0.0（2026-10-30〜11-12）の逆指値の幅。4.0.0 の設定ファイルには無いので値を残す
+LEGACY_STANDING_STOP_PCT = -7.0
+
 
 JST = ZoneInfo("Asia/Tokyo")
 HISTORY_PATH = ROOT / "data" / "claude_300man_daily_monitor.csv"
@@ -233,10 +236,13 @@ def build_review(
     stop_returns = _numbers(stops, "exit_return_pct")
     # 想定どおりの損切りか: 2.x（終値判定→翌寄付）は -5〜-7%。3.0.0 の逆指値（理由が「逆指値」で始まる）は
     # 逆指値ちょうど〜窓を開けて下に寄った分として、逆指値から -2% まで
-    standing = stops.get("exit_reason", pd.Series("", index=stops.index)).astype(str).str.startswith("逆指値")
+    reasons = stops.get("exit_reason", pd.Series("", index=stops.index)).astype(str)
+    standing = reasons.str.startswith("逆指値")
+    # 4.0.0（2026-11-13〜）の直近の安値の逆指値（理由が「直近」で始まる）は幅が決まっていないので、帯の数には入れない
+    trailing_low = reasons.str.startswith("直近")
     stop_in_band = int(
-        stop_returns[~standing].between(-7, -5).sum()
-        + stop_returns[standing].between(CONFIG.stop_loss_pct - 2, CONFIG.stop_loss_pct + 0.05).sum()
+        stop_returns[~standing & ~trailing_low].between(-7, -5).sum()
+        + stop_returns[standing].between(LEGACY_STANDING_STOP_PCT - 2, LEGACY_STANDING_STOP_PCT + 0.05).sum()
     )
     stop_below_ten = int((stop_returns < -10).sum())
     take_profit = int(exits.eq("TAKE_PROFIT").sum())
@@ -366,7 +372,7 @@ def write_report(
         f"- 実現損益: {_display(snapshot['realized_pnl_jpy'], '円')} / 含み損益: {_display(snapshot['unrealized_pnl_jpy'], '円')}",
         f"- 勝率: {_display(snapshot['win_rate_pct'], '%')} / 平均勝ち {_display(snapshot['avg_win_pct'], '%')} / 平均負け {_display(snapshot['avg_loss_pct'], '%')}",
         f"- 損益比: {_display(snapshot['payoff_ratio'])} / PF {_display(snapshot['profit_factor'])} / 1取引期待値 {_display(snapshot['expectancy_pct'], '%')}",
-        f"- 損切り: {snapshot['stop_count']}回、想定の幅（2.x は-5〜-7%、3.0.0 の逆指値は{CONFIG.stop_loss_pct:.0f}〜{CONFIG.stop_loss_pct - 2:.0f}%）"
+        f"- 損切り: {snapshot['stop_count']}回、想定の幅（2.x は-5〜-7%、3.0.0 の逆指値は{LEGACY_STANDING_STOP_PCT:.0f}〜{LEGACY_STANDING_STOP_PCT - 2:.0f}%、4.0.0 の直近の安値は数えない）"
         f" {snapshot['stop_in_minus_5_to_7_count']}回、-10%超 {snapshot['stop_below_minus_10_count']}回",
         f"- 出口: 利確 {snapshot['take_profit_count']} / 追随 {snapshot['trailing_count']} / 時間切れ {snapshot['timeout_count']}",
         "", "## 改善候補ゲート", "",

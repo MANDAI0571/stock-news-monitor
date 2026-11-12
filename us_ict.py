@@ -119,13 +119,15 @@ PF_JP = (1.16, 3.18, 2.05, 3.12)
 PF_JP_ANY = (0.74, 1.26, 0.97, 1.34)
 
 
-def section_lines(rows: list[dict], limit: int = 15, market: str = "us", brief: bool = False) -> list[str]:
+def section_lines(rows: list[dict], limit: int = 15, market: str = "us", brief: bool = False,
+                  keep_order: bool = False) -> list[str]:
     """一覧記事の節。rows は state() の結果に ticker / name / turnover を足したもの。
-    market="jp" は日本株のランキング記事用（円で書き、日本株の過去の数字を出す。2026-10-25）。"""
+    market="jp" は日本株のランキング記事用（円で書き、日本株の過去の数字を出す。2026-10-25）。
+    keep_order=True は渡した順（時価総額の大きい順。2026-11-13）のまま並べる。"""
     pf = lambda xs: " / ".join(f"{x:.2f}" for x in xs)  # noqa: E731
     import re
 
-    rows = sorted(rows, key=lambda x: (x["kind"] != "③", -x.get("turnover", 0)))
+    rows = list(rows) if keep_order else sorted(rows, key=lambda x: (x["kind"] != "③", -x.get("turnover", 0)))
     # 同じ会社の別の株（Alphabet の Class A と Class C など）は、売買代金の大きい方の1行だけにする（2026-10-26）
     seen, uniq = set(), []
     for x in rows:
@@ -143,7 +145,8 @@ def section_lines(rows: list[dict], limit: int = 15, market: str = "us", brief: 
                f"この運用の売買の決まりとは別に、参考として載せています（この運用はこの候補では売買していません）。全{len(rows)}件と考え方は{where}にあります。"
                "③＝箱に入ったあと、直近3日の安値を一度割り、その後に直近3日の高値を終値で上抜いた。②＝箱の中で③待ち。", ""]
     else:
-        out = [f"## 押し目の箱（オーダーブロック）まで戻った銘柄（{len(rows)}件・③が先、その中は売買代金の大きい順）", "",
+        order = "時価総額の大きい順" if keep_order else "③が先、その中は売買代金の大きい順"
+        out = [f"## 押し目の箱（オーダーブロック）まで戻った銘柄（{len(rows)}件・{order}）", "",
                "上昇の節目（直前の戻り高値を終値で上抜け）のあと、上昇が始まる直前の最後の陰線（箱）まで戻ってきた銘柄です。"
                "箱がレンジ（上昇の始まりの安値〜その後の高値）の真ん中より下にあるものだけを出しています。"
                "③＝箱に入ったあと、直近3日の安値を一度割り、その後に直近3日の高値を終値で上抜いた。②＝箱の中で③待ち。", ""]

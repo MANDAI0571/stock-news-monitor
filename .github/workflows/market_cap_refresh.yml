@@ -1,0 +1,77 @@
+name: Market Cap Refresh
+
+# 時価総額で並べるための発行済株式数（data/jp_shares.csv）を週1回取り直す。
+# 【2026-11-13 追加】持ち主「スクリーニングした銘柄はすべて時価総額順に並べる」。中身は market_cap.py。
+#
+# 時価総額 = 株式数 × その日の終値。株式数は Yahoo Finance の quote（100銘柄ずつ）から取る。
+# 30日より古い・無い銘柄だけ取り直し、取れなかった銘柄は前の値を残す（推測で埋めない）。
+# ファイルはコード・株式数・取得日だけで、銘柄名は入れない（公開リポジトリ）。
+# 取得・push の失敗では止めない（並びが少し古くなるだけ。株式数は増資・自社株消却のときしか変わらない）。
+# 失敗メールはリポジトリの決まりどおり付けるが、出るのは準備（checkout など）で落ちたときだけ。
+
+on:
+  schedule:
+    - cron: "30 21 * * 5"   # 土曜 06:30 JST
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/market_cap_refresh.yml"
+
+concurrency:
+  group: market-cap-refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        continue-on-error: true
+        run: |
+          python -m pip install --upgrade pip >/dev/null 2>&1 || true
+          pip install -r requirements.txt
+
+      - name: Refresh shares
+        id: refresh
+        continue-on-error: true
+        run: python3 market_cap.py --refresh --budget 1500
+
+      - name: Persist shares
+        if: steps.refresh.outcome == 'success'
+        continue-on-error: true
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/jp_shares.csv
+          if git diff --cached --quiet; then
+            echo "market_cap_refresh: 変更なし（コミットせず）"
+            exit 0
+          fi
+          git commit -m "chore: refresh share counts for market cap [skip ci]"
+          for i in 1 2 3; do
+            if git pull --rebase origin "${GITHUB_REF_NAME}" && git push origin HEAD:"${GITHUB_REF_NAME}"; then
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "market_cap_refresh: push失敗（次の回でまとめて反映される）"
+          exit 1
+
+      - name: Notify failure by mail
+        if: failure()
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+        run: python3 notify_workflow_failure.py

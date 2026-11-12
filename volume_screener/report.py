@@ -302,11 +302,22 @@ def _split_html(r):
             'line-height:1.6;color:#7a2d1c;"><b>要注意:</b> ' + H.escape(note) + '</div>')
 
 
+def _cap_tail(r):
+    """「 ・時価総額 1兆2,345億円」（2026-11-13 から並びは時価総額の順）。無ければ空。"""
+    try:
+        import screener as SC
+
+        text = SC.cap_text(r)
+    except Exception:                                 # noqa: BLE001
+        text = ""
+    return f"・{text}" if text else ""
+
+
 def _rank_html(r):
     if not _mark(r):
         return ""
     return ('  <div style="font-size:13px;color:#7a4b00;padding:4px 0 0 0;">'
-            'ランク ◎（業種の勢いがとても弱い。過去5年でこの形は成績が良かった。下の「ランク（◎）について」）</div>')
+            'ランク ◎（業種の勢いがとても弱い。下の「ランク（◎）について」）</div>')
 
 
 def card(i, r, share=False):
@@ -319,7 +330,7 @@ def card(i, r, share=False):
   <div><span style="{s['rank']}">{i}</span>&nbsp;<span style="{s['name']}">{_mark(r)}{H.escape(str(r['code']))} {H.escape(r['name'])}</span></div>
 {_rank_html(r)}
   <div style="{s['big']}">{r['price']:,.1f}円 <span style="color:{color};">({_chg_label(r)} {chg:+.2f}%)</span></div>
-  <div style="{s['sub']}">{r['asof_label']}時点</div>
+  <div style="{s['sub']}">{r['asof_label']}時点{H.escape(_cap_tail(r))}</div>
 {_split_html(r)}{_chart_html(r)}{_share_html(r) if share else ''}
   <div style="{s['sec']}">{_rows([
       ("出来高倍率", f"{r['ratio']:.2f}倍", True),
@@ -448,7 +459,7 @@ def _section(title, lead, rows, start_no, plan):
                  'border-radius:10px;padding:12px 14px;font-size:13px;'
                  'line-height:1.7;color:#7a2d1c;">'
                  f'さらに{dropped}件が条件を満たしましたが、メールに入りきらない'
-                 f'ため載せていません（並びの後ろ＝◎でないもののうち乖離の浅い方から省きました。全{total}件）。'
+                 f'ため載せていません（並びの後ろ＝時価総額の小さい方から省きました。全{total}件）。'
                  '</div>')
     return head + body
 
@@ -472,7 +483,7 @@ def _text_block(title, rows, start_no, plan):
             line = (f"{n}. {_mark(r)}{r['code']} {r['name']}  [{mark}]\n"
                     + ("  ランク ◎（業種の勢いがとても弱い。末尾の「ランク（◎）について」）\n" if _mark(r) else "")
                     + f"  {r['price']:,.1f}円 ({_chg_label(r)} {r['chg_pct']:+.2f}%)"
-                    f" {r['asof_label']}時点\n"
+                    f" {r['asof_label']}時点{_cap_tail(r)}\n"
                     f"  出来高倍率 {r['ratio']:.2f}倍"
                     f"（当日 {r['vol_today']:,.0f}株 ÷ {r['base_label']} {r['vol_base']:,.0f}株）\n"
                     f"  {_prev_vol_label(r)} {r['vol_prev_daily']:,.0f}株\n"
@@ -504,19 +515,19 @@ def _text_block(title, rows, start_no, plan):
         out.append(line)
     if dropped:
         out.append(f"（さらに{dropped}件が条件を満たしましたが、メールに"
-                   f"入りきらないため載せていません。並びの後ろ（◎でないもののうち乖離の浅い方）から順に"
+                   f"入りきらないため載せていません。並びの後ろ（時価総額の小さい方）から順に"
                    f"省きました。全{total}件）")
     return "\n\n".join(out) + "\n"
 
 
 SEC_TITLE = "出来高が急に増えた下降トレンドの銘柄"
-SEC_LEAD = ("ランク（◎）の銘柄を先に、その中は25日線からの乖離が深い順に並べています。"
+SEC_LEAD = ("時価総額の大きい順に並べています（2026-11-13 から）。"
             "業績は一覧を分けるのに使っていません。"
             "過去検証で、業績の条件を満たす側と満たさない側に"
             "ほとんど差が出なかったためです（下の「判定条件」に数字があります）。"
             "業績の数字は銘柄ごとにそのまま出しています。")
 # GitHub 版（株探に届かない）の説明。業績を出していないのに「そのまま出しています」と書いていた（2026-10-19）
-SEC_LEAD_NO_FUND = ("ランク（◎）の銘柄を先に、その中は25日線からの乖離が深い順に並べています。"
+SEC_LEAD_NO_FUND = ("時価総額の大きい順に並べています（2026-11-13 から）。"
                     "業績は一覧を分けるのに使っていません（過去検証で、業績の条件を満たす側と満たさない側に"
                     "ほとんど差が出なかったため。下の「判定条件」に数字があります）。"
                     "この版は、業績の出所（株探）に届かないため、業績の数字は出していません。")
@@ -599,7 +610,7 @@ def build(rows, notes, date_label, cutoff_label, failure=None, warning="",
           base_label=None, suspect=False, notice=False, unchecked=0, track_note=""):
     """(subject, html, text) を返す。
 
-    rows     条件に当てはまった銘柄の一覧（◎を先に、その中は25日線からの乖離が深い順）
+    rows     条件に当てはまった銘柄の一覧（時価総額の大きい順。2026-11-12 までは◎を先に、その中は25日線からの乖離が深い順）
     failure  渡すと失敗通知メールになる。
     warning  データの欠損など、一覧は出すが但し書きが要るときの文言。
              件名と本文の先頭の両方に出す。奥に書くと気づけないため。
@@ -654,8 +665,7 @@ def build(rows, notes, date_label, cutoff_label, failure=None, warning="",
                 f'<div style="font-size:14px;line-height:1.75;color:#444444;'
                 f'padding:0 0 4px 0;">東証プライム全銘柄から、'
                 f'<b>下降トレンドのまま出来高が急に増えた銘柄</b>を探した結果です。'
-                f'ランク（◎＝業種の勢いがとても弱い）の銘柄を先に、その中は25日線からの乖離が深い順に'
-                f'並べています。</div>')
+                f'時価総額の大きい順に並べています（◎＝業種の勢いがとても弱い）。</div>')
         if warning:
             text = (("※ お知らせ: " if notice
                      else "※ データに問題がある疑いがあります: " if suspect
