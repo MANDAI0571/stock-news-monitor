@@ -169,6 +169,7 @@ def main() -> None:
     _test_note_two_us()
     _test_us_ict()
     _test_market_cap_and_daily_scan()
+    _test_note_mail_x_posts()
     _test_note_assets()
     _test_intraday_alert_grade()
     _test_alert_grade_track()
@@ -5623,6 +5624,52 @@ def _check_claude_300man_standing_exits_v3() -> None:
     declare_src = Path("claude_300man_declare.py").read_text(encoding="utf-8")
     assert declare_src.index("settle_standing_exits(today)") < declare_src.index("orders = _read(ORDERS_PATH")
     print("self-test: 300万円運用 3.0.0 の逆指値・指値・期限 OK")
+
+
+def _test_note_mail_x_posts() -> None:
+    """記事メールの最後に付ける X のお知らせの文（2026-11-13 持ち主のメモ「x記事自動」）。投稿は持ち主が手で。"""
+    import json
+    import re
+    import tempfile
+    from urllib.parse import unquote
+
+    import note_mail as NM
+    from intraday_high_alert import x_length
+
+    md = "\n".join(["# t", "## 52週高値更新の銘柄（時価総額の大きい順に5件・くわしく）",
+                    "## 52週高値更新 TOP10（全12件・時価総額の大きい順）", "## 直近高値更新 TOP10（全30件・時価総額の大きい順）",
+                    "## PPP（移動平均線が上向きにそろった）銘柄：本日そろった2件（時価総額の大きい順）", "## ご注意", "",
+                    "#日本株 #株式投資 #52週高値 #押し目"])
+    post = NM.x_post("高値更新・押し目・セリングクライマックス ランキング｜2026-11-13", md)
+    assert x_length(post) <= 280 and post.startswith("📝 note を更新しました\n高値更新"), post
+    assert "・52週高値更新 全12件" in post and "・PPP銘柄：本日そろった2件" in post and "くわしく" not in post, post
+    assert "https://note.com/breakout_scan" in post and "#日本株 #株式投資 #52週高値" in post and "#押し目" not in post
+    assert post.endswith("※売買をすすめるものではありません")
+    for bad in ("おすすめ", "買い時", "必ず上がる"):
+        assert bad not in post
+    # 有料の線より下の見出しは使わない
+    paid = NM.x_post("有料の記事", "## 無料の節\n▼ここから有料▼\n## 有料の節\n#日本株")
+    assert "無料の節" in paid and "有料の節" not in paid, paid
+    # 長いときは見出しを後ろから外す（280字に収める）
+    long = NM.x_post("長" * 60, "\n".join(f"## 見出し{'長' * 30}{k}" for k in range(5)))
+    assert x_length(long) <= 280 and "長" * 60 in long, long
+    # メール: 記事のあとに X の節。下書きの手順が読む見出し（「記事N／タイトル」「本文（ここから下をコピーして」）は増やさない
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        (root / "note_a_title.txt").write_text("記事の題\n", encoding="utf-8")
+        (root / "note_a.md").write_text("# 記事の題\n\n## 52週高値更新 TOP10（全3件・時価総額の大きい順）\n本文\n\n#日本株 #株式投資\n",
+                                        encoding="utf-8")
+        (root / "note_a.html").write_text("<h2>52週高値更新</h2><p>本文</p>", encoding="utf-8")
+        (root / "note_drafts_manifest.json").write_text(json.dumps([{"key": "a", "title_file": "note_a_title.txt",
+                                                                     "html_file": "note_a.html"}]), encoding="utf-8")
+        _, text, html = NM.build_mail(root, "件名")
+    assert "━━━━ X に流す文（記事のお知らせ） ━━━━" in text and "［X 用の文1］\n📝 note を更新しました\n記事の題" in text
+    assert html.count("本文（ここから下をコピーして") == 1 and len(re.findall(r">記事\d+／タイトル", html)) == 1
+    assert html.index("本文（ここから下をコピーして") < html.index("X 用の文1（記事1のお知らせ）")
+    assert "📋 この文をコピー" in html and "clip.html#b=" in html and "投稿はご自身で" in html
+    intent = unquote(html.split("x.com/intent/post?text=")[1].split('"')[0])
+    assert intent.startswith("📝 note を更新しました\n記事の題") and "・52週高値更新 全3件" in intent, intent
+    print("self-test: 記事メールの X のお知らせの文 OK")
 
 
 def _test_market_cap_and_daily_scan() -> None:

@@ -18,12 +18,71 @@ import html as H
 import json
 import re
 from pathlib import Path
+from urllib.parse import quote
+
+# 2026-11-13 持ち主のメモ「x記事自動」: 記事のお知らせの X の文を、記事ごとにメールの最後へ自動で付ける。
+# 📋 でコピー、𝕏 で投稿の画面が開く。投稿するのは持ち主（こちらから X へは投稿しない）。
+# 有料の線より下（有料の部分）の見出しは使わない。売買をすすめる言葉は入れない。
+PAID_LINE = "▼ここから有料▼"
+X_SKIP = ("ご注意", "印について", "Xで", "これまでの決済", "直近の売買", "運用の状況", "くわしく")
+X_HEAD_LIMIT = 3
+
+
+def _x_head(head: str) -> str:
+    """見出しを短くする。かっこの中は「3件」「1銘柄」だけ残し、「全3件のうち…」は「全3件」にする。"""
+    def keep(m: re.Match) -> str:
+        inner = m.group(1)
+        if re.fullmatch(r"全?\d+(件|銘柄)", inner):
+            return f"（{inner}）"
+        total = re.search(r"全\d+件", inner)
+        return f" {total.group(0)}" if total else ""
+
+    short = re.sub(r"（([^（）]*)）", keep, head).replace(" TOP10", "").strip()
+    return short if len(short) <= 36 else short[:35] + "…"
+
+
+def x_post(title: str, md: str, limit: int = 280) -> str:
+    """記事のお知らせの X の文（280字に収める。長いときは見出しを後ろから外し、それでも長ければタグも外す）。"""
+    from intraday_high_alert import NOTE_URL, x_length
+
+    free = md.split(PAID_LINE, 1)[0]
+    heads: list[str] = []
+    for line in free.splitlines():
+        if line.startswith("## "):
+            head = line[3:].replace("**", "").strip()
+            if head and head != "ルール" and not any(word in head for word in X_SKIP):
+                short = "・" + _x_head(head)
+                if short not in heads:
+                    heads.append(short)
+    tag_lines = [x for x in md.strip().splitlines() if re.match(r"^#[^#\s]", x.strip())]
+    tags = " ".join(tag_lines[-1].split()[:3]) if tag_lines else "#日本株 #株式投資"
+    note = "※売買をすすめるものではありません"
+    for tg in (tags, ""):
+        for n_heads in range(min(X_HEAD_LIMIT, len(heads)), -1, -1):
+            text = "\n".join(["📝 note を更新しました", title, *heads[:n_heads], NOTE_URL] + ([tg] if tg else []) + [note])
+            if x_length(text) <= limit:
+                return text
+    return "\n".join(["📝 note を更新しました", title[:60], NOTE_URL, note])
+
+
+def _x_html(i: int, text: str) -> str:
+    from intraday_high_alert import clip_url
+
+    btn = ("display:inline-block;margin:6px 6px 0 0;padding:8px 12px;border-radius:8px;color:#ffffff;"
+           "text-decoration:none;font-weight:bold;font-size:13px;")
+    return (f'<div style="margin:0 0 14px 0;">'
+            f'<div style="font-size:12px;color:#888;">X 用の文{i}（記事{i}のお知らせ）</div>'
+            f'<div style="white-space:pre-wrap;font-size:13px;line-height:1.6;padding:8px 10px;background:#f6f8fa;'
+            f'border:1px dashed #c9d1d9;border-radius:6px;">{H.escape(text)}</div>'
+            f'<a style="{btn}background:#1f745f;" href="{H.escape(clip_url(text))}">📋 この文をコピー</a>'
+            f'<a style="{btn}background:#111111;" href="https://x.com/intent/post?text={quote(text, safe="")}">𝕏に投稿</a>'
+            f'</div>')
 
 
 def build_mail(note_dir: Path, subject: str) -> tuple[str, str, str]:
     """(件名, テキスト本文, HTML本文)。記事ごとに「タイトル」と「本文」を分けて、そのままコピーできる形にする。"""
     entries = json.loads((note_dir / "note_drafts_manifest.json").read_text(encoding="utf-8"))
-    text_parts, html_parts = [], []
+    text_parts, html_parts, x_parts = [], [], []
     for i, e in enumerate(entries, 1):
         title = (note_dir / e["title_file"]).read_text(encoding="utf-8").strip()
         md_path = note_dir / e["html_file"].replace(".html", ".md")
@@ -41,12 +100,20 @@ def build_mail(note_dir: Path, subject: str) -> tuple[str, str, str]:
             f'<div style="font-size:12px;color:#888;border-top:1px solid #eee;padding-top:8px;">'
             f'本文（ここから下をコピーして note の本文へ）</div>'
             f'<div style="font-size:14px;line-height:1.8;">{body_html}</div></div>')
+        x_parts.append((i, x_post(title, md)))
     lead = ("note の自動保存はできないため（note のログインがロボット確認を求めるため）、"
             "記事をこのメールでお届けします。各記事のタイトルと本文を、note にコピーして貼り付けてください。")
-    text = lead + "\n\n" + "\n".join(text_parts)
+    x_lead = "X に流すお知らせの文です（📋 でコピー、𝕏 で投稿の画面が開きます。投稿はご自身で。記事を公開してからどうぞ）。"
+    text = (lead + "\n\n" + "\n".join(text_parts) + "\n━━━━ X に流す文（記事のお知らせ） ━━━━\n" + x_lead + "\n\n"
+            + "\n\n".join(f"［X 用の文{i}］\n{t}" for i, t in x_parts) + "\n")
+    x_html = (f'<div style="margin:0 0 28px 0;padding:14px 16px;border:1px solid #dcdee1;border-radius:10px;">'
+              f'<div style="font-size:15px;font-weight:bold;margin:0 0 6px 0;">X に流す文（記事のお知らせ）</div>'
+              f'<div style="font-size:12px;color:#555;margin:0 0 10px 0;">{H.escape(x_lead)}</div>'
+              + "".join(_x_html(i, t) for i, t in x_parts) + "</div>") if x_parts else ""
     html_doc = ('<!doctype html><html><head><meta charset="utf-8"></head><body style="margin:0;padding:12px;'
                 'font-family:-apple-system,\'Hiragino Sans\',sans-serif;color:#1a1a1a;">'
-                f'<p style="font-size:13px;color:#555;">{H.escape(lead)}</p>' + "".join(html_parts) + "</body></html>")
+                f'<p style="font-size:13px;color:#555;">{H.escape(lead)}</p>' + "".join(html_parts) + x_html
+                + "</body></html>")
     return subject, text, html_doc
 
 
