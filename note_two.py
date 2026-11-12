@@ -448,7 +448,10 @@ def portfolio_lines(day: dt.date, journal: pd.DataFrame, orders: pd.DataFrame, l
         # 2026-10-26 持ち主「300万運用にICT手法の記事織り込んで」。運用の決まりは変えず、参考として上位5件
         import us_ict
 
-        lines += [""] + us_ict.section_lines(ict, limit=5, market="jp", brief=True)
+        import market_cap
+
+        by_cap = market_cap.sort_by_market_cap(ict, code=lambda x: x["ticker"], price=lambda x: x["close"])
+        lines += [""] + us_ict.section_lines(by_cap, limit=5, market="jp", brief=True, keep_order=True)
     if CONFIG.trailing_low:
         n = CONFIG.trailing_low_days
         rule = (f"1銘柄あたり最大{CONFIG.slot_yen // 10_000}万円・最大{CONFIG.max_positions}銘柄。買いは、その日に52週新高値を付けた"

@@ -1022,8 +1022,21 @@ def _test_weekly_outlook() -> None:
     forecast = wo.forecast_lines(table, stats, call, date(2026, 11, 9))
     public = "\n".join([*forecast, *wo.rotation_lines(relative, stats, table), *anomalies])
     assert "合成銘柄" not in public
-    mail = "\n".join(wo.stock_lines(stocks, wo.strong_stock_history(liquid, market), str(stats["regime"])))
-    assert "合成銘柄" in mail
+    import market_cap
+
+    saved_table = market_cap.shares_table
+    market_cap.shares_table = lambda path=None: {code: (1e6 * (1 + int(code) % 7), "2026-11-13") for code in codes[:60]}
+    try:
+        mail = "\n".join(wo.stock_lines(stocks, wo.strong_stock_history(liquid, market), str(stats["regime"])))
+        top10 = stocks[stocks["週平均売買代金_億円"] >= wo.LIST_TURNOVER_OKU].head(10)
+        shown = wo._by_cap(top10)
+    finally:
+        market_cap.shares_table = saved_table
+    assert "合成銘柄" in mail and "時価総額の大きい順" in mail
+    # 2026-11-13: 選ぶのは上げ幅の上位10銘柄のまま、並びだけ時価総額の大きい順（出ない銘柄は最後）
+    assert set(shown.index) == set(top10.index)
+    caps = [c for c in shown["market_cap_yen"] if c == c and c is not None]
+    assert caps == sorted(caps, reverse=True) and shown["market_cap_yen"].isna().sum() == len(shown) - len(caps)
     # 銘柄の一覧は artifact に載せない（公開リポジトリ）
     workflow = (Path(".github/workflows/weekly-market-digest.yml")).read_text(encoding="utf-8")
     assert "weekly_stocks" not in workflow
@@ -3507,7 +3520,7 @@ def _check_note_two() -> None:
     import note_assets as NA
     for k in ("ranking", "300man", "us_ranking", "us_20k"):
         assert "ICT" in NA.TAGS[k] and "オーダーブロック" in NA.TAGS[k] and len(NA.TAGS[k]) <= 10, (k, NA.TAGS[k])
-    assert 'us_ict.section_lines(L.get("ict", []), limit=5, market="us", brief=True)' in Path("note_two_us.py").read_text(encoding="utf-8")
+    assert 'us_ict.section_lines(L.get("ict", []), limit=5, market="us", brief=True, keep_order=True)' in Path("note_two_us.py").read_text(encoding="utf-8")
     html = N.body_html(lines)
     assert html.count("<h2>") >= 5 and "<ol>" in html and "<strong>" in html and "<h1>" not in html
     h3 = N.body_html(["### 本日、52週高値を更新（全2件）", "- 行"])
@@ -3566,7 +3579,7 @@ def _test_us_ict() -> None:
     tt = "\n".join(us_ict.section_lines(two))
     assert "GOOGL" in tt and "GOOG Alphabet" not in tt and "（1件" in tt, tt      # 同じ会社は1行
     src = Path("note_two_us.py").read_text(encoding="utf-8")
-    assert "us_ict.state(df.iloc[-260:])" in src and 'us_ict.section_lines(L.get("ict", []))' in src
+    assert "us_ict.state(df.iloc[-260:])" in src and 'us_ict.section_lines(L.get("ict", []), keep_order=True)' in src
     jsrc = Path("note_two.py").read_text(encoding="utf-8")
     assert "ict_rows(universe" in jsrc and 'us_ict.section_lines(ict, market="jp", keep_order=True)' in jsrc and "note_two_ict=failed" in jsrc
     # 記事に出した銘柄のその後（ict_track.py）
@@ -3629,8 +3642,23 @@ def _test_note_two_us() -> None:
     title, lines = U.ranking_lines(dt.date(2026, 10, 15), L)
     text = "\n".join(lines)
     assert "1. UPP Up Inc" in text and "ランクを付けていない理由" in text and "SS" not in text.split("## ランク")[0]
-    # 2026-10-22「米株も日本株と同じように」: 上位の紹介（日本株の SS・S の紹介と同じ形。ランクなし）
-    assert "## 52週高値更新の上位1件（売買代金の大きい順）" in text and "**UPP Up Inc**" in text
+    # 2026-10-22「米株も日本株と同じように」: 上位の紹介（ランクなし）。2026-11-13 から時価総額の大きい順
+    assert "## 52週高値更新の上位1件（時価総額の大きい順）" in text and "**UPP Up Inc**" in text
+    assert "売買代金の大きい順" not in text and "深い順" not in text
+    import market_cap
+
+    saved_table = market_cap.shares_table
+    market_cap.shares_table = lambda path=None: ({"BIG": (1e9, "2026-11-13"), "MID": (1e8, "2026-11-13")}
+                                                 if Path(str(path)).name == "us_shares.csv" else {})
+    try:
+        rows = [{"ticker": t, "name": t, "turnover": v, "close": 100.0} for t, v in (("NOC", 9e9), ("MID", 1e9), ("BIG", 1e8))]
+        assert [x["ticker"] for x in U.by_cap(rows)] == ["BIG", "MID", "NOC"]
+        assert U._cap(rows[2]) == "時価総額 $100.0B" and U._cap(rows[0]) == ""
+        _, capped = U.ranking_lines(dt.date(2026, 10, 15), {"hi52": [], "swing": U.by_cap(rows), "pullback": [],
+                                                             "climax": [], "ict": []})
+        assert "1. BIG BIG（時価総額 $100.0B）" in capped and "3. NOC NOC" in capped, capped
+    finally:
+        market_cap.shares_table = saved_table
     assert "📈 チャート:https://finance.yahoo.com/quote/UPP/chart" in text and "上抜け" in text
     assert "売買をすすめるものではありません" in text and title.startswith("米株")
     from note_legal import COMPLIANCE_LINES
@@ -5698,8 +5726,8 @@ def _test_market_cap_and_daily_scan() -> None:
         # 取り直し: 古い（30日より前）・無い銘柄だけ。取れなかった銘柄は前の値を残す
         saved = (M._fetch_batch, M._fetch_one)
         asked = []
-        M._fetch_batch = lambda codes: asked.extend(codes) or {"2222": 6000.0}
-        M._fetch_one = lambda code: 7000.0 if code == "4444" else None
+        M._fetch_batch = lambda codes, suffix=".T": asked.extend(codes) or {"2222": 6000.0}
+        M._fetch_one = lambda code, suffix=".T": 7000.0 if code == "4444" else None
         try:
             stats = M.refresh(["1111", "2222", "3333", "4444.T"], path, today=dt.date(2026, 11, 13), budget_s=60)
         finally:
@@ -5757,11 +5785,13 @@ def _test_market_cap_and_daily_scan() -> None:
     finally:
         M.shares_table = saved_table
     wf = Path(".github/workflows/market_cap_refresh.yml").read_text(encoding="utf-8")
-    assert "python3 market_cap.py --refresh" in wf and "git add data/jp_shares.csv" in wf and "contents: write" in wf
-    for step in ("Install dependencies", "Refresh shares", "Persist shares"):            # 取得・push の失敗では止めない
+    assert "python3 market_cap.py --refresh" in wf and "git add data/jp_shares.csv data/us_shares.csv" in wf and "contents: write" in wf
+    assert "python3 market_cap.py --refresh --us" in wf
+    for step in ("Install dependencies", "Refresh shares", "Refresh US shares", "Persist shares"):   # 取得・push の失敗では止めない
         assert "continue-on-error: true" in wf.split(f"name: {step}", 1)[1].split("- name:", 1)[0], step
-    header = Path("data/jp_shares.csv").read_text(encoding="utf-8").splitlines()[0]
-    assert header == "code,shares,asof", header                                        # 銘柄名は入れない（公開リポジトリ）
+    for name in ("jp_shares.csv", "us_shares.csv"):
+        header = (Path("data") / name).read_text(encoding="utf-8").splitlines()[0]
+        assert header == "code,shares,asof", (name, header)                            # 銘柄名は入れない（公開リポジトリ）
     print("self-test: 時価総額の並びとランク記事の節（PPP・十字線・業種・循環物色） OK")
 
 

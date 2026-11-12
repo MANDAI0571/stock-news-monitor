@@ -217,6 +217,7 @@ def build_stock_table(panel: Panel) -> pd.DataFrame:
     prior_high = panel.high.loc[panel.high.index <= base].iloc[-245:].max()
     table = pd.DataFrame({"銘柄名": panel.names.reindex(close.columns), "業種": panel.sectors})
     table["週間騰落率%"] = weekly * 100
+    table["終値"] = close.loc[last]
     table["TOPIX比_pt"] = (weekly - topix_return) * 100
     table["週平均売買代金_億円"] = (close * panel.volume).loc[sessions].mean() / 1e8
     table["1か月%"] = (close.loc[last] / close.iloc[position - 21] - 1) * 100
@@ -390,9 +391,24 @@ def gauge_lines(gauges: list[dict[str, object]]) -> list[str]:
     return lines
 
 
+def _by_cap(frame: pd.DataFrame) -> pd.DataFrame:
+    """時価総額の大きい順（2026-11-13 持ち主「スクリーニングした銘柄はすべて時価総額順に並べる」）。
+    選ぶのは今までどおり週間の上げ幅の上位で、並びだけを変える。時価総額が出ない銘柄は最後。"""
+    import market_cap
+
+    if frame.empty or "終値" not in frame.columns:
+        return frame
+    out = market_cap.sort_frame_by_market_cap(frame.rename_axis("コード").reset_index(), "コード", "終値")
+    return out.set_index("コード")
+
+
 def _stock_line(rank: int, code: str, row: pd.Series) -> str:
+    import market_cap
+
     high = "・52週高値更新" if row["今週52週高値更新"] else ""
-    return f"{rank}. {row['銘柄名']}（{code}・{row['業種']}）{row['週間騰落率%']:+.1f}%（1日最大{row['1日最大上昇%']:+.1f}%{high}）"
+    cap = market_cap.cap_text(row.get("market_cap_yen"))
+    return (f"{rank}. {row['銘柄名']}（{code}・{row['業種']}{'・' + cap if cap else ''}）{row['週間騰落率%']:+.1f}%"
+            f"（1日最大{row['1日最大上昇%']:+.1f}%{high}）")
 
 
 def stock_lines(stocks: pd.DataFrame, history: dict[str, float], regime_name: str) -> list[str]:
@@ -400,12 +416,12 @@ def stock_lines(stocks: pd.DataFrame, history: dict[str, float], regime_name: st
     up, down = int((liquid["週間騰落率%"] > 0).sum()), int((liquid["週間騰落率%"] < 0).sum())
     sessions = int(stocks["上昇日数"].max())
     lines = [
-        f"■ 今週強かった銘柄（プライム・売買代金{LIST_TURNOVER_OKU}億円以上）",
+        f"■ 今週強かった銘柄（プライム・売買代金{LIST_TURNOVER_OKU}億円以上。上げ幅の上位10銘柄を時価総額の大きい順に）",
         f"売買代金1億円以上の{len(liquid)}銘柄のうち上昇{up}・下落{down}、中央値{liquid['週間騰落率%'].median():+.2f}%、52週高値更新{int(liquid['今週52週高値更新'].sum())}銘柄。",
     ]
-    big = stocks[stocks["週平均売買代金_億円"] >= LIST_TURNOVER_OKU].head(10)
+    big = _by_cap(stocks[stocks["週平均売買代金_億円"] >= LIST_TURNOVER_OKU].head(10))
     lines += [_stock_line(i, code, row) for i, (code, row) in enumerate(big.iterrows(), 1)]
-    steady = stocks[(stocks["週平均売買代金_億円"] >= LIST_TURNOVER_OKU) & (stocks["1日最大上昇%"] < 8) & (stocks["上昇日数"] >= sessions - 1)].head(6)
+    steady = _by_cap(stocks[(stocks["週平均売買代金_億円"] >= LIST_TURNOVER_OKU) & (stocks["1日最大上昇%"] < 8) & (stocks["上昇日数"] >= sessions - 1)].head(6))
     if not steady.empty:
         lines += ["", "単発の急騰なしに上げ続けた銘柄: " + "、".join(f"{row['銘柄名']}{row['週間騰落率%']:+.1f}%" for _, row in steady.iterrows())]
     lines += ["", f"過去5年の{regime_label(regime_name)}（{history['weeks']:.0f}週）では、上位{TOP_N_STOCKS}銘柄は翌週に市場を平均{history['excess']:+.2f}pt上回り、勝った週は{history['win']:.0f}%でした。"]

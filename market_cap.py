@@ -7,6 +7,7 @@ Yahoo Finance の quote（sharesOutstanding。100銘柄ずつ）から取り、�
 
   python3 market_cap.py --refresh            # 古い（30日より前）・無い銘柄だけ取り直す
   python3 market_cap.py --refresh --all      # 上場の全銘柄を取り直す
+  python3 market_cap.py --refresh --us       # 米株（S&P500・NASDAQ大型）の株式数（data/us_shares.csv。ティッカーのまま）
 """
 from __future__ import annotations
 
@@ -22,6 +23,7 @@ from typing import TypeVar
 
 ROOT = Path(__file__).resolve().parent
 SHARES_CSV = ROOT / "data" / "jp_shares.csv"
+US_SHARES_CSV = ROOT / "data" / "us_shares.csv"
 MAX_AGE_DAYS = 30
 T = TypeVar("T")
 
@@ -106,14 +108,14 @@ QUOTE_URL = "https://query2.finance.yahoo.com/v7/finance/quote"
 BATCH = 100
 
 
-def _fetch_batch(codes: list[str]) -> dict[str, float]:
-    """Yahoo の quote（100銘柄ずつ）で株式数を取る。yfinance の接続（cookie・crumb）を借りる。"""
+def _fetch_batch(codes: list[str], suffix: str = ".T") -> dict[str, float]:
+    """Yahoo の quote（100銘柄ずつ）で株式数を取る。yfinance の接続（cookie・crumb）を借りる。米株は suffix なし。"""
     from yfinance.data import YfData
 
     data = YfData()
     for attempt in range(3):
         try:
-            response = data.get(QUOTE_URL, params={"symbols": ",".join(f"{c}.T" for c in codes),
+            response = data.get(QUOTE_URL, params={"symbols": ",".join(f"{c}{suffix}" for c in codes),
                                                    "fields": "sharesOutstanding"})
             rows = response.json()["quoteResponse"]["result"]
             return {_code(r.get("symbol")): float(r["sharesOutstanding"]) for r in rows
@@ -123,12 +125,12 @@ def _fetch_batch(codes: list[str]) -> dict[str, float]:
     return {}
 
 
-def _fetch_one(code: str) -> float | None:
+def _fetch_one(code: str, suffix: str = ".T") -> float | None:
     """quote で取れなかった銘柄だけ、info で1つずつ取る。"""
     import yfinance as yf
 
     try:
-        info = yf.Ticker(f"{code}.T").info or {}
+        info = yf.Ticker(f"{code}{suffix}").info or {}
     except Exception:                                           # noqa: BLE001
         return None
     value = info.get("sharesOutstanding") or info.get("impliedSharesOutstanding")
@@ -136,7 +138,8 @@ def _fetch_one(code: str) -> float | None:
 
 
 def refresh(codes: Iterable[str], path: Path = SHARES_CSV, *, refetch_all: bool = False,
-            today: dt.date | None = None, workers: int = 2, budget_s: float = 1500.0) -> dict[str, int]:
+            today: dt.date | None = None, workers: int = 2, budget_s: float = 1500.0,
+            suffix: str = ".T") -> dict[str, int]:
     """古い（MAX_AGE_DAYS より前）・無い銘柄の株式数を取り直して書く。取れなかった銘柄は前の値を残す。"""
     today = today or dt.date.today()
     current = dict(shares_table(path))
@@ -155,12 +158,12 @@ def refresh(codes: Iterable[str], path: Path = SHARES_CSV, *, refetch_all: bool 
     for i in range(0, len(wanted), BATCH):
         if time.monotonic() - started > budget_s:
             break
-        found.update(_fetch_batch(wanted[i:i + BATCH]))
+        found.update(_fetch_batch(wanted[i:i + BATCH], suffix))
         time.sleep(0.5)
     rest = [c for c in wanted if c not in found]
     with ThreadPoolExecutor(workers) as pool:
         for code, shares in zip(rest, pool.map(lambda c: None if time.monotonic() - started > budget_s
-                                                else _fetch_one(c), rest)):
+                                                else _fetch_one(c, suffix), rest)):
             if shares:
                 found[code] = shares
     for code, shares in found.items():
@@ -181,15 +184,22 @@ def main(argv=None) -> int:
     ap.add_argument("--refresh", action="store_true")
     ap.add_argument("--all", action="store_true", help="古さに関係なく全部取り直す")
     ap.add_argument("--budget", type=float, default=1500.0, help="取得にかける秒数の上限")
+    ap.add_argument("--us", action="store_true", help="米株（data/us_shares.csv）")
     a = ap.parse_args(argv)
+    path = US_SHARES_CSV if a.us else SHARES_CSV
     if not a.refresh:
-        print(f"market_cap_shares rows={len(shares_table())}")
+        print(f"market_cap_shares rows={len(shares_table(path))} file={path.name}")
         return 0
-    from scanner.universe import UniverseConfig, load_jpx_listed
+    if a.us:
+        from scanner.universe_us import load_us_universe
 
-    universe = load_jpx_listed(UniverseConfig(markets=("prime", "standard", "growth")))
-    stats = refresh(universe["code"].astype(str), refetch_all=a.all, budget_s=a.budget)
-    print("market_cap_refresh " + " ".join(f"{k}={v}" for k, v in stats.items()), flush=True)
+        codes = load_us_universe()["ticker"].astype(str)
+    else:
+        from scanner.universe import UniverseConfig, load_jpx_listed
+
+        codes = load_jpx_listed(UniverseConfig(markets=("prime", "standard", "growth")))["code"].astype(str)
+    stats = refresh(codes, path, refetch_all=a.all, budget_s=a.budget, suffix="" if a.us else ".T")
+    print(f"market_cap_refresh file={path.name} " + " ".join(f"{k}={v}" for k, v in stats.items()), flush=True)
     return 0
 
 

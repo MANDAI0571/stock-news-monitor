@@ -65,15 +65,35 @@ def _usd(v: float) -> str:
     return f"${v / 1e9:.1f}B" if v >= 1e9 else f"${v / 1e6:.0f}M"
 
 
+def _cap(x: dict) -> str:
+    """「時価総額 $123.4B」（data/us_shares.csv の株式数 × 終値）。出なければ空。"""
+    import market_cap
+
+    cap = market_cap.market_cap_yen(x["ticker"], x.get("close"), market_cap.US_SHARES_CSV)
+    return f"時価総額 {_usd(cap)}" if cap else ""
+
+
+def by_cap(rows: list[dict]) -> list[dict]:
+    """時価総額の大きい順（2026-11-13 持ち主「スクリーニングした銘柄はすべて時価総額順に並べる」）。
+    時価総額が出ない銘柄は最後に売買代金の大きい順。それまでは売買代金の大きい順だった。"""
+    import market_cap
+
+    rows = sorted(rows, key=lambda x: -x["turnover"])
+    return market_cap.sort_by_market_cap(rows, code=lambda x: x["ticker"], price=lambda x: x.get("close"),
+                                         path=market_cap.US_SHARES_CSV)
+
+
 def card_lines(rows: list[dict], n: int = 5) -> list[str]:
-    """日本株の記事の「過去の成績ランク SS・S の銘柄」と同じ形の紹介（ランクは付けない）。"""
+    """日本株の記事の52週高値更新の紹介と同じ形（ランクは付けない）。"""
     out = []
     for x in rows[:n]:
+        cap = _cap(x)
         out += [f"**{x['ticker']} {x['name']}**",
                 f"終値:${x['close']:,.2f}（前日比 {x['chg']:+.2f}%） / 当日高値:${x['high']:,.2f} / 種別:52週高値更新",
                 f"52週高値ライン:${x['line']:,.2f}（{x['line_date']}の高値） / 本日${x['high']:,.2f}まで"
                 f" {x['excess']:+.2f}% 上抜け",
-                f"出来高比:{x['vol_ratio']:.2f}倍（前日までの20日平均比） / 売買代金:{_usd(x['turnover'])}（20日平均）",
+                f"出来高比:{x['vol_ratio']:.2f}倍（前日までの20日平均比） / 売買代金:{_usd(x['turnover'])}（20日平均）"
+                + (f" / {cap}" if cap else ""),
                 f"📈 チャート:https://finance.yahoo.com/quote/{x['ticker']}/chart", ""]
     return out
 
@@ -96,7 +116,7 @@ def lists_for_day(day: dt.date, histories: dict[str, pd.DataFrame], names: dict[
         cl = df["Close"].astype(float).to_numpy()
         vo = df["Volume"].fillna(0).astype(float).to_numpy()
         to20 = float(np.mean(cl[-20:] * vo[-20:]))
-        row = {"ticker": t, "name": names.get(t, t), "turnover": to20}
+        row = {"ticker": t, "name": names.get(t, t), "turnover": to20, "close": float(cl[-1])}
         # 高値更新（ザラ場アラートと同じ定義。alert_rank_research.events_for の最後の足）
         r = _r(df.iloc[-300:])
         # events_for は翌日の寄付で買う前提で最後の足を見ないので、仮の足を1本足して最後の足まで見せる
@@ -142,15 +162,17 @@ def lists_for_day(day: dt.date, histories: dict[str, pd.DataFrame], names: dict[
             sc.append({**row, "dev25": (cl[-1] / ma[25][-1] - 1) * 100, "ratio": vo[-1] / va20})
     if stats is not None:
         stats.update(used=used, total=len(histories))
-    by_turnover = lambda L: sorted(L, key=lambda x: -x["turnover"])  # noqa: E731
-    return {"hi52": by_turnover(hi52), "swing": by_turnover(swing), "pullback": by_turnover(pb),
-            "climax": sorted(sc, key=lambda x: x["dev25"]), "ict": ict}
+    return {"hi52": by_cap(hi52), "swing": by_cap(swing), "pullback": by_cap(pb),
+            "climax": by_cap(sc), "ict": by_cap(ict)}
 
 
 def ranking_lines(day: dt.date, L: dict[str, list[dict]], coverage: tuple[int, int] | None = None) -> tuple[str, list[str]]:
     def top10(title, rows, extra=lambda x: ""):
+        def tail(x):
+            parts = [p for p in (extra(x), _cap(x)) if p]
+            return f"（{'・'.join(parts)}）" if parts else ""
         out = [f"## {title} TOP10（全{len(rows)}件）", ""]
-        out += [f"{i}. {x['ticker']} {x['name']}{extra(x)}" for i, x in enumerate(rows[:10], 1)]
+        out += [f"{i}. {x['ticker']} {x['name']}{tail(x)}" for i, x in enumerate(rows[:10], 1)]
         return out + ([] if rows else ["該当なし。"]) + [""]
     lines = [f"{day}（米国時間）の終値で、S&P500 と NASDAQ の大型株から、5つの条件に当てはまった銘柄を機械的に並べた一覧です。",
              "**売買をすすめるものではありません。**", ""]
@@ -159,21 +181,21 @@ def ranking_lines(day: dt.date, L: dict[str, list[dict]], coverage: tuple[int, i
         lines += [f"※ この日は {coverage[1]}銘柄のうち {coverage[0]}銘柄しか株価が取れませんでした。"
                   "取れなかった銘柄は、この一覧に入っていません。", ""]
     if L["hi52"]:
-        # 2026-10-22 持ち主「米株も日本株と同じようにして」。日本株の記事の SS・S の紹介と同じ形で、
-        # 売買代金の大きい上位5件を紹介する。ランクは付けない（下の「ランクを付けていない理由」）
-        lines += [f"## 52週高値更新の上位{min(5, len(L['hi52']))}件（売買代金の大きい順）", ""] + card_lines(L["hi52"])
-    lines += top10("52週高値更新（売買代金の大きい順）", L["hi52"])
-    lines += top10("直近高値更新（売買代金の大きい順）", L["swing"])
-    lines += top10("25MA・200MA 押し目（売買代金の大きい順）", L["pullback"], lambda x: f"（{x['kind']}）")
-    lines += top10("セリングクライマックス（下降中の出来高急増。25日線から深い順）", L["climax"],
-                   lambda x: f"（25日線から{x['dev25']:+.1f}%・出来高{x['ratio']:.1f}倍）")
-    lines += us_ict.section_lines(L.get("ict", []))
+        # 2026-10-22 持ち主「米株も日本株と同じようにして」。日本株の記事と同じ形で上位5件を紹介する。
+        # ランクは付けない（下の「ランクを付けていない理由」）。2026-11-13 から時価総額の大きい順
+        lines += [f"## 52週高値更新の上位{min(5, len(L['hi52']))}件（時価総額の大きい順）", ""] + card_lines(L["hi52"])
+    lines += top10("52週高値更新（時価総額の大きい順）", L["hi52"])
+    lines += top10("直近高値更新（時価総額の大きい順）", L["swing"])
+    lines += top10("25MA・200MA 押し目（時価総額の大きい順）", L["pullback"], lambda x: x["kind"])
+    lines += top10("セリングクライマックス（下降中の出来高急増。時価総額の大きい順）", L["climax"],
+                   lambda x: f"25日線から{x['dev25']:+.1f}%・出来高{x['ratio']:.1f}倍")
+    lines += us_ict.section_lines(L.get("ict", []), keep_order=True)
     lines += ["## ランクを付けていない理由", "",
               "日本株の記事で使っている印（高値更新の SS〜C、押し目の注意、セリングクライマックスの◎）を、"
               "米株の過去5年（2022〜2026年）で同じ決まり（翌営業日の寄付で入り、終値で-5%か+12%、または15営業日で"
               "手じまい、売買コスト0.2%込み）で確かめると、期間ごとの並びがそろいませんでした。"
               "米株だけで探しても、4つの期間でそろった差はセリングクライマックスの「25日線に近い（浅い）ものは成績が下」"
-              "だけでした（並べ方の「深い順」と同じ向きです）。そのため、米株にはランクを付けていません。",
+              "だけでした。そのため、米株にはランクを付けていません。",
               "", "---", ""] + COMPLIANCE_LINES
     return f"米株 高値更新・押し目・セリングクライマックス 一覧｜{day}", lines
 
@@ -221,7 +243,7 @@ def build(session: dt.date, output_dir: Path, histories: dict[str, pd.DataFrame]
     ptitle = Path(output_dir) / "note_us_portfolio_title.txt"
     b_lines = [x for x in pmd.read_text(encoding="utf-8").splitlines() if not x.startswith("# ")]
     # 2026-10-26 持ち主「米株も…ICT手法の記事織り込んで」。運用の決まりは変えず、参考として上位5件
-    b_lines += [""] + us_ict.section_lines(L.get("ict", []), limit=5, market="us", brief=True)
+    b_lines += [""] + us_ict.section_lines(L.get("ict", []), limit=5, market="us", brief=True, keep_order=True)
     b_lines += ["", "---", ""] + COMPLIANCE_LINES
     t_b = ptitle.read_text(encoding="utf-8").strip()
     out = Path(output_dir) / "note_two_us"
