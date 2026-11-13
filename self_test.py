@@ -3218,6 +3218,14 @@ def _check_intraday_mail_is_capped(Alert, build_body, build_subject, select_mail
     top, cut = select_mail_alerts(graded, max_items=2)
     assert [a.code for a in top] == ["1003", "1000"] and cut == 4
     assert "時価総額" in build_body(graded, max_items=25)
+    # 件名の先頭は本文の一番上（種別の順、その中は時価総額の大きい順）。検知の順（コード順）の先頭ではない
+    assert build_subject(graded).startswith("【高値接近アラート】1003 "), build_subject(graded)
+    graded[4].alert_type = "52週高値更新"
+    assert build_subject(graded).startswith("【高値接近アラート】1004 "), build_subject(graded)
+    graded[4].alert_type = "直近高値ブレイク"
+    from intraday_high_alert import build_html_body
+    html = build_html_body(graded, max_items=2)
+    assert "時価総額の大きい順に2件" in html and "ランクの高い順" not in html, html[:800]
     market_cap.shares_table = lambda path=None: {}
     assert "省略" not in build_body(few, max_items=25)
     # 0以下は無制限（従来どおり）

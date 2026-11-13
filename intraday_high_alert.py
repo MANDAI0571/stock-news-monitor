@@ -531,7 +531,8 @@ def detect_intraday_52w_touch(history: pd.DataFrame, window_days: int = 252) -> 
 def build_subject(new_alerts: list[Alert]) -> str:
     if not new_alerts:
         return "【高値アラート】新規なし"
-    head = new_alerts[0]
+    # 本文の一番上の銘柄（種別の順、その中は時価総額の大きい順）。2026-11-13 まで検知の順（コード順）の先頭だった
+    head = mail_order(new_alerts)[0]
     if head.is_break:
         detail = f"{head.line_label}更新"
     else:
@@ -561,6 +562,13 @@ def select_mail_alerts(
     if limit <= 0 or len(ranked) <= limit:
         return ranked, 0
     return ranked[:limit], len(ranked) - limit
+
+
+def mail_order(new_alerts: list[Alert], max_items: int | None = None) -> list[Alert]:
+    """本文に載る順（52週更新→直近ブレイク→52週接近→直近接近、その中は時価総額の大きい順）。"""
+    shown, _ = select_mail_alerts(new_alerts, max_items)
+    rank = {key: i for i, key in enumerate(["52週高値更新", "直近高値ブレイク", "52週高値接近", "直近高値接近"])}
+    return sorted(shown, key=lambda a: rank.get(a.alert_type, len(rank)))
 
 
 def build_body(new_alerts: list[Alert], max_items: int | None = None) -> str:
@@ -1030,7 +1038,7 @@ def build_html_body(new_alerts: list[Alert], max_items: int | None = None) -> st
     ]
     if omitted:
         parts.append(
-            f'<p class="cut">※本文にはランクの高い順（同じランクは売買代金の大きい順）に{len(shown)}件だけ掲載しています'
+            f'<p class="cut">※本文には時価総額の大きい順に{len(shown)}件だけ掲載しています'
             f"（残り{omitted}件は省略）。全件は intraday_high_alerts_*.csv にあります。</p>"
         )
 
