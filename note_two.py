@@ -101,7 +101,8 @@ def ranking_lines(day: dt.date, alerts: list, pullback: pd.DataFrame, climax: li
     """(A) のタイトルと本文（markdown 風の行）。alerts は今日はじめての高値更新（is_fresh_break）。
 
     2026-11-13 持ち主「スクリーニングした銘柄はすべて時価総額順に並べる」「時価総額順 過去の成績という言葉は入らない」:
-    どの一覧も時価総額の大きい順にし、ランク（SS〜C）の節と説明を外した。facts（daily_market_scan.stock_facts に
+    どの一覧も時価総額の大きい順にし、ランク（SS〜C）の節と成績の数字を外した。同日「SS S A は残して」で、
+    高値更新の銘柄にはランクの文字（と点数の理由）を残す。facts（daily_market_scan.stock_facts に
     code・name・sector を足したもの）があれば、PPP・盛り上がっている業種と業種No.1・循環物色・下げトレンドの十字線の節を足す。
     """
     import daily_market_scan as S
@@ -123,7 +124,8 @@ def ranking_lines(day: dt.date, alerts: list, pullback: pd.DataFrame, climax: li
 
     def top10(title, rows):
         out = [f"## {title} TOP10（全{len(rows)}件・時価総額の大きい順）", ""]
-        out += [f"{i}. {a.code} {a.name}{_cap_of(a.code, a.current_price)}" for i, a in enumerate(rows[:10], 1)]
+        out += [f"{i}. {a.grade + '　' if a.grade else ''}{a.code} {a.name}{_cap_of(a.code, a.current_price)}"
+                for i, a in enumerate(rows[:10], 1)]
         return out + ([] if rows else ["本日は該当なし。"]) + [""]
 
     lines += top10("52週高値更新", hi52) + top10("直近高値更新", swing)
@@ -175,6 +177,8 @@ def ranking_lines(day: dt.date, alerts: list, pullback: pd.DataFrame, climax: li
         ict = market_cap.sort_by_market_cap(ict, code=lambda x: x["ticker"], price=lambda x: x["close"])
         lines += us_ict.section_lines(ict, market="jp", keep_order=True)
     lines += ["## 印について", "",
+              "- 高値更新の🏷ランク（SS・S・A・B・C）：52週高値までの距離・当日の値幅のどこにいるか・業種の勢いで付けた"
+              "点数の段階（SS がいちばん点数が高い）。グロース市場には付けていません。",
               "- 押し目の「注意あり」：グロース・スタンダードの銘柄、または60日で+25%以上上げた後の銘柄。"
               "2022〜2026年の日足で、同じ決まりの押し目はこの2つで4つの期間とも損益比が下でした"
               "（注意なし 1.37 / 0.93 / 1.77 / 1.48、注意あり 0.97 / 0.82 / 1.34 / 1.04。2022-23 / 2024 / 2025 / 2026）。",

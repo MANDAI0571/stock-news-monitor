@@ -3442,9 +3442,14 @@ def _check_note_two() -> None:
     # ランク（SS〜C）は使わず、時価総額の大きい順。時価総額が出ない銘柄（株式数なし）は最後
     assert (text.index("**2222 銘柄2222") < text.index("**3333 銘柄3333") < text.index("**1111 銘柄1111")
             < text.index("**5555 銘柄5555")), text
-    assert "1. 2222 銘柄2222（時価総額 1,000億円）" in text and "4. 5555 銘柄5555" in text, text
+    assert "1. S　2222 銘柄2222（時価総額 1,000億円）" in text and "4. 5555 銘柄5555" in text, text
     assert "時価総額 1,000億円" in text.split("**2222")[1].split("**3333")[0]
-    for bad in ("過去の成績", "ランクについて", "SS", "ランクなし"):
+    # 同日「SS S A は残して」: 並びは時価総額のまま、ランクの文字と点数の理由は残す（成績の数字は出さない）
+    assert "2. SS　3333 銘柄3333" in text and "3. B　1111 銘柄1111" in text and "1. A　4444 銘柄4444" in text, text
+    assert "🏷 ランク:SS" in text.split("**3333")[1].split("**1111")[0], text
+    assert "🏷 ランク:なし（グロース市場には付けていません）" in text.split("**5555")[1].split("##")[0], text
+    assert "高値更新の🏷ランク（SS・S・A・B・C）" in text.split("## 印について")[1], text
+    for bad in ("過去の成績", "ランクについて", "ランクなし", "1.17 /", "損益比は、SS"):
         assert bad not in text, bad
     assert "注意なし1件" in text and "7003 c（200MA" in text and "7001" not in text.split("押し目")[1].split("##")[0].split("注意あり")[0]
     assert "1. ◎ 8001" in text and "売買をすすめるものではありません" in text and "## 印について" in text
@@ -4350,6 +4355,9 @@ def _test_intraday_alert_grade() -> None:
     for text in (body, html):
         assert "過去の成績" not in text and "投資助言ではなく、スクリーニング通知です" in text
         assert "S: 2022-23 1.17" not in text
+        # 同日 持ち主「SS S A は残して」: ランクの文字と点数の理由、末尾の短い説明（成績の数字なし）は載せる
+        assert "🏷 ランク:" in text and "52週高値のすぐ下（-2.0%）+1" in text and "ランク（SS・S・A・B・C）は" in text, text[:1500]
+    assert "🏷 ランク:S（52週高値のすぐ下（-2.0%）+1）" in body and "🏷 ランク:<b>S</b>" in html
     # 2026-10-26 持ち主「リアルタイムメールで出た銘柄を一つずつコピペしてXなどに貼れるよう」: 投稿用の文と 𝕏 のボタン
     from urllib.parse import unquote
 
@@ -4426,6 +4434,7 @@ def _test_intraday_alert_grade() -> None:
     # 等級が無いアラートだけなら、末尾の説明は出さない
     b = Alert(**{**a.__dict__, "grade": "", "grade_score": 0, "grade_reasons": []})
     assert "過去の成績ランクについて" not in build_body([b])
+    assert "🏷 ランク" not in build_body([b]) and "ランク（SS・S・A・B・C）は" not in build_html_body([b])
     # 市場ごとの等級（2026-10-12）は計算だけ残す（記録 alert_grade_track 用）。メールには出さない（2026-11-13）
     for text in (body, html):
         assert "24,249場面" not in text and "S: 2022-23 0.95" not in text
@@ -4435,8 +4444,8 @@ def _test_intraday_alert_grade() -> None:
     c = Alert(**{**a.__dict__, "grade": "", "grade_score": 0,
                  "grade_reasons": [G.GROWTH_NOTE], "market": "東証グロース"})
     for text in (build_body([c]), build_html_body([c])):
-        assert "過去の成績" not in text
-    print("self-test: ザラ場アラートの等級（計算のみ・メールに出さない） OK")
+        assert "過去の成績" not in text and "🏷 ランク:なし（グロース市場には付けていません）" in text, text[:1500]
+    print("self-test: ザラ場アラートの等級（文字と理由はメールに、成績の数字は出さない） OK")
 
 
 def _test_alert_grade_track() -> None:

@@ -606,6 +606,8 @@ def build_body(new_alerts: list[Alert], max_items: int | None = None) -> str:
             lines.extend(_format_alert(alert))
         lines.append("")
 
+    if any(a.grade for a in shown):
+        lines.extend([GRADE_NOTE, ""])
     lines.append(DISCLAIMER)
     return "\n".join(lines)
 
@@ -614,6 +616,20 @@ def _cap_suffix(alert: Alert) -> str:
     """「 / 時価総額 1兆2,345億円」。株式数が無い銘柄は何も付けない（2026-11-13）。"""
     text = market_cap.cap_text(market_cap.market_cap_yen(alert.code, alert.current_price))
     return f" / {text}" if text else ""
+
+
+# 2026-11-13 持ち主「SS S A は残して」: ランク（SS〜C）はメールに残す。「過去の成績」の言葉と成績の数字は入れない
+GRADE_NOTE = ("🏷 ランク（SS・S・A・B・C）は、52週高値までの距離・当日の値幅のどこにいるか・業種の勢いで付けた"
+              "点数の段階です（SS がいちばん点数が高い）。売買をすすめるものではありません。")
+
+
+def grade_text(alert: Alert) -> str:
+    """「SS（理由）」。等級が無ければ、グロース市場のときだけ「なし（…）」、それ以外は空。"""
+    if alert.grade:
+        return f"{alert.grade}（{'、'.join(alert.grade_reasons) or '加点・減点なし'}）"
+    if "グロース" in (alert.market or ""):
+        return "なし（グロース市場には付けていません）"
+    return ""
 
 
 def _line_suffix(alert: Alert) -> str:
@@ -660,6 +676,8 @@ def _format_alert(alert: Alert) -> list[str]:
         f"  出来高比:{alert.volume_ratio:.2f}倍 / 売買代金:{alert.turnover_20d / 100_000_000:.1f}億円{_cap_suffix(alert)}",
         f"  🗓 決算予定日:{alert.earnings_date}",
     ]
+    if grade_text(alert):
+        lines.append(f"  🏷 ランク:{grade_text(alert)}")
     # fix61(2026-09-11): 高重さんの指示「チャートをワンクリックで出せるように」。
     lines.append(f"  📈 チャート:{chart_url(alert.code)}")
     # fix(2026-10-06): 比較チャートのURLはスマホで compare= ごと捨てられ、
@@ -889,7 +907,7 @@ NOTE_URL = "https://note.com/breakout_scan"
 def post_text(alert: Alert, limit: int = 280) -> str:
     """1銘柄ぶんの投稿用の文（2026-10-26 持ち主「一つずつコピペしてXなどに貼れるよう」）。
     X の280字に収める。長いときは 当日高値 → チャートのURL → タグ → note のURL の順に外す。
-    ランクは載せない（2026-11-04 持ち主の指示。2026-11-13 からメール本文からも外した）。
+    ランクは載せない（2026-11-04 持ち主の指示。メール本文には残す。2026-11-13 持ち主「SS S A は残して」）。
     ただし上抜け幅は当日高値で計算しているので、幅を載せるときは当日高値を外さない
     （2026-11-04: 外すと「現在値はライン未満なのに上抜け」と読めて数字が矛盾した）。
     売買をすすめる言葉は入れない。"""
@@ -1003,6 +1021,11 @@ def _alert_html_card(alert: Alert, share: bool = False) -> str:
         f"出来高比:{alert.volume_ratio:.2f}倍 / 売買代金:{alert.turnover_20d / 100_000_000:.1f}億円{escape(_cap_suffix(alert))}",
         f"🗓 決算予定日:{escape(alert.earnings_date)}",
     ]
+    if alert.grade:
+        rows.append(f"🏷 ランク:<b>{escape(alert.grade)}</b>"
+                    f"（{escape('、'.join(alert.grade_reasons) or '加点・減点なし')}）")
+    elif grade_text(alert):
+        rows.append(f"🏷 ランク:{escape(grade_text(alert))}")
     # fix61(2026-09-11): チャートを1タップで開けるようにする。ボタンの形にして押しやすくする。
     rows.append(
         f'<a class="chart" href="{escape(chart_url(alert.code))}">'
@@ -1049,6 +1072,8 @@ def build_html_body(new_alerts: list[Alert], max_items: int | None = None) -> st
     in_order = [a for key in order for a in grouped.get(key, [])]
     plain = {id(a): _alert_html_card(a) for a in in_order}
     tail = []
+    if any(a.grade for a in shown):
+        tail.append(f'<div class="dis">{escape(GRADE_NOTE)}</div>')
     tail.append(f'<div class="dis">{escape(DISCLAIMER)}</div>')
     tail.append("</body></html>")
     # 投稿欄（文と 𝕏 のボタン）は、Gmail が途中で切らない大きさに収まる分だけ、上から順に付ける
