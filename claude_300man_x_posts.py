@@ -70,7 +70,7 @@ def previous_business_day(day: date) -> date:
 
 def _fit(lines: list[str], optional: list[str], limit: int = 280) -> str:
     """必須の行に、入るだけ任意の行（前から優先）を足す。X の280字（漢字・かなは2）に収める。"""
-    from intraday_high_alert import x_length
+    from x_share import x_length
 
     keep = list(optional)
     while True:
@@ -241,7 +241,7 @@ def _chart(post: dict, fetch: PriceFetcher | None) -> str:
 
 
 def build_mail(kind: str, day: date, posts: list[dict], fetch: PriceFetcher | None = None) -> tuple[str, str, str]:
-    from intraday_high_alert import clip_url
+    from x_share import clip_url
 
     when = "朝（約定）" if kind == "morning" else "夜（注文と売り）"
     counts = {k: sum(1 for p in posts if p["kind"] == k) for k in ("order", "fill", "sell")}

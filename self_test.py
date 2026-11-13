@@ -5714,6 +5714,40 @@ def _test_note_mail_x_posts() -> None:
     assert "📋 この文をコピー" in html and "clip.html#b=" in html and "投稿はご自身で" in html
     intent = unquote(html.split("x.com/intent/post?text=")[1].split('"')[0])
     assert intent.startswith("📝 note を更新しました\n記事の題") and "・52週高値更新 全3件" in intent, intent
+    # 2026-11-13: 出来高急増のワークフローは yfinance を入れていない。X の文のために intraday_high_alert を読むと
+    # 有料記事のメールが止まった（14:05 の回）。yfinance が無くても記事のメールを作れること
+    import subprocess
+    import sys
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        (root / "note_a_title.txt").write_text("記事の題\n", encoding="utf-8")
+        (root / "note_a.md").write_text("# 記事の題\n\n## 一覧（全3件）\n本文\n\n#日本株 #株式投資\n", encoding="utf-8")
+        (root / "note_a.html").write_text("<h2>一覧</h2><p>本文</p>", encoding="utf-8")
+        (root / "note_drafts_manifest.json").write_text(json.dumps([{"key": "a", "title_file": "note_a_title.txt",
+                                                                     "html_file": "note_a.html"}]), encoding="utf-8")
+        code = ("import sys; sys.modules['yfinance'] = None; sys.modules['scanner.prices'] = None\n"
+                "from pathlib import Path; import note_mail as NM\n"
+                f"_, text, html = NM.build_mail(Path({str(root)!r}), '件名')\n"
+                "assert '［X 用の文1］' in text and 'clip.html#b=' in html, text[-400:]\n"
+                "assert 'intraday_high_alert' not in sys.modules, 'intraday_high_alert was imported'\n")
+        res = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                             cwd=str(Path(__file__).resolve().parent))
+        assert res.returncode == 0, res.stderr[-1500:]
+    # X の文が作れなくても、記事のメールは送る（X の節だけ省く）
+    saved_post = NM.x_post
+    NM.x_post = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x"))
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "note_a_title.txt").write_text("記事の題\n", encoding="utf-8")
+            (root / "note_a.md").write_text("# 記事の題\n本文\n", encoding="utf-8")
+            (root / "note_a.html").write_text("<p>本文</p>", encoding="utf-8")
+            (root / "note_drafts_manifest.json").write_text(json.dumps([{"key": "a", "title_file": "note_a_title.txt",
+                                                                         "html_file": "note_a.html"}]), encoding="utf-8")
+            _, text2, html2 = NM.build_mail(root, "件名")
+        assert "本文（ここから下をコピーして" in text2 and "X に流す文" not in text2 and "X に流す文" not in html2
+    finally:
+        NM.x_post = saved_post
     print("self-test: 記事メールの X のお知らせの文 OK")
 
 

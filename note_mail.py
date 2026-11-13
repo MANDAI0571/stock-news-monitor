@@ -43,7 +43,7 @@ def _x_head(head: str) -> str:
 
 def x_post(title: str, md: str, limit: int = 280) -> str:
     """記事のお知らせの X の文（280字に収める。長いときは見出しを後ろから外し、それでも長ければタグも外す）。"""
-    from intraday_high_alert import NOTE_URL, x_length
+    from x_share import NOTE_URL, x_length
 
     free = md.split(PAID_LINE, 1)[0]
     heads: list[str] = []
@@ -66,7 +66,7 @@ def x_post(title: str, md: str, limit: int = 280) -> str:
 
 
 def _x_html(i: int, text: str) -> str:
-    from intraday_high_alert import clip_url
+    from x_share import clip_url
 
     btn = ("display:inline-block;margin:6px 6px 0 0;padding:8px 12px;border-radius:8px;color:#ffffff;"
            "text-decoration:none;font-weight:bold;font-size:13px;")
@@ -100,12 +100,17 @@ def build_mail(note_dir: Path, subject: str) -> tuple[str, str, str]:
             f'<div style="font-size:12px;color:#888;border-top:1px solid #eee;padding-top:8px;">'
             f'本文（ここから下をコピーして note の本文へ）</div>'
             f'<div style="font-size:14px;line-height:1.8;">{body_html}</div></div>')
-        x_parts.append((i, x_post(title, md)))
+        try:
+            x_parts.append((i, x_post(title, md)))
+        except Exception as exc:                      # noqa: BLE001  X の文が作れなくても記事のメールは送る
+            print(f"note_mail_x_post=skipped article={i} reason={type(exc).__name__}: {exc}", flush=True)
     lead = ("note の自動保存はできないため（note のログインがロボット確認を求めるため）、"
             "記事をこのメールでお届けします。各記事のタイトルと本文を、note にコピーして貼り付けてください。")
     x_lead = "X に流すお知らせの文です（📋 でコピー、𝕏 で投稿の画面が開きます。投稿はご自身で。記事を公開してからどうぞ）。"
-    text = (lead + "\n\n" + "\n".join(text_parts) + "\n━━━━ X に流す文（記事のお知らせ） ━━━━\n" + x_lead + "\n\n"
-            + "\n\n".join(f"［X 用の文{i}］\n{t}" for i, t in x_parts) + "\n")
+    text = lead + "\n\n" + "\n".join(text_parts)
+    if x_parts:
+        text += ("\n━━━━ X に流す文（記事のお知らせ） ━━━━\n" + x_lead + "\n\n"
+                 + "\n\n".join(f"［X 用の文{i}］\n{t}" for i, t in x_parts) + "\n")
     x_html = (f'<div style="margin:0 0 28px 0;padding:14px 16px;border:1px solid #dcdee1;border-radius:10px;">'
               f'<div style="font-size:15px;font-weight:bold;margin:0 0 6px 0;">X に流す文（記事のお知らせ）</div>'
               f'<div style="font-size:12px;color:#555;margin:0 0 10px 0;">{H.escape(x_lead)}</div>'
