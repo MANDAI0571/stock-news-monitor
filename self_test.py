@@ -170,6 +170,7 @@ def main() -> None:
     _test_us_ict()
     _test_market_cap_and_daily_scan()
     _test_note_mail_x_posts()
+    _test_volume_screener_slim_install()
     _test_note_assets()
     _test_intraday_alert_grade()
     _test_alert_grade_track()
@@ -5676,6 +5677,51 @@ def _check_claude_300man_standing_exits_v3() -> None:
     print("self-test: 300万円運用 3.0.0 の逆指値・指値・期限 OK")
 
 
+# 出来高急増のワークフロー（volume_screener.yml）が入れる外の部品。これ以外の site-packages の部品を
+# 読もうとしたら ImportError にする（2026-11-13 の 14:05 は yfinance を読んで有料記事のメールが止まった）
+VS_SLIM_PACKAGES = ("pandas", "numpy", "dateutil", "pytz", "tzdata", "six", "openpyxl", "et_xmlfile",
+                    "jpholiday", "PIL", "japanize_matplotlib")
+VS_SLIM_GATE = (
+    "import sys, importlib.abc\n"
+    "from importlib.machinery import PathFinder\n"
+    f"ALLOWED = set({VS_SLIM_PACKAGES!r})\n"
+    "class SlimGate(importlib.abc.MetaPathFinder):\n"
+    "    def find_spec(self, name, path=None, target=None):\n"
+    "        top = name.split('.')[0]\n"
+    "        if '.' in name or top in ALLOWED or top in sys.builtin_module_names:\n"
+    "            return None\n"
+    "        spec = PathFinder.find_spec(top, None)\n"
+    "        where = ((spec.origin or '') + ' '.join(spec.submodule_search_locations or [])) if spec else ''\n"
+    "        if 'site-packages' in where or 'dist-packages' in where:\n"
+    "            raise ImportError('volume_screener.yml does not install ' + name)\n"
+    "        return None\n"
+    "sys.meta_path.insert(0, SlimGate())\n"
+)
+
+
+def _test_volume_screener_slim_install() -> None:
+    """14:05 の出来高急増のワークフローの部品が、そのワークフローで入れる外の部品だけで読み込めること（2026-11-15 追加）。"""
+    import subprocess
+    import sys
+    code = VS_SLIM_GATE + (
+        "import os\n"
+        "sys.path.insert(0, os.path.abspath('volume_screener'))\n"
+        "import daily_run, send, note_article, screener, report, rank, track, share, fetchlib\n"
+        "import market_cap, note_mail, note_assets, gmail_notify, note_two, note_legal, jptime, x_share\n"
+        "assert daily_run._IMPORT_ERROR is None, daily_run._IMPORT_ERROR\n"
+        "try:\n"
+        "    import yfinance\n"
+        "except ImportError:\n"
+        "    pass\n"
+        "else:\n"
+        "    raise AssertionError('the gate let yfinance through')\n"
+    )
+    res = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                         cwd=str(Path(__file__).resolve().parent))
+    assert res.returncode == 0, res.stderr[-1500:]
+    print("self-test: 出来高急増のワークフローの部品だけで読み込める OK")
+
+
 def _test_note_mail_x_posts() -> None:
     """記事メールの最後に付ける X のお知らせの文（2026-11-13 持ち主のメモ「x記事自動」）。投稿は持ち主が手で。"""
     import json
@@ -5720,7 +5766,7 @@ def _test_note_mail_x_posts() -> None:
     intent = unquote(html.split("x.com/intent/post?text=")[1].split('"')[0])
     assert intent.startswith("📝 note を更新しました\n記事の題") and "・52週高値更新 全3件" in intent, intent
     # 2026-11-13: 出来高急増のワークフローは yfinance を入れていない。X の文のために intraday_high_alert を読むと
-    # 有料記事のメールが止まった（14:05 の回）。yfinance が無くても記事のメールを作れること
+    # 有料記事のメールが止まった（14:05 の回）。このワークフローで入れる部品だけで記事のメールを作れること
     import subprocess
     import sys
     with tempfile.TemporaryDirectory() as tmp:
@@ -5730,7 +5776,7 @@ def _test_note_mail_x_posts() -> None:
         (root / "note_a.html").write_text("<h2>一覧</h2><p>本文</p>", encoding="utf-8")
         (root / "note_drafts_manifest.json").write_text(json.dumps([{"key": "a", "title_file": "note_a_title.txt",
                                                                      "html_file": "note_a.html"}]), encoding="utf-8")
-        code = ("import sys; sys.modules['yfinance'] = None; sys.modules['scanner.prices'] = None\n"
+        code = (VS_SLIM_GATE +
                 "from pathlib import Path; import note_mail as NM\n"
                 f"_, text, html = NM.build_mail(Path({str(root)!r}), '件名')\n"
                 "assert '［X 用の文1］' in text and 'clip.html#b=' in html, text[-400:]\n"
