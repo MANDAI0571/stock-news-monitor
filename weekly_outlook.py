@@ -424,7 +424,9 @@ def stock_lines(stocks: pd.DataFrame, history: dict[str, float], regime_name: st
     steady = _by_cap(stocks[(stocks["週平均売買代金_億円"] >= LIST_TURNOVER_OKU) & (stocks["1日最大上昇%"] < 8) & (stocks["上昇日数"] >= sessions - 1)].head(6))
     if not steady.empty:
         lines += ["", "単発の急騰なしに上げ続けた銘柄: " + "、".join(f"{row['銘柄名']}{row['週間騰落率%']:+.1f}%" for _, row in steady.iterrows())]
-    lines += ["", f"過去5年の{regime_label(regime_name)}（{history['weeks']:.0f}週）では、上位{TOP_N_STOCKS}銘柄は翌週に市場を平均{history['excess']:+.2f}pt上回り、勝った週は{history['win']:.0f}%でした。"]
+    # 平均がマイナスのときに「-0.88pt上回り」と書かない（2026-11-14 の初めての本番メールで見つけた）
+    side = "上回り" if history["excess"] >= 0 else "下回り"
+    lines += ["", f"過去5年の{regime_label(regime_name)}（{history['weeks']:.0f}週）では、上位{TOP_N_STOCKS}銘柄は翌週に市場を平均{abs(history['excess']):.2f}pt{side}、勝った週は{history['win']:.0f}%でした。"]
     return lines
 
 

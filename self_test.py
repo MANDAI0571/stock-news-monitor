@@ -1028,11 +1028,16 @@ def _test_weekly_outlook() -> None:
     market_cap.shares_table = lambda path=None: {code: (1e6 * (1 + int(code) % 7), "2026-11-13") for code in codes[:60]}
     try:
         mail = "\n".join(wo.stock_lines(stocks, wo.strong_stock_history(liquid, market), str(stats["regime"])))
+        # 2026-11-14: 平均がマイナスの週は「-0.88pt上回り」ではなく「0.88pt下回り」
+        below = "\n".join(wo.stock_lines(stocks, {"weeks": 15, "excess": -0.88, "win": 33}, str(stats["regime"])))
+        above = "\n".join(wo.stock_lines(stocks, {"weeks": 15, "excess": 0.5, "win": 60}, str(stats["regime"])))
         top10 = stocks[stocks["週平均売買代金_億円"] >= wo.LIST_TURNOVER_OKU].head(10)
         shown = wo._by_cap(top10)
     finally:
         market_cap.shares_table = saved_table
     assert "合成銘柄" in mail and "時価総額の大きい順" in mail
+    assert "市場を平均0.88pt下回り" in below and "pt上回り" not in below, below
+    assert "市場を平均0.50pt上回り" in above, above
     # 2026-11-13: 選ぶのは上げ幅の上位10銘柄のまま、並びだけ時価総額の大きい順（出ない銘柄は最後）
     assert set(shown.index) == set(top10.index)
     caps = [c for c in shown["market_cap_yen"] if c == c and c is not None]
