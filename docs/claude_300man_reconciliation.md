@@ -10,14 +10,14 @@
 
 | 重要度 | 検査 | 判定 | 対象 | 詳細 |
 |---|---|---|---|---|
-| INFO | schema_orders | PASS | orders | 16 rows |
+| INFO | schema_orders | PASS | orders | 18 rows |
 | INFO | schema_journal | PASS | journal | 10 rows |
 | INFO | duplicate_orders | PASS | orders | none |
 | INFO | duplicate_journal_entries | PASS | journal | none |
 | INFO | filled_buys_to_journal | PASS | all | 10 keys matched |
-| INFO | filled_sells_to_journal | PASS | all | 5 keys matched |
-| INFO | open_share_balance | PASS | all | 5 keys matched |
+| INFO | filled_sells_to_journal | PASS | all | 6 keys matched |
+| INFO | open_share_balance | PASS | all | 4 keys matched |
 | INFO | journal_arithmetic | PASS | journal | 10 rows matched |
-| INFO | cash_balance | PASS | paper_cash | cash_jpy=803750 |
-| INFO | open_position_limits | PASS | portfolio | open=5 max=5 |
-| INFO | pending_rule_compatibility | PASS | pending_orders | count=0 |
+| INFO | cash_balance | PASS | paper_cash | cash_jpy=1154750 |
+| INFO | open_position_limits | PASS | portfolio | open=4 max=5 |
+| INFO | pending_rule_compatibility | PASS | pending_orders | count=1 |
