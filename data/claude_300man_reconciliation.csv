@@ -1,12 +1,12 @@
 ﻿as_of,severity,check,status,subject,details
-2026-11-17,INFO,schema_orders,PASS,orders,18 rows
-2026-11-17,INFO,schema_journal,PASS,journal,10 rows
-2026-11-17,INFO,duplicate_orders,PASS,orders,none
-2026-11-17,INFO,duplicate_journal_entries,PASS,journal,none
-2026-11-17,INFO,filled_buys_to_journal,PASS,all,10 keys matched
-2026-11-17,INFO,filled_sells_to_journal,PASS,all,6 keys matched
-2026-11-17,INFO,open_share_balance,PASS,all,4 keys matched
-2026-11-17,INFO,journal_arithmetic,PASS,journal,10 rows matched
-2026-11-17,INFO,cash_balance,PASS,paper_cash,cash_jpy=1154750
-2026-11-17,INFO,open_position_limits,PASS,portfolio,open=4 max=5
-2026-11-17,INFO,pending_rule_compatibility,PASS,pending_orders,count=1
+2026-11-18,INFO,schema_orders,PASS,orders,18 rows
+2026-11-18,INFO,schema_journal,PASS,journal,11 rows
+2026-11-18,INFO,duplicate_orders,PASS,orders,none
+2026-11-18,INFO,duplicate_journal_entries,PASS,journal,none
+2026-11-18,INFO,filled_buys_to_journal,PASS,all,11 keys matched
+2026-11-18,INFO,filled_sells_to_journal,PASS,all,6 keys matched
+2026-11-18,INFO,open_share_balance,PASS,all,5 keys matched
+2026-11-18,INFO,journal_arithmetic,PASS,journal,11 rows matched
+2026-11-18,INFO,cash_balance,PASS,paper_cash,cash_jpy=773550
+2026-11-18,INFO,open_position_limits,PASS,portfolio,open=5 max=5
+2026-11-18,INFO,pending_rule_compatibility,PASS,pending_orders,count=0
