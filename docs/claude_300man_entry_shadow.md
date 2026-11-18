@@ -28,10 +28,10 @@
 | 2026-11-04 | pullback_only_v1 | 7976 三菱鉛筆 | PENDING_EXIT | 3685.00円 | STOP_LOSS 2026-11-18 | -% |
 | 2026-11-05 | balanced_2p_1m_v1 | 9505 北陸電力 | SKIPPED_ENTRY_GAP | 1040.50円 | -  | -% |
 | 2026-11-05 | balanced_2p_1m_v1 | 9697 カプコン | OPEN | 4239.00円 | -  | -% |
-| 2026-11-05 | current_combined_v1 | 7976 三菱鉛筆 | OPEN | 3660.00円 | -  | -% |
+| 2026-11-05 | current_combined_v1 | 7976 三菱鉛筆 | PENDING_EXIT | 3660.00円 | STOP_LOSS 2026-11-18 | -% |
 | 2026-11-05 | current_combined_v1 | 9505 北陸電力 | SKIPPED_ENTRY_GAP | 1040.50円 | -  | -% |
 | 2026-11-05 | current_combined_v1 | 9697 カプコン | OPEN | 4239.00円 | -  | -% |
-| 2026-11-05 | pullback_only_v1 | 7976 三菱鉛筆 | OPEN | 3660.00円 | -  | -% |
+| 2026-11-05 | pullback_only_v1 | 7976 三菱鉛筆 | PENDING_EXIT | 3660.00円 | STOP_LOSS 2026-11-18 | -% |
 | 2026-11-05 | pullback_only_v1 | 9505 北陸電力 | SKIPPED_ENTRY_GAP | 1040.50円 | -  | -% |
 | 2026-11-05 | pullback_only_v1 | 9697 カプコン | OPEN | 4239.00円 | -  | -% |
 | 2026-11-06 | balanced_2p_1m_v1 | 2121 ＭＩＸＩ | OPEN | 3980.00円 | -  | -% |
