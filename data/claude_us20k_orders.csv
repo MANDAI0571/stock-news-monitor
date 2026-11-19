@@ -28,4 +28,5 @@
 2026-11-12,2026-11-13,BUY,AAPL,Apple Inc.,18,52週新高値に到達 ／ 売買代金 $16.6B ／ 出来高比 0.79倍 ／ Information Technology（売買代金の大きい順に採用）,FILLED
 2026-11-13,2026-11-16,SELL,V,Visa Inc.,16,タイムアウト 10営業日（10営業日）,FILLED
 2026-11-16,2026-11-17,BUY,LLY,Lilly (Eli),4,52週新高値に到達 ／ 売買代金 $4.2B ／ 出来高比 0.83倍 ／ Health Care（売買代金の大きい順に採用）,FILLED
-2026-11-17,2026-11-18,SELL,MSFT,Microsoft,11,損切 -7%（-8.8%）,PENDING
+2026-11-17,2026-11-18,SELL,MSFT,Microsoft,11,損切 -7%（-8.8%）,FILLED
+2026-11-18,2026-11-19,BUY,COST,Costco,6,52週新高値まで2.41% ／ 売買代金 $2.6B ／ 出来高比 1.00倍 ／ Consumer Staples（売買代金の大きい順に採用）,PENDING
