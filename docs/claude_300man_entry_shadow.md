@@ -36,10 +36,10 @@
 | 2026-11-06 | pullback_only_v1 | 2121 ＭＩＸＩ | OPEN | 3980.00円 | -  | -% |
 | 2026-11-09 | balanced_2p_1m_v1 | 5401 日本製鉄 | OPEN | 686.00円 | -  | -% |
 | 2026-11-09 | balanced_2p_1m_v1 | 9962 ミスミグループ本社 | SKIPPED_ENTRY_GAP | 4110.00円 | -  | -% |
-| 2026-11-09 | current_combined_v1 | 4189 ＫＨネオケム | PENDING_EXIT | 3365.00円 | STOP_LOSS 2026-11-19 | -% |
+| 2026-11-09 | current_combined_v1 | 4189 ＫＨネオケム | OPEN | 3365.00円 | - 2026-11-19 | -% |
 | 2026-11-09 | current_combined_v1 | 5401 日本製鉄 | OPEN | 686.00円 | -  | -% |
 | 2026-11-09 | current_combined_v1 | 9962 ミスミグループ本社 | SKIPPED_ENTRY_GAP | 4110.00円 | -  | -% |
-| 2026-11-09 | pullback_only_v1 | 4189 ＫＨネオケム | PENDING_EXIT | 3365.00円 | STOP_LOSS 2026-11-19 | -% |
+| 2026-11-09 | pullback_only_v1 | 4189 ＫＨネオケム | OPEN | 3365.00円 | - 2026-11-19 | -% |
 | 2026-11-09 | pullback_only_v1 | 5401 日本製鉄 | OPEN | 686.00円 | -  | -% |
 | 2026-11-09 | pullback_only_v1 | 9962 ミスミグループ本社 | SKIPPED_ENTRY_GAP | 4110.00円 | -  | -% |
 | 2026-11-10 | balanced_2p_1m_v1 | 4613 関西ペイント | OPEN | 2955.00円 | -  | -% |
@@ -66,11 +66,11 @@
 | 2026-11-12 | pullback_only_v1 | 2229 カルビー | OPEN | 3204.00円 | -  | -% |
 | 2026-11-12 | pullback_only_v1 | 4613 関西ペイント | OPEN | 2970.50円 | -  | -% |
 | 2026-11-12 | pullback_only_v1 | 6460 セガサミーホールディングス | OPEN | 3368.00円 | -  | -% |
-| 2026-11-13 | balanced_2p_1m_v1 | 3405 クラレ | OPEN | 1913.00円 | -  | -% |
+| 2026-11-13 | balanced_2p_1m_v1 | 3405 クラレ | PENDING_EXIT | 1913.00円 | STOP_LOSS 2026-11-19 | -% |
 | 2026-11-13 | current_combined_v1 | 2154 オープンアップグループ | OPEN | 2027.00円 | -  | -% |
-| 2026-11-13 | current_combined_v1 | 3405 クラレ | OPEN | 1913.00円 | -  | -% |
+| 2026-11-13 | current_combined_v1 | 3405 クラレ | PENDING_EXIT | 1913.00円 | STOP_LOSS 2026-11-19 | -% |
 | 2026-11-13 | pullback_only_v1 | 2154 オープンアップグループ | OPEN | 2027.00円 | -  | -% |
-| 2026-11-13 | pullback_only_v1 | 3405 クラレ | OPEN | 1913.00円 | -  | -% |
+| 2026-11-13 | pullback_only_v1 | 3405 クラレ | PENDING_EXIT | 1913.00円 | STOP_LOSS 2026-11-19 | -% |
 | 2026-11-17 | balanced_2p_1m_v1 | 2181 パーソルホールディングス | OPEN | 292.60円 | -  | -% |
 | 2026-11-17 | balanced_2p_1m_v1 | 4044 セントラル硝子 | OPEN | 4575.00円 | -  | -% |
 | 2026-11-17 | current_combined_v1 | 2181 パーソルホールディングス | OPEN | 292.60円 | -  | -% |
