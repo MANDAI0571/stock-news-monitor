@@ -108,6 +108,7 @@ def ranking_lines(day: dt.date, alerts: list, pullback: pd.DataFrame, climax: li
     import daily_market_scan as S
     import intraday_high_alert as M
     import market_cap
+    import per_mark
 
     closes = {str(f["code"]): f["close"] for f in facts or []}
     hi52 = _alerts_by_cap([a for a in alerts if a.alert_type == "52週高値更新"])
@@ -117,18 +118,24 @@ def ranking_lines(day: dt.date, alerts: list, pullback: pd.DataFrame, climax: li
              f"## 52週高値更新の銘柄（時価総額の大きい順に{CARD_SHOW}件・くわしく）", ""]
     if not hi52:
         lines += ["本日は該当なし。", ""]
+    # 2026-11-20 持ち主「52週高値でPERが同じ業種で平均より安い場合は二重丸、かなり安い場合ははなまる」: 記事は ◎・💮
+    marks = per_mark.ARTICLE_MARKS
     for a in hi52[:CARD_SHOW]:
-        block = [x for x in M._format_alert(a) if "OpenWork" not in x]
+        block = [x for x in M._format_alert(a, marks) if "OpenWork" not in x]
         body = [x.strip().replace("現在値:", "終値:") for x in block[1:] if x.strip()]
         lines += [f"**{block[0]}**（{(a.market or '').replace('東証', '')}）"] + body + [""]
 
     def top10(title, rows):
         out = [f"## {title} TOP10（全{len(rows)}件・時価総額の大きい順）", ""]
-        out += [f"{i}. {a.grade + '　' if a.grade else ''}{a.code} {a.name}{_cap_of(a.code, a.current_price)}"
+        out += [f"{i}. {M._per_mark(a, marks)}{a.grade + '　' if a.grade else ''}{a.code} {a.name}"
+                f"{_cap_of(a.code, a.current_price)}"
                 for i, a in enumerate(rows[:10], 1)]
         return out + ([] if rows else ["本日は該当なし。"]) + [""]
 
-    lines += top10("52週高値更新", hi52) + top10("直近高値更新", swing)
+    lines += top10("52週高値更新", hi52)
+    if any(a.per for a in hi52[:10]):
+        lines += [f"（{per_mark.ARTICLE_NOTE}）", ""]
+    lines += top10("直近高値更新", swing)
     if facts:
         lines += S.ppp_lines(facts) + S.sector_lines(facts)
     pb = pullback.copy()

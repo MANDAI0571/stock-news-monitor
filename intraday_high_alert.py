@@ -49,6 +49,7 @@ import pandas as pd
 import alert_grade
 import market_cap
 import nikkei_compare
+import per_mark
 from scanner.highs import classify_high_profile
 from scanner.indicators import calculate_indicators
 from scanner.prices import (
@@ -204,6 +205,9 @@ class Alert:
     market: str = ""                # 東証プライム / 東証スタンダード / 東証グロース（等級の表に使う）
     # 2026-10-27: コピー用のページで描くローソク足（直近60本）を短い文字にしたもの（chart_payload）
     spark: str = ""
+    # 2026-11-20 持ち主「52週高値でPERが同じ業種で平均より安い場合は…リアルタイムメールでまる、二重丸」:
+    #   per_mark.per_facts の結果（PER・業種・業種の中央値・段階）。52週高値更新だけに付ける。出せなければ空。
+    per: dict = field(default_factory=dict)
 
     def dedup_key(self) -> str:
         return f"{self.code}|{self.alert_type}"
@@ -608,6 +612,8 @@ def build_body(new_alerts: list[Alert], max_items: int | None = None) -> str:
 
     if any(a.grade for a in shown):
         lines.extend([GRADE_NOTE, ""])
+    if any(a.per for a in shown):
+        lines.extend([per_mark.REALTIME_NOTE, ""])
     lines.append(DISCLAIMER)
     return "\n".join(lines)
 
@@ -666,10 +672,16 @@ def _dist_text(alert: Alert) -> str:
     return "更新済み"
 
 
-def _format_alert(alert: Alert) -> list[str]:
+def _per_mark(alert: Alert, marks: dict[int, str] | None = None) -> str:
+    """銘柄名の前に付ける PER の印（リアルタイムは ○・◎、記事は marks で ◎・💮）。無ければ空。"""
+    sign = per_mark.mark(alert.per or None, marks or per_mark.REALTIME_MARKS)
+    return f"{sign} " if sign else ""
+
+
+def _format_alert(alert: Alert, marks: dict[int, str] | None = None) -> list[str]:
     dist_text = _dist_text(alert)
     lines = [
-        f"{alert.code} {alert.name}",
+        f"{_per_mark(alert, marks)}{alert.code} {alert.name}",
         f"  {_price_text(alert)} / 種別:{alert.alert_type}",
         f"  {alert.line_label}ライン:{alert.line_price:,.1f}円{_line_suffix(alert)}"
         f" / {dist_text}{_break_text(alert)}",
@@ -678,6 +690,8 @@ def _format_alert(alert: Alert) -> list[str]:
     ]
     if grade_text(alert):
         lines.append(f"  🏷 ランク:{grade_text(alert)}")
+    if alert.per:
+        lines.append(f"  💹 {per_mark.per_text(alert.per, marks or per_mark.REALTIME_MARKS)}")
     # fix61(2026-09-11): 高重さんの指示「チャートをワンクリックで出せるように」。
     lines.append(f"  📈 チャート:{chart_url(alert.code)}")
     # fix(2026-10-06): 比較チャートのURLはスマホで compare= ごと捨てられ、
@@ -826,6 +840,8 @@ def scan(
                 continue
             alerts.append(_apply_extra_fields(alert, stock.code))
             alerts[-1].market = str(getattr(stock, "market", "") or "")
+            if alert.alert_type == "52週高値更新":
+                alerts[-1].per = per_mark.per_facts(stock.code, alert.current_price) or {}
             grade_facts[id(alerts[-1])] = (facts, sector, alerts[-1].market)
         except Exception as exc:  # 1銘柄の失敗で全体を止めない
             print(f"skip {stock.ticker}: {exc}", flush=True)
@@ -998,6 +1014,8 @@ def _alert_html_card(alert: Alert, share: bool = False) -> str:
                     f"（{escape('、'.join(alert.grade_reasons) or '加点・減点なし')}）")
     elif grade_text(alert):
         rows.append(f"🏷 ランク:{escape(grade_text(alert))}")
+    if alert.per:
+        rows.append(f"💹 {escape(per_mark.per_text(alert.per, per_mark.REALTIME_MARKS))}")
     # fix61(2026-09-11): チャートを1タップで開けるようにする。ボタンの形にして押しやすくする。
     rows.append(
         f'<a class="chart" href="{escape(chart_url(alert.code))}">'
@@ -1014,7 +1032,7 @@ def _alert_html_card(alert: Alert, share: bool = False) -> str:
     body = "".join(f'<div class="row">{row}</div>' for row in rows)
     return (
         '<div class="card">'
-        f'<div class="ttl"><span class="cd">{escape(alert.code)}</span> '
+        f'<div class="ttl">{escape(_per_mark(alert))}<span class="cd">{escape(alert.code)}</span> '
         f'<span class="nm">{escape(alert.name)}</span></div>'
         f"{body}</div>"
     )
@@ -1046,6 +1064,8 @@ def build_html_body(new_alerts: list[Alert], max_items: int | None = None) -> st
     tail = []
     if any(a.grade for a in shown):
         tail.append(f'<div class="dis">{escape(GRADE_NOTE)}</div>')
+    if any(a.per for a in shown):
+        tail.append(f'<div class="dis">{escape(per_mark.REALTIME_NOTE)}</div>')
     tail.append(f'<div class="dis">{escape(DISCLAIMER)}</div>')
     tail.append("</body></html>")
     # 投稿欄（文と 𝕏 のボタン）は、Gmail が途中で切らない大きさに収まる分だけ、上から順に付ける

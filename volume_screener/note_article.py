@@ -77,6 +77,7 @@ def high52_lines(h: dict) -> list[str]:
              "行の先頭の【 】が形です。", ""]
     heads = (("new", "本日、52週高値を更新"), ("recent", "本日、直近高値（60営業日の高値）を更新"),
              ("ma25", "52週高値のあと、25日線まで押した"))
+    any_per = False
     for kind, head in heads:
         if f"n_{kind}" not in h:                      # 前の形の記録（直近高値なし）
             continue
@@ -88,8 +89,12 @@ def high52_lines(h: dict) -> list[str]:
         for r in rows:
             head_ = f"- {LABELS[kind]}{r['code']} {r['name']}　現在 {_yen(r['price'])}{_cap(r)}"
             if kind == "new":
+                sign, per = _per(r)
+                any_per = any_per or bool(per)
+                if sign:
+                    head_ = f"- {sign} {head_[2:]}"
                 lines.append(f"{head_}・52週高値 {_yen(r['line'])}（{md(r.get('line_date'))}）を当日高値で "
-                             f"{float(r['excess_pct']):+.2f}% 上抜け")
+                             f"{float(r['excess_pct']):+.2f}% 上抜け{per}")
             elif kind == "recent":
                 lines.append(f"{head_}・直近高値 {_yen(r['line'])}（{md(r.get('line_date'))}）を当日高値で "
                              f"{float(r['excess_pct']):+.2f}% 上抜け")
@@ -100,7 +105,27 @@ def high52_lines(h: dict) -> list[str]:
     lines += ["※ 直近高値更新＝52週高値ではないが、前日までの60営業日の高値を本日の高値で上抜け、現在値が25日線より上。"
               "25日線押し目＝直近20営業日のうちに52週高値を付け、本日の安値が25日線の+1%以内まで下がり、"
               "現在値が25日線の-2%より上、25日線が上向き。値は記事の時点のもので、売買をすすめるものではありません。", ""]
+    if any_per:
+        import per_mark                               # _per が出せたなら、リポジトリ直下は sys.path にある
+
+        lines += [f"※ {per_mark.ARTICLE_NOTE}", ""]
     return lines
+
+
+def _per(r: dict) -> tuple[str, str]:
+    """(印, 「・PER 12.3倍（電気機器の中央値 18.5倍）◎」)。52週新高値の行に付ける（2026-11-20 持ち主
+    「52週高値でPERが同じ業種で平均より安い場合は二重丸、かなり安い場合ははなまる」）。出せなければ空。"""
+    try:
+        import screener as SC
+
+        facts = SC.per_facts(r)
+        if not facts:
+            return "", ""
+        import per_mark
+
+        return per_mark.mark(facts), f"・{per_mark.per_text(facts)}"
+    except Exception:                                 # noqa: BLE001 - 印が無くても記事は出す
+        return "", ""
 
 
 CWH_SHOW = 10   # カップ・ウィズ・ハンドルの記事に載せる件数（上抜け・形成中それぞれ）。1銘柄1行

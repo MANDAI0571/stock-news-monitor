@@ -169,6 +169,7 @@ def main() -> None:
     _test_note_two_us()
     _test_us_ict()
     _test_market_cap_and_daily_scan()
+    _test_per_mark()
     _test_note_mail_x_posts()
     _test_volume_screener_slim_install()
     _test_note_assets()
@@ -5895,6 +5896,85 @@ def _test_market_cap_and_daily_scan() -> None:
         header = (Path("data") / name).read_text(encoding="utf-8").splitlines()[0]
         assert header == "code,shares,asof", (name, header)                            # 銘柄名は入れない（公開リポジトリ）
     print("self-test: 時価総額の並びとランク記事の節（PPP・十字線・業種・循環物色） OK")
+
+
+def _test_per_mark() -> None:
+    """52週高値の PER の印（2026-11-20 持ち主「PERが同じ業種で平均より安い場合は二重丸、かなり安い場合ははなまる。
+    リアルタイムメールでまる、二重丸」）。記事は ◎・💮、リアルタイムは ○・◎。赤字・データ無しは印も文も出さない。"""
+    import tempfile
+    from dataclasses import replace
+
+    import intraday_high_alert as IHA
+    import per_mark as PM
+
+    with tempfile.TemporaryDirectory() as tmp:
+        eps, sec = Path(tmp) / "eps.csv", Path(tmp) / "sec.csv"
+        eps.write_text("code,eps,sector,asof\n1001,100,電気機器,2026-11-20\n1002,-5,電気機器,2026-11-20\n"
+                       "1003,100,不明な業種,2026-11-20\n", encoding="utf-8")
+        sec.write_text("sector,median_per,n,asof\n電気機器,20.00,50,2026-11-20\n", encoding="utf-8")
+        f = lambda code, price: PM.per_facts(code, price, eps, sec)  # noqa: E731
+        assert f("1001", 2500)["level"] == 0                       # PER 25倍 ≥ 中央値 20倍 → 印なし
+        assert f("1001", 1900)["level"] == 1 and f("1001", 1400)["level"] == 2   # 19倍 → 1、14倍（0.7倍以下）→ 2
+        assert f("1001.T", 1400)["per"] == 14.0
+        assert f("1002", 1000) is None and f("1003", 1000) is None and f("9999", 1000) is None and f("1001", 0) is None
+        one, two = f("1001", 1900), f("1001", 1400)
+        assert PM.mark(one) == "◎" and PM.mark(two) == "💮" and PM.mark(f("1001", 2500)) == "" and PM.mark(None) == ""
+        assert PM.mark(one, PM.REALTIME_MARKS) == "○" and PM.mark(two, PM.REALTIME_MARKS) == "◎"
+        assert PM.per_text(two) == "PER 14.0倍（電気機器の中央値 20.0倍） 💮", PM.per_text(two)
+        assert PM.per_text(None) == ""
+        # 業種の中央値: 業種が5銘柄より少ない・PER がマイナスの銘柄は数えない
+        table = {str(c): (10.0, "銀行業", "") for c in range(1, 6)} | {"9": (-1.0, "銀行業", ""), "8": (10.0, "空運業", "")}
+        prices = {str(c): 100.0 * c for c in range(1, 10)}
+        med = PM.sector_medians(table, prices)
+        assert med == {"銀行業": (30.0, 5)}, med
+    for text in (PM.ARTICLE_NOTE, PM.REALTIME_NOTE):
+        for bad in ("割安", "おすすめ", "買い時", "過去の成績"):
+            assert bad not in text, bad
+        assert "売買をすすめるものではありません" in text
+
+    # リアルタイムのメール: 52週高値更新の行に ○・◎ と PER の行、末尾に印の説明
+    base = IHA.Alert(code="1001", name="会社", current_price=1400.0, alert_type="52週高値更新", high_type="52W_NEW_HIGH",
+                     line_label="52週高値", line_price=1390.0, dist_pct=0.0, is_break=True, volume_ratio=1.2,
+                     turnover_20d=500_000_000, reason="52週高値を更新")
+    alert = replace(base, per={"per": 14.0, "sector": "電気機器", "median": 20.0, "level": 2})
+    text = "\n".join(IHA._format_alert(alert))
+    assert text.startswith("◎ 1001 会社") and "💹 PER 14.0倍（電気機器の中央値 20.0倍） ◎" in text, text
+    assert "💮" not in text
+    assert IHA._format_alert(alert, PM.ARTICLE_MARKS)[0] == "💮 1001 会社"
+    assert IHA._format_alert(base)[0] == "1001 会社" and not any("PER" in x for x in IHA._format_alert(base))
+    body, html_body = IHA.build_body([alert]), IHA.build_html_body([alert])
+    assert PM.REALTIME_NOTE in body and "○＝PER" in html_body and "◎ <span class=\"cd\">1001</span>" in html_body
+    assert PM.REALTIME_NOTE not in IHA.build_body([base])
+
+    # 記事（14:05 のカップウィズハンドルの記事）: 52週新高値の行に ◎・💮 と PER
+    import sys
+
+    sys.path.insert(0, str(Path("volume_screener").resolve()))
+    import note_article as NA
+    import screener as SC
+
+    saved = SC.per_facts
+    try:
+        SC.per_facts = lambda r: {"per": 14.0, "sector": "電気機器", "median": 20.0, "level": 2} if r["code"] == "1001" else None
+        h = {"n_new": 2, "new": [{"code": "1001", "name": "会社A", "price": 1400.0, "line": 1390.0, "line_date": "2026-11-05",
+                                   "excess_pct": 0.5},
+                                  {"code": "1002", "name": "会社B", "price": 500.0, "line": 490.0, "line_date": "2026-11-05",
+                                   "excess_pct": 0.3}]}
+        lines = NA.high52_lines(h)
+        row_a = next(x for x in lines if "1001" in x)
+        row_b = next(x for x in lines if "1002" in x)
+        assert row_a.startswith("- 💮 【52週新高値】1001") and row_a.endswith("上抜け・PER 14.0倍（電気機器の中央値 20.0倍） 💮"), row_a
+        assert row_b.startswith("- 【52週新高値】1002") and "PER" not in row_b, row_b
+        assert any(PM.ARTICLE_NOTE in x for x in lines)
+        SC.per_facts = lambda r: None
+        assert not any("PER" in x for x in NA.high52_lines(h))
+    finally:
+        SC.per_facts = saved
+    wf = Path(".github/workflows/market_cap_refresh.yml").read_text(encoding="utf-8")
+    assert "python3 per_mark.py --refresh" in wf and "data/jp_eps.csv data/jp_sector_per.csv" in wf
+    assert "continue-on-error: true" in wf.split("name: Refresh EPS for PER marks", 1)[1].split("- name:", 1)[0]
+    assert Path("data/jp_eps.csv").read_text(encoding="utf-8").splitlines()[0] == "code,eps,sector,asof"   # 銘柄名は入れない
+    print("self-test: 52週高値の PER の印（記事 ◎・💮、リアルタイム ○・◎） OK")
 
 
 def _test_claude_300man_trailing_low() -> None:

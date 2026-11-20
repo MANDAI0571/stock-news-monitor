@@ -199,6 +199,19 @@ def _market_cap_module():
     return MC
 
 
+def per_facts(r):
+    """PER と同じ業種の中央値（2026-11-20 持ち主「52週高値でPERが同じ業種で平均より安い場合は二重丸、
+    かなり安い場合ははなまる」）。リポジトリ直下の per_mark.py（data/jp_eps.csv）。出せなければ None。
+    per_mark.py が無いところ（Mac の写し）では None。"""
+    if _market_cap_module() is None:                  # リポジトリ直下を sys.path に足す
+        return None
+    try:
+        import per_mark as PM
+    except ImportError:
+        return None
+    return PM.per_facts(r.get("code"), r.get("price"))
+
+
 def cwh_summary(found):
     """上抜け・形成中を、それぞれ時価総額の大きい順に。件数と上位 CWH_KEEP 件を返す
     （2026-11-12 までは上抜けは出来高倍率の大きい順、形成中は取っ手の高値に近い順）。"""
