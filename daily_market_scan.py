@@ -64,6 +64,7 @@ def stock_facts(df: pd.DataFrame | None) -> dict | None:
         "dev25": price / float(ma25.iloc[-1]) - 1,
         "high52": bool(float(h.iloc[-1]) > float(h.iloc[-253:-1].max())) if len(h) >= 253 else False,
         "pos52": _pos52(price, h, low),
+        "hanging": is_hanging_shape(float(o.iloc[-1]), float(h.iloc[-1]), float(low.iloc[-1]), price),
     }
 
 
@@ -116,8 +117,23 @@ def doji_lines(facts: list[dict]) -> list[str]:
     return out + [""]
 
 
-LARGE_CAP_YEN = 1e12             # 大型株の十字線: 時価総額1兆円以上の東証プライム
+LARGE_CAP_YEN = 1e12             # 大型株の形: 時価総額1兆円以上の東証プライム
 HIGH_ZONE, LOW_ZONE = 0.8, 0.2   # 52週の幅の上2割＝高値圏、下2割＝安値圏
+LARGE_LIST_LIMIT = 3             # 2026-11-24 持ち主「TOP10は多すぎるのTOP3で」
+# 首吊り線（2026-11-24 持ち主、ちょる子さんの「指標2」）: 実体が小さく、長い下ヒゲ、上ヒゲはほとんど無い足が高値圏で出たもの
+HANG_BODY_RATIO = 0.30           # 実体 ≤ 幅 × 0.3
+HANG_LOWER_RATIO = 0.60          # 下ヒゲ ≥ 幅 × 0.6 かつ 実体の2倍以上
+HANG_UPPER_RATIO = 0.10          # 上ヒゲ ≤ 幅 × 0.1
+
+
+def is_hanging_shape(o: float, h: float, low: float, c: float) -> bool:
+    """首吊り線（下ヒゲの長い小さな足）の形か。位置（高値圏か）は見ない。幅は終値の1%以上。"""
+    rng = h - low
+    if not (rng > 0 and c > 0 and rng / c >= DOJI_MIN_RANGE):
+        return False
+    body, lower, upper = abs(c - o), min(o, c) - low, h - max(o, c)
+    return body <= HANG_BODY_RATIO * rng and lower >= HANG_LOWER_RATIO * rng and lower >= 2 * body \
+        and upper <= HANG_UPPER_RATIO * rng
 
 
 def zone_word(pos: float | None) -> str:
@@ -126,14 +142,29 @@ def zone_word(pos: float | None) -> str:
     return "高値圏" if pos >= HIGH_ZONE else "安値圏" if pos <= LOW_ZONE else "中ほど"
 
 
+def _large(r: dict) -> bool:
+    return "プライム" in str(r.get("market", "")) and (market_cap.market_cap_yen(r["code"], r["close"]) or 0) >= LARGE_CAP_YEN
+
+
+def _large_rows_lines(rows: list[dict]) -> list[str]:
+    out = []
+    for i, r in enumerate(rows[:LARGE_LIST_LIMIT], 1):
+        pos = r.get("pos52")
+        where = f"【{zone_word(pos)}】" + (f"52週の幅の{pos * 100:.0f}%の位置" if pos is not None else "")
+        out.append(f"{i}. {where} {r['code']} {r['name']}（終値 {r['close']:,.0f}円{_cap(r)}・前日比 {r['ret1'] * 100:+.1f}%）")
+    if not rows:
+        out.append("本日は該当なし。")
+    if len(rows) > LARGE_LIST_LIMIT:
+        out.append(f"（ほか{len(rows) - LARGE_LIST_LIMIT}件）")
+    return out + [""]
+
+
 def large_doji_lines(facts: list[dict]) -> list[str]:
-    """大型株の十字線 TOP10（2026-11-24 持ち主「十字線をスクリーニング大型株で時価総額順にTOP10を300万運用の記事に」。
-    ママさん投資家ちょる子さんの判断基準: 十字線は単体ではなく、株価がどの位置で出たかと合わせて見る。大型株ほど効く）。
-    時価総額1兆円以上の東証プライムで本日の足が十字線の銘柄を、時価総額の大きい順に。位置は52週の幅の中の場所。"""
-    rows = [r for r in facts if r.get("doji") and "プライム" in str(r.get("market", ""))
-            and (market_cap.market_cap_yen(r["code"], r["close"]) or 0) >= LARGE_CAP_YEN]
-    rows = _by_cap(rows)
-    out = [f"## 大型株の十字線：{len(rows)}件（時価総額の大きい順に{LIST_LIMIT}件まで）", "",
+    """大型株の十字線 TOP3（2026-11-24 持ち主「十字線をスクリーニング大型株で時価総額順に…300万運用の記事に」、
+    同日「TOP10は多すぎるのTOP3で」。ママさん投資家ちょる子さんの判断基準: 十字線は単体ではなく、株価がどの位置で
+    出たかと合わせて見る。大型株ほど効く）。時価総額1兆円以上の東証プライムで本日の足が十字線の銘柄を、時価総額の大きい順に。"""
+    rows = _by_cap([r for r in facts if r.get("doji") and _large(r)])
+    out = [f"## 大型株の十字線：{len(rows)}件（時価総額の大きい順に{LARGE_LIST_LIMIT}件まで）", "",
            "ママさん投資家のちょる子さんが判断の軸にしている形の1つ「十字線」を、大型株（時価総額1兆円以上の東証プライム）から"
            "機械的に拾いました。十字線は、始値と終値がほぼ同じで上下にヒゲだけが伸びた足で、買いと売りの力が釣り合ったことを表します。"
            "ちょる子さんは、十字線をそれだけで見ず「いま株価がどの位置にあるか」と合わせて見るそうです。"
@@ -142,15 +173,26 @@ def large_doji_lines(facts: list[dict]) -> list[str]:
            "ここでは日足で、始値と終値の差が高値と安値の幅の1割以下（幅は終値の1%以上）の足を十字線とし、"
            f"位置は52週の安値〜高値の幅の上{round((1 - HIGH_ZONE) * 100)}%を高値圏、下{round(LOW_ZONE * 100)}%を安値圏としました。"
            "この運用の売買の決まりとは別に、参考として載せています（この運用はこの一覧では売買していません）。", ""]
-    for i, r in enumerate(rows[:LIST_LIMIT], 1):
-        pos = r.get("pos52")
-        where = f"【{zone_word(pos)}】" + (f"52週の幅の{pos * 100:.0f}%の位置" if pos is not None else "")
-        out.append(f"{i}. {where} {r['code']} {r['name']}（終値 {r['close']:,.0f}円{_cap(r)}・前日比 {r['ret1'] * 100:+.1f}%）")
-    if not rows:
-        out.append("本日は該当なし。")
-    if len(rows) > LIST_LIMIT:
-        out.append(f"（ほか{len(rows) - LIST_LIMIT}件）")
-    return out + [""]
+    return out + _large_rows_lines(rows)
+
+
+def large_hanging_lines(facts: list[dict]) -> list[str]:
+    """大型株の首吊り線 TOP3（2026-11-24 持ち主「次はこれ同じ感じで…TOP3で」。ちょる子さんの「指標2：首吊り線」:
+    下ヒゲは普通は買いの合図とされるが、高値圏で出た小さな実体・長い下ヒゲの足は、上昇の終わりを知らせる形として見る）。
+    時価総額1兆円以上の東証プライムで、本日の足が首吊り線の形で、終値が52週の幅の高値圏（上2割）にある銘柄。"""
+    rows = _by_cap([r for r in facts if r.get("hanging") and _large(r)
+                    and r.get("pos52") is not None and r["pos52"] >= HIGH_ZONE])
+    out = [f"## 大型株の首吊り線：{len(rows)}件（時価総額の大きい順に{LARGE_LIST_LIMIT}件まで）", "",
+           "ちょる子さんが判断の軸にしている形の2つ目「首吊り線」です。実体が小さく、長い下ヒゲがあり、上ヒゲはほとんど無い足です。"
+           "下ヒゲは普通「安いところで買う人が現れた」しるしとされますが、高値圏で出たときに限っては意味が逆になり、"
+           "その日のうちに大きく売られる場面があり、買い戻されても高値を更新する勢いは無かった、"
+           "つまり上昇の勢いが尽きかけている合図として見るそうです。"
+           "ちょる子さんは、大型株が力強く上がった後にこの形が出たら、手じまいの準備を始めるとのことです。", "",
+           f"ここでは日足で、実体が幅の{round(HANG_BODY_RATIO * 100)}%以下、下ヒゲが幅の{round(HANG_LOWER_RATIO * 100)}%以上かつ"
+           f"実体の2倍以上、上ヒゲが幅の{round(HANG_UPPER_RATIO * 100)}%以下（幅は終値の1%以上）の足で、"
+           f"終値が52週の安値〜高値の幅の上{round((1 - HIGH_ZONE) * 100)}%（高値圏）にあるものを拾いました。"
+           "この運用の売買の決まりとは別に、参考として載せています（この運用はこの一覧では売買していません）。", ""]
+    return out + _large_rows_lines(rows)
 
 
 def sector_table(facts: list[dict]) -> list[dict]:

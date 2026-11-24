@@ -6006,12 +6006,37 @@ def _test_large_doji() -> None:
              {**base, "code": "1003", "name": "小さい会社", "doji": True, "pos52": 0.5},        # 1兆円未満は出さない
              {**base, "code": "1004", "name": "十字線でない", "doji": False, "pos52": 0.5},
              {**base, "code": "1005", "name": "スタンダード", "doji": True, "pos52": 0.5, "market": "東証スタンダード"}]
+    hang = [{**base, "code": "1001", "name": "会社A", "hanging": True, "pos52": 0.9},
+            {**base, "code": "1002", "name": "安値の首吊り", "hanging": True, "pos52": 0.5},      # 高値圏でなければ出さない
+            {**base, "code": "1004", "name": "会社D", "hanging": True, "pos52": 0.85},
+            {**base, "code": "1005", "name": "会社E", "hanging": True, "pos52": 0.99},
+            {**base, "code": "1006", "name": "位置不明", "hanging": True, "pos52": None}]
+    caps["1006"] = 1e13
+    many = [{**base, "code": str(2000 + k), "name": f"多い{k}", "doji": True, "pos52": 0.5} for k in range(5)]
+    caps.update({str(2000 + k): 1e12 + k for k in range(5)})
     try:
         lines = S.large_doji_lines(facts)
+        hang_lines = S.large_hanging_lines(hang)
+        many_lines = S.large_doji_lines(many)
     finally:
         S.market_cap.market_cap_yen = saved
+    # 首吊り線: 大型株・高値圏だけ、時価総額の大きい順に3件まで
+    htext = "\n".join(hang_lines)
+    assert "## 大型株の首吊り線：3件（時価総額の大きい順に3件まで）" in htext and "ちょる子さん" in htext, htext
+    hrows = [x for x in hang_lines if x[:2] in ("1.", "2.", "3.")]
+    assert [x.split()[2] for x in hrows] == ["1001", "1005", "1004"], hrows   # 時価総額 5兆・4兆・3兆の順
+    assert "安値の首吊り" not in htext and "位置不明" not in htext and "この運用はこの一覧では売買していません" in htext
+    for bad in ("おすすめ", "買い時", "売り時", "過去の成績", "必ず"):
+        assert bad not in htext, bad
+    # TOP3: 4件目からは「ほか」
+    assert sum(1 for x in many_lines if x[:2] in ("1.", "2.", "3.", "4.")) == 3 and "（ほか2件）" in many_lines
+    # 首吊り線の形: 実体が小さく、長い下ヒゲ、上ヒゲはほとんど無い
+    assert S.is_hanging_shape(o=99.0, h=100.0, low=90.0, c=100.0)           # 実体1・下ヒゲ9・上ヒゲ0
+    assert not S.is_hanging_shape(o=95.0, h=100.0, low=90.0, c=100.0)       # 実体が大きい
+    assert not S.is_hanging_shape(o=99.0, h=103.0, low=90.0, c=100.0)       # 上ヒゲが長い
+    assert not S.is_hanging_shape(o=100.0, h=100.2, low=99.8, c=100.0)      # 幅が1%未満
     text = "\n".join(lines)
-    assert "## 大型株の十字線：2件" in text and "ちょる子さん" in text, text
+    assert "## 大型株の十字線：2件（時価総額の大きい順に3件まで）" in text and "ちょる子さん" in text, text
     assert "幅の上20%を高値圏、下20%を安値圏" in text, text
     rows = [x for x in lines if x[:2] in ("1.", "2.")]
     assert rows[0].startswith("1. 【安値圏】52週の幅の10%の位置 1001 会社A"), rows
@@ -6027,8 +6052,8 @@ def _test_large_doji() -> None:
     import note_two as N
 
     src = inspect.getsource(N.portfolio_lines)
-    assert "S.large_doji_lines(day_facts)" in src and "day_facts=facts" in inspect.getsource(N.main)
-    print("self-test: 大型株の十字線 TOP10（300万円運用の記事） OK")
+    assert "S.large_doji_lines(day_facts) + S.large_hanging_lines(day_facts)" in src and "day_facts=facts" in inspect.getsource(N.main)
+    print("self-test: 大型株の十字線・首吊り線 TOP3（300万円運用の記事） OK")
 
 
 
