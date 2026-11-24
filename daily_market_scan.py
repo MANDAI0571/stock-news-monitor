@@ -63,7 +63,16 @@ def stock_facts(df: pd.DataFrame | None) -> dict | None:
                      and abs(price - float(o.iloc[-1])) <= DOJI_BODY_RATIO * rng),
         "dev25": price / float(ma25.iloc[-1]) - 1,
         "high52": bool(float(h.iloc[-1]) > float(h.iloc[-253:-1].max())) if len(h) >= 253 else False,
+        "pos52": _pos52(price, h, low),
     }
+
+
+def _pos52(price: float, h: pd.Series, low: pd.Series) -> float | None:
+    """52週（252本）の安値〜高値の幅の中で、終値がどこにいるか（0＝安値、1＝高値）。足りなければ None。"""
+    if len(h) < 252:
+        return None
+    top, bottom = float(h.iloc[-252:].max()), float(low.iloc[-252:].min())
+    return (price - bottom) / (top - bottom) if top > bottom else None
 
 
 def _by_cap(rows: list[dict]) -> list[dict]:
@@ -100,6 +109,43 @@ def doji_lines(facts: list[dict]) -> list[str]:
            "下げが止まるかどうかはまだ分かりません。", ""]
     for i, r in enumerate(rows[:LIST_LIMIT], 1):
         out.append(f"{i}. {r['code']} {r['name']}（終値 {r['close']:,.0f}円{_cap(r)}・25日線から {r['dev25'] * 100:+.1f}%）")
+    if not rows:
+        out.append("本日は該当なし。")
+    if len(rows) > LIST_LIMIT:
+        out.append(f"（ほか{len(rows) - LIST_LIMIT}件）")
+    return out + [""]
+
+
+LARGE_CAP_YEN = 1e12             # 大型株の十字線: 時価総額1兆円以上の東証プライム
+HIGH_ZONE, LOW_ZONE = 0.8, 0.2   # 52週の幅の上2割＝高値圏、下2割＝安値圏
+
+
+def zone_word(pos: float | None) -> str:
+    if pos is None:
+        return "位置は不明"
+    return "高値圏" if pos >= HIGH_ZONE else "安値圏" if pos <= LOW_ZONE else "中ほど"
+
+
+def large_doji_lines(facts: list[dict]) -> list[str]:
+    """大型株の十字線 TOP10（2026-11-24 持ち主「十字線をスクリーニング大型株で時価総額順にTOP10を300万運用の記事に」。
+    ママさん投資家ちょる子さんの判断基準: 十字線は単体ではなく、株価がどの位置で出たかと合わせて見る。大型株ほど効く）。
+    時価総額1兆円以上の東証プライムで本日の足が十字線の銘柄を、時価総額の大きい順に。位置は52週の幅の中の場所。"""
+    rows = [r for r in facts if r.get("doji") and "プライム" in str(r.get("market", ""))
+            and (market_cap.market_cap_yen(r["code"], r["close"]) or 0) >= LARGE_CAP_YEN]
+    rows = _by_cap(rows)
+    out = [f"## 大型株の十字線：{len(rows)}件（時価総額の大きい順に{LIST_LIMIT}件まで）", "",
+           "ママさん投資家のちょる子さんが判断の軸にしている形の1つ「十字線」を、大型株（時価総額1兆円以上の東証プライム）から"
+           "機械的に拾いました。十字線は、始値と終値がほぼ同じで上下にヒゲだけが伸びた足で、買いと売りの力が釣り合ったことを表します。"
+           "ちょる子さんは、十字線をそれだけで見ず「いま株価がどの位置にあるか」と合わせて見るそうです。"
+           "高値圏で出れば買いの勢いが衰えてきた合図、安値圏で出れば売りが一巡して下げ止まりかけた合図とされ、"
+           "多くの投資家が同じチャートを見ている大型株ほど意識されやすい、とのことです。", "",
+           "ここでは日足で、始値と終値の差が高値と安値の幅の1割以下（幅は終値の1%以上）の足を十字線とし、"
+           f"位置は52週の安値〜高値の幅の上{round((1 - HIGH_ZONE) * 100)}%を高値圏、下{round(LOW_ZONE * 100)}%を安値圏としました。"
+           "この運用の売買の決まりとは別に、参考として載せています（この運用はこの一覧では売買していません）。", ""]
+    for i, r in enumerate(rows[:LIST_LIMIT], 1):
+        pos = r.get("pos52")
+        where = f"【{zone_word(pos)}】" + (f"52週の幅の{pos * 100:.0f}%の位置" if pos is not None else "")
+        out.append(f"{i}. {where} {r['code']} {r['name']}（終値 {r['close']:,.0f}円{_cap(r)}・前日比 {r['ret1'] * 100:+.1f}%）")
     if not rows:
         out.append("本日は該当なし。")
     if len(rows) > LIST_LIMIT:

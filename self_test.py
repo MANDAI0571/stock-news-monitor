@@ -170,6 +170,7 @@ def main() -> None:
     _test_us_ict()
     _test_market_cap_and_daily_scan()
     _test_per_mark()
+    _test_large_doji()
     _test_note_mail_x_posts()
     _test_volume_screener_slim_install()
     _test_note_assets()
@@ -5975,6 +5976,60 @@ def _test_per_mark() -> None:
     assert "continue-on-error: true" in wf.split("name: Refresh EPS for PER marks", 1)[1].split("- name:", 1)[0]
     assert Path("data/jp_eps.csv").read_text(encoding="utf-8").splitlines()[0] == "code,eps,sector,asof"   # 銘柄名は入れない
     print("self-test: 52週高値の PER の印（記事 ◎・💮、リアルタイム ○・◎） OK")
+
+
+def _test_large_doji() -> None:
+    """大型株の十字線 TOP10（2026-11-24 持ち主「十字線をスクリーニング大型株で時価総額順にTOP10を300万運用の記事にプラス。
+    ママさん投資家ちょる子さんの判断基準」）。時価総額1兆円以上の東証プライム・時価総額の大きい順・位置（高値圏・安値圏）。"""
+    import numpy as np
+
+    import daily_market_scan as S
+
+    # 52週の位置: 終値が安値〜高値の幅のどこか
+    n = 260
+    close = pd.Series(np.linspace(100, 200, n))
+    df = pd.DataFrame({"Open": close, "High": close + 1, "Low": close - 1, "Close": close, "Volume": 1000.0})
+    df.loc[df.index[-1], ["Open", "High", "Low", "Close"]] = [150.0, 160.0, 140.0, 150.5]
+    f = S.stock_facts(df)
+    top, bottom = float(df["High"].iloc[-252:].max()), float(df["Low"].iloc[-252:].min())
+    assert f["doji"] and abs(f["pos52"] - (150.5 - bottom) / (top - bottom)) < 1e-9, f["pos52"]
+    assert S.stock_facts(df.iloc[-100:])["pos52"] is None                      # 52週ぶん無ければ出さない
+    assert S.zone_word(0.9) == "高値圏" and S.zone_word(0.1) == "安値圏" and S.zone_word(0.5) == "中ほど"
+    assert S.zone_word(None) == "位置は不明"
+
+    caps = {"1001": 5e12, "1002": 2e12, "1003": 9e11, "1004": 3e12, "1005": 4e12}
+    saved = S.market_cap.market_cap_yen
+    S.market_cap.market_cap_yen = lambda code, price, path=None: caps.get(str(code))
+    base = {"close": 1000.0, "turnover20": 1e10, "ret1": 0.01, "market": "東証プライム"}
+    facts = [{**base, "code": "1001", "name": "会社A", "doji": True, "pos52": 0.1},
+             {**base, "code": "1002", "name": "会社B", "doji": True, "pos52": 0.95},
+             {**base, "code": "1003", "name": "小さい会社", "doji": True, "pos52": 0.5},        # 1兆円未満は出さない
+             {**base, "code": "1004", "name": "十字線でない", "doji": False, "pos52": 0.5},
+             {**base, "code": "1005", "name": "スタンダード", "doji": True, "pos52": 0.5, "market": "東証スタンダード"}]
+    try:
+        lines = S.large_doji_lines(facts)
+    finally:
+        S.market_cap.market_cap_yen = saved
+    text = "\n".join(lines)
+    assert "## 大型株の十字線：2件" in text and "ちょる子さん" in text, text
+    assert "幅の上20%を高値圏、下20%を安値圏" in text, text
+    rows = [x for x in lines if x[:2] in ("1.", "2.")]
+    assert rows[0].startswith("1. 【安値圏】52週の幅の10%の位置 1001 会社A"), rows
+    assert rows[1].startswith("2. 【高値圏】52週の幅の95%の位置 1002 会社B"), rows
+    for bad in ("小さい会社", "十字線でない", "スタンダード", "おすすめ", "買い時", "過去の成績", "必ず"):
+        assert bad not in text, bad
+    assert "この運用はこの一覧では売買していません" in text
+    assert "本日は該当なし。" in S.large_doji_lines([])
+
+    # 300万円運用の記事に入る（facts を渡したときだけ）
+    import inspect
+
+    import note_two as N
+
+    src = inspect.getsource(N.portfolio_lines)
+    assert "S.large_doji_lines(day_facts)" in src and "day_facts=facts" in inspect.getsource(N.main)
+    print("self-test: 大型株の十字線 TOP10（300万円運用の記事） OK")
+
 
 
 def _test_claude_300man_trailing_low() -> None:
