@@ -6035,6 +6035,29 @@ def _test_large_doji() -> None:
     assert not S.is_hanging_shape(o=95.0, h=100.0, low=90.0, c=100.0)       # 実体が大きい
     assert not S.is_hanging_shape(o=99.0, h=103.0, low=90.0, c=100.0)       # 上ヒゲが長い
     assert not S.is_hanging_shape(o=100.0, h=100.2, low=99.8, c=100.0)      # 幅が1%未満
+    # はらみ線: 前日の大きな実体の内側に、本日の半分以下の実体
+    assert S.harami_kind(po=110.0, pc=100.0, o=102.0, c=104.0) == "after_down"   # 大陰線のあとの小さな陽線
+    assert S.harami_kind(po=100.0, pc=110.0, o=106.0, c=105.0) == "after_up"     # 大陽線のあとの小さな陰線
+    assert S.harami_kind(po=110.0, pc=100.0, o=99.0, c=104.0) == ""               # 前日の実体からはみ出す
+    assert S.harami_kind(po=110.0, pc=100.0, o=101.0, c=108.0) == ""              # 本日の実体が大きい（7 > 5）
+    assert S.harami_kind(po=100.5, pc=100.0, o=100.1, c=100.2) == ""              # 前日の実体が小さい（1.5%未満）
+    caps2 = {"3001": 3e12, "3002": 5e12, "3003": 5e11}
+    saved2 = S.market_cap.market_cap_yen
+    S.market_cap.market_cap_yen = lambda code, price, path=None: caps2.get(str(code))
+    try:
+        hl = S.large_harami_lines([{**base, "code": "3001", "name": "会社H", "harami": "after_down", "pos52": 0.1},
+                                   {**base, "code": "3002", "name": "会社I", "harami": "after_up", "pos52": 0.9},
+                                   {**base, "code": "3003", "name": "小さい会社", "harami": "after_up", "pos52": 0.9},
+                                   {**base, "code": "3004", "name": "はらみでない", "harami": "", "pos52": 0.9}])
+    finally:
+        S.market_cap.market_cap_yen = saved2
+    htext2 = "\n".join(hl)
+    assert "## 大型株のはらみ線：2件（時価総額の大きい順に3件まで）" in htext2 and "ちょる子さん" in htext2, htext2
+    assert "1. 【高値圏・大きな陽線のあと】52週の幅の90%の位置 3002 会社I" in htext2, htext2
+    assert "2. 【安値圏・大きな陰線のあと】52週の幅の10%の位置 3001 会社H" in htext2, htext2
+    assert "小さい会社" not in htext2 and "はらみでない" not in htext2 and "この運用はこの一覧では売買していません" in htext2
+    for bad in ("おすすめ", "買い時", "売り時", "過去の成績", "必ず"):
+        assert bad not in htext2, bad
     text = "\n".join(lines)
     assert "## 大型株の十字線：2件（時価総額の大きい順に3件まで）" in text and "ちょる子さん" in text, text
     assert "幅の上20%を高値圏、下20%を安値圏" in text, text
@@ -6052,8 +6075,8 @@ def _test_large_doji() -> None:
     import note_two as N
 
     src = inspect.getsource(N.portfolio_lines)
-    assert "S.large_doji_lines(day_facts) + S.large_hanging_lines(day_facts)" in src and "day_facts=facts" in inspect.getsource(N.main)
-    print("self-test: 大型株の十字線・首吊り線 TOP3（300万円運用の記事） OK")
+    assert "S.large_doji_lines(day_facts) + S.large_hanging_lines(day_facts) + S.large_harami_lines(day_facts)" in src and "day_facts=facts" in inspect.getsource(N.main)
+    print("self-test: 大型株の十字線・首吊り線・はらみ線 TOP3（300万円運用の記事） OK")
 
 
 

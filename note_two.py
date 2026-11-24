@@ -457,10 +457,10 @@ def portfolio_lines(day: dt.date, journal: pd.DataFrame, orders: pd.DataFrame, l
         lines.append(f"- {day}の判定（次の営業日の買い）：この記事を作った時点では出ていません（夜に決まります）")
     if day_facts:
         # 2026-11-24 持ち主「十字線をスクリーニング大型株で時価総額順に…300万運用の記事にプラス」（ちょる子さんの判断基準）、
-        # 同日「次はこれ（首吊り線）同じ感じで」「TOP3で」
+        # 同日「次はこれ（首吊り線）同じ感じで」「TOP3で」「次はハラミ線で同じ感じで」
         import daily_market_scan as S
 
-        lines += [""] + S.large_doji_lines(day_facts) + S.large_hanging_lines(day_facts)
+        lines += [""] + S.large_doji_lines(day_facts) + S.large_hanging_lines(day_facts) + S.large_harami_lines(day_facts)
     if ict is not None:
         # 2026-10-26 持ち主「300万運用にICT手法の記事織り込んで」。運用の決まりは変えず、参考として上位5件
         import us_ict

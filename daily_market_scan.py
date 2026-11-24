@@ -65,6 +65,7 @@ def stock_facts(df: pd.DataFrame | None) -> dict | None:
         "high52": bool(float(h.iloc[-1]) > float(h.iloc[-253:-1].max())) if len(h) >= 253 else False,
         "pos52": _pos52(price, h, low),
         "hanging": is_hanging_shape(float(o.iloc[-1]), float(h.iloc[-1]), float(low.iloc[-1]), price),
+        "harami": harami_kind(float(o.iloc[-2]), float(c.iloc[-2]), float(o.iloc[-1]), price),
     }
 
 
@@ -136,6 +137,25 @@ def is_hanging_shape(o: float, h: float, low: float, c: float) -> bool:
         and upper <= HANG_UPPER_RATIO * rng
 
 
+# はらみ線（2026-11-24 持ち主「次はハラミ線で同じ感じで」。ちょる子さんの「指標3」）: 前日の大きな実体の中に、本日の小さな実体が収まる2本の足
+HARAMI_PREV_BODY = 0.015         # 前日の実体が前日終値の1.5%以上（大きな足）
+HARAMI_BODY_RATIO = 0.5          # 本日の実体 ≤ 前日の実体 × 0.5
+
+
+def harami_kind(po: float, pc: float, o: float, c: float) -> str:
+    """はらみ線なら "after_down"（大きな陰線のあと）か "after_up"（大きな陽線のあと）。違えば空。
+    本日の実体（始値〜終値）が前日の実体の内側に収まり、前日の実体の半分以下。前日の実体は前日終値の1.5%以上。"""
+    prev_body = abs(pc - po)
+    if not (pc > 0 and prev_body >= HARAMI_PREV_BODY * pc):
+        return ""
+    if not (min(po, pc) <= min(o, c) and max(o, c) <= max(po, pc) and abs(c - o) <= HARAMI_BODY_RATIO * prev_body):
+        return ""
+    return "after_down" if pc < po else "after_up"
+
+
+HARAMI_WORDS = {"after_down": "大きな陰線のあと", "after_up": "大きな陽線のあと"}
+
+
 def zone_word(pos: float | None) -> str:
     if pos is None:
         return "位置は不明"
@@ -146,11 +166,12 @@ def _large(r: dict) -> bool:
     return "プライム" in str(r.get("market", "")) and (market_cap.market_cap_yen(r["code"], r["close"]) or 0) >= LARGE_CAP_YEN
 
 
-def _large_rows_lines(rows: list[dict]) -> list[str]:
+def _large_rows_lines(rows: list[dict], extra=None) -> list[str]:
     out = []
     for i, r in enumerate(rows[:LARGE_LIST_LIMIT], 1):
         pos = r.get("pos52")
-        where = f"【{zone_word(pos)}】" + (f"52週の幅の{pos * 100:.0f}%の位置" if pos is not None else "")
+        tag = zone_word(pos) + (f"・{extra(r)}" if extra else "")
+        where = f"【{tag}】" + (f"52週の幅の{pos * 100:.0f}%の位置" if pos is not None else "")
         out.append(f"{i}. {where} {r['code']} {r['name']}（終値 {r['close']:,.0f}円{_cap(r)}・前日比 {r['ret1'] * 100:+.1f}%）")
     if not rows:
         out.append("本日は該当なし。")
@@ -193,6 +214,22 @@ def large_hanging_lines(facts: list[dict]) -> list[str]:
            f"終値が52週の安値〜高値の幅の上{round((1 - HIGH_ZONE) * 100)}%（高値圏）にあるものを拾いました。"
            "この運用の売買の決まりとは別に、参考として載せています（この運用はこの一覧では売買していません）。", ""]
     return out + _large_rows_lines(rows)
+
+
+def large_harami_lines(facts: list[dict]) -> list[str]:
+    """大型株のはらみ線 TOP3（2026-11-24 持ち主「次はハラミ線で同じ感じで」。ちょる子さんの「指標3：はらみ線」）。
+    時価総額1兆円以上の東証プライムで、本日の足がはらみ線の銘柄を時価総額の大きい順に。位置と、前日が陰線か陽線かを付ける。"""
+    rows = _by_cap([r for r in facts if r.get("harami") and _large(r)])
+    out = [f"## 大型株のはらみ線：{len(rows)}件（時価総額の大きい順に{LARGE_LIST_LIMIT}件まで）", "",
+           "ちょる子さんが取り上げている形の3つ目「はらみ線」です。前日の大きな足の実体の中に、本日の小さな足の実体がすっぽり"
+           "収まった2本の組み合わせで、前日の勢いが本日は続かず、いったん止まったことを表す形です。"
+           "一般には、安値圏で大きな陰線のあとに出れば下げの勢いが弱まった合図、高値圏で大きな陽線のあとに出れば"
+           "上げの勢いが弱まった合図として見られます。十字線・首吊り線と同じく、どの位置で出たかと合わせて見る形です。", "",
+           f"ここでは日足で、前日の実体（始値〜終値）が前日終値の{HARAMI_PREV_BODY * 100:.1f}%以上あり、本日の実体が前日の実体の内側に"
+           f"収まって前日の実体の{round(HARAMI_BODY_RATIO * 100)}%以下のものを拾いました。行の先頭に、位置（52週の幅の上"
+           f"{round((1 - HIGH_ZONE) * 100)}%＝高値圏、下{round(LOW_ZONE * 100)}%＝安値圏）と、前日が大きな陰線か陽線かを付けています。"
+           "この運用の売買の決まりとは別に、参考として載せています（この運用はこの一覧では売買していません）。", ""]
+    return out + _large_rows_lines(rows, lambda r: HARAMI_WORDS.get(r.get("harami"), ""))
 
 
 def sector_table(facts: list[dict]) -> list[dict]:
